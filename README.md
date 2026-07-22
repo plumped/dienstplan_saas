@@ -100,6 +100,24 @@ ihre eigene per `migrate`.
   Genehmigungs-Workflow durch Vorgesetzte (siehe [MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife),
   Block 2.3).
 
+- **Rollenbasierte Berechtigungen** (`core.permissions`, Abschnitt 10): `Membership.role`
+  (Admin/Planer/Mitarbeiter/HR) wird jetzt durchgesetzt, nicht nur gespeichert. Lesen ist für
+  alle vier Rollen innerhalb des eigenen Tenants erlaubt (Transparenz: alle sehen den ganzen
+  Plan); Schreiben an Stammdaten und am Planblatt (`Node`/`Skill`/`Employee`/`TimeTemplate`/
+  `ShiftAssignment`) ist Admin/Planer vorbehalten (`IsTenantManager`). Bei Absenzen und
+  Diensttausch dürfen Mitarbeitende zusätzlich für sich selbst schreiben
+  (`OwnEmployeeRecordPermission`, `ShiftTradeRequestPermission`) -- "für sich selbst" heisst
+  konkret: die `Employee`, die über `Employee.user` mit dem eingeloggten Account verknüpft ist
+  (`request.employee_profile`, aufgelöst in `TenantScopedViewSet.initial()`). HR ist überall vom
+  Schreiben ausgeschlossen ("nur Reporting"). Wichtige Stolperfalle beim Implementieren: die
+  Rollenprüfung muss **vor** `self.check_permissions()` passieren, aber `request.user` ist erst
+  **nach** `self.perform_authentication()` bekannt -- `TenantScopedViewSet.initial()` baut daher
+  `APIView.initial()` manuell nach, statt es als Ganzes über `super()` aufzurufen, damit
+  `request.membership`/`request.employee_profile` rechtzeitig gesetzt sind. **Frontend ist noch
+  nicht rollenbewusst**: es zeigt allen eingeloggten Usern dieselbe Planer-Oberfläche; ein Login
+  mit Mitarbeiter-Rolle bekäme beim Versuch, den Plan direkt zu bearbeiten, ein serverseitiges
+  403 zurück, ohne dass die UI das vorher verhindert (siehe MVP-Fahrplan, Block 2.2).
+
 ## Frontend
 
 Ein kleines React/Vite-Template liegt separat unter `dienstplan_frontend/` (eigenes README dort).
@@ -168,11 +186,17 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 
 ### 2. Fehlende Kernfunktionen für den Praxisalltag
 
-1. **Rollenbasierte Berechtigungen durchsetzen**: `Membership.role` (Admin/Planer/Mitarbeiter/HR)
-   existiert als Datenmodell, wird von den ViewSets aber noch nicht ausgewertet — aktuell darf
-   jeder authentifizierte Tenant-Angehörige das komplette Planblatt bearbeiten.
-2. **Self-Service für Mitarbeitende**: eigenen Plan einsehen (mobilfreundlich), Absenzen/Ferien
-   nur *beantragen* statt direkt anzulegen.
+1. ✅ **Rollenbasierte Berechtigungen durchsetzen**: `core.permissions` (`IsTenantManager`,
+   `OwnEmployeeRecordPermission`, `ShiftTradeRequestPermission`) wertet `Membership.role`
+   jetzt in allen ViewSets aus. Lesen bleibt für alle Rollen offen; Schreiben an
+   Stammdaten/Planblatt ist Admin/Planer vorbehalten, HR schreibt nirgends, Mitarbeitende dürfen
+   nur eigene Absenzen und eigenen Diensttausch verwalten. *Noch offen*: das Frontend ist nicht
+   rollenbewusst (zeigt allen die volle Planer-Oberfläche, siehe Block 2.2) und es gibt noch
+   keine Verwaltung der Rollen/Einladungen selbst im Frontend (siehe Block 3.4).
+2. **Self-Service-Oberfläche für Mitarbeitende**: eine auf die Mitarbeiter-Rolle zugeschnittene,
+   mobilfreundliche Ansicht (eigener Plan, Absenz beantragen, Diensttausch anbieten/annehmen) --
+   das Backend erlaubt das jetzt (siehe Block 2.1), das bestehende Frontend zeigt aber noch allen
+   Rollen dieselbe volle Planblatt-Oberfläche.
 3. **Genehmigungs-Workflows**: Absenzen (aktuell: sofort wirksam, keine Freigabe durch
    Vorgesetzte) und Diensttausch (aktuell: `accept` direkt durch den Zielmitarbeiter) brauchen
    für den Praxisbetrieb eine Planer-Freigabe-Stufe.

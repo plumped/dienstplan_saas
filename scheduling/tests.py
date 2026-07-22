@@ -853,3 +853,214 @@ class ShiftTradeRequestAPITests(APITestCase):
 
         self.assignment.refresh_from_db()
         self.assertEqual(self.assignment.employee_id, self.employee_1.id)
+
+
+class RoleBasedPermissionTests(APITestCase):
+    """
+    core.permissions: Admin/Planer dürfen den Dienstplan/Stammdaten
+    bearbeiten, HR nur lesen ("nur Reporting"), Mitarbeitende dürfen lesen
+    sowie eigene Absenzen und eigenen Diensttausch verwalten.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+        self.hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
+        Membership.objects.create(user=self.hr_user, tenant=self.tenant, role=Membership.Role.HR)
+
+        self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+        self.bob_user = User.objects.create_user(username="bob", password="pw-not-real-123!")
+        Membership.objects.create(user=self.bob_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.bob = Employee.objects.create(
+            tenant=self.tenant, user=self.bob_user, first_name="Bob", last_name="B", employment_pct=100
+        )
+
+        self.alice_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        self.bob_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.bob, node=self.node, date=date(2026, 8, 4), template=self.template
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_employee_cannot_create_node(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post("/api/nodes/", {"name": "Station B"})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_planner_can_create_node(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post("/api/nodes/", {"name": "Station B"})
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_hr_cannot_write_but_can_read(self):
+        self.auth_as(self.hr_user)
+        write_response = self.client.post("/api/nodes/", {"name": "Station B"})
+        self.assertEqual(write_response.status_code, status.HTTP_403_FORBIDDEN)
+        read_response = self.client.get("/api/nodes/")
+        self.assertEqual(read_response.status_code, status.HTTP_200_OK)
+
+    def test_employee_cannot_create_shift_assignment(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-assignments/",
+            {
+                "employee": self.alice.id,
+                "node": self.node.id,
+                "date": "2026-08-10",
+                "template": self.template.id,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_cannot_write_skill_time_template_or_employee(self):
+        self.auth_as(self.alice_user)
+        self.assertEqual(
+            self.client.post("/api/skills/", {"name": "Neu"}).status_code, status.HTTP_403_FORBIDDEN
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/time-templates/",
+                {"node": self.node.id, "name": "X", "start_time": "08:00", "end_time": "16:00"},
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/employees/", {"first_name": "X", "last_name": "Y", "employment_pct": 100}
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_employee_can_create_own_absence(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/absences/",
+            {
+                "employee": self.alice.id,
+                "start_date": "2026-09-01",
+                "end_date": "2026-09-05",
+                "type": "vacation",
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_employee_cannot_create_absence_for_other_employee(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/absences/",
+            {
+                "employee": self.bob.id,
+                "start_date": "2026-09-01",
+                "end_date": "2026-09-05",
+                "type": "vacation",
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_can_delete_own_absence_not_others(self):
+        own_absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2)
+        )
+        other_absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.bob, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2)
+        )
+        self.auth_as(self.alice_user)
+        self.assertEqual(
+            self.client.delete(f"/api/absences/{other_absence.id}/").status_code, status.HTTP_403_FORBIDDEN
+        )
+        self.assertEqual(
+            self.client.delete(f"/api/absences/{own_absence.id}/").status_code, status.HTTP_204_NO_CONTENT
+        )
+
+    def test_employee_can_offer_own_shift_for_trade(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": self.alice_assignment.id, "target_employee": self.bob.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_employee_cannot_offer_someone_elses_shift(self):
+        carla_user = User.objects.create_user(username="carla2", password="pw-not-real-123!")
+        Membership.objects.create(user=carla_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        carla = Employee.objects.create(
+            tenant=self.tenant, user=carla_user, first_name="Carla", last_name="C", employment_pct=100
+        )
+
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-trade-requests/",
+            # Alice bietet Bobs Schicht an -- Ziel ist Carla, nicht Bob, damit
+            # nicht die "kein Tausch mit sich selbst"-Regel (400) statt der
+            # Berechtigungsprüfung (403) greift.
+            {"requester_assignment": self.bob_assignment.id, "target_employee": carla.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_only_target_employee_can_accept_trade_offer(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.alice_assignment, target_employee=self.bob
+        )
+        third_user = User.objects.create_user(username="carla", password="pw-not-real-123!")
+        Membership.objects.create(user=third_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        Employee.objects.create(
+            tenant=self.tenant, user=third_user, first_name="Carla", last_name="C", employment_pct=100
+        )
+
+        self.auth_as(third_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/accept/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        self.auth_as(self.bob_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/accept/").status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_only_requester_can_cancel_own_trade_offer(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.alice_assignment, target_employee=self.bob
+        )
+        self.auth_as(self.bob_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/cancel/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.auth_as(self.alice_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/cancel/").status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_planner_can_act_on_behalf_of_any_employee(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.alice_assignment, target_employee=self.bob
+        )
+        self.auth_as(self.planner_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/accept/").status_code,
+            status.HTTP_200_OK,
+        )

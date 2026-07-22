@@ -20,8 +20,17 @@ hat.
 from core.models import Membership
 
 
-def resolve_tenant_for_user(user):
+def resolve_membership_for_user(user):
+    """
+    MVP-Annahme (siehe core.middleware): ein User hat genau eine Membership.
+    Wird für Tenant-Auflösung UND für die rollenbasierten Berechtigungen
+    (core.permissions) genutzt -- beides hängt an derselben Membership.
+    """
     if not user or not user.is_authenticated:
         return None
-    membership = Membership.objects.select_related("tenant").filter(user=user).first()
+    return Membership.objects.select_related("tenant").filter(user=user).first()
+
+
+def resolve_tenant_for_user(user):
+    membership = resolve_membership_for_user(user)
     return membership.tenant if membership else None

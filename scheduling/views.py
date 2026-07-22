@@ -1,14 +1,20 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.utils import timezone
 from rest_framework import permissions, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
 
 from core.context import set_current_tenant
 from core.tenancy import resolve_tenant_for_user
 
-from .models import Employee, Node, ShiftAssignment, Skill, TimeTemplate
+from .models import Absence, Employee, Node, ShiftAssignment, ShiftTradeRequest, Skill, TimeTemplate
 from .serializers import (
+    AbsenceSerializer,
     EmployeeSerializer,
     NodeSerializer,
     ShiftAssignmentSerializer,
+    ShiftTradeRequestSerializer,
     SkillSerializer,
     TimeTemplateSerializer,
 )
@@ -108,3 +114,64 @@ class ShiftAssignmentViewSet(TenantScopedViewSet):
         if date_to:
             qs = qs.filter(date__lte=date_to)
         return qs
+
+
+class AbsenceViewSet(TenantScopedViewSet):
+    """Unterstützt ?employee=<id>, um die Abwesenheiten eines Mitarbeiters zu laden."""
+
+    queryset = Absence.all_objects.all()
+    serializer_class = AbsenceSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset().select_related("employee")
+        employee = self.request.query_params.get("employee")
+        if employee:
+            qs = qs.filter(employee_id=employee)
+        return qs
+
+
+class ShiftTradeRequestViewSet(TenantScopedViewSet):
+    """
+    Diensttausch-Anfragen (Abschnitt 7). Die eigentliche Umsetzung des
+    Tauschs läuft über die Custom-Action `accept`, nicht über ein PATCH auf
+    `status`, damit die volle Regel-Engine (siehe ShiftTradeRequest.accept())
+    dabei zwingend durchlaufen wird statt sich auf Client-Disziplin zu
+    verlassen.
+    """
+
+    queryset = ShiftTradeRequest.all_objects.all()
+    serializer_class = ShiftTradeRequestSerializer
+
+    def get_queryset(self):
+        return super().get_queryset().select_related(
+            "requester_assignment", "target_employee", "target_assignment"
+        )
+
+    @action(detail=True, methods=["post"])
+    def accept(self, request, pk=None):
+        trade_request = self.get_object()
+        try:
+            trade_request.accept()
+        except DjangoValidationError as e:
+            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
+        return Response(self.get_serializer(trade_request).data)
+
+    @action(detail=True, methods=["post"])
+    def decline(self, request, pk=None):
+        trade_request = self.get_object()
+        if trade_request.status != ShiftTradeRequest.Status.PENDING:
+            raise ValidationError("Nur offene Tauschanfragen können abgelehnt werden.")
+        trade_request.status = ShiftTradeRequest.Status.DECLINED
+        trade_request.resolved_at = timezone.now()
+        trade_request.save(update_fields=["status", "resolved_at"])
+        return Response(self.get_serializer(trade_request).data)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        trade_request = self.get_object()
+        if trade_request.status != ShiftTradeRequest.Status.PENDING:
+            raise ValidationError("Nur offene Tauschanfragen können zurückgezogen werden.")
+        trade_request.status = ShiftTradeRequest.Status.CANCELLED
+        trade_request.resolved_at = timezone.now()
+        trade_request.save(update_fields=["status", "resolved_at"])
+        return Response(self.get_serializer(trade_request).data)

@@ -1,6 +1,14 @@
 from rest_framework import serializers
 
-from .models import Employee, Node, ShiftAssignment, Skill, TimeTemplate
+from .models import (
+    Absence,
+    Employee,
+    Node,
+    ShiftAssignment,
+    ShiftTradeRequest,
+    Skill,
+    TimeTemplate,
+)
 
 
 class NodeSerializer(serializers.ModelSerializer):
@@ -75,5 +83,60 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
             if field in attrs:
                 setattr(instance, field, attrs[field])
         instance.tenant = self.context["request"].tenant
+        instance.clean()
+        return attrs
+
+
+class AbsenceSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Absence
+        fields = ["id", "employee", "start_date", "end_date", "type", "note"]
+
+    def validate(self, attrs):
+        instance = self.instance or Absence()
+        for field in ["employee", "start_date", "end_date", "type"]:
+            if field in attrs:
+                setattr(instance, field, attrs[field])
+        instance.clean()
+        return attrs
+
+
+class ShiftTradeRequestSerializer(serializers.ModelSerializer):
+    # Bewusst all_objects (ungefiltert) als Feld-Queryset -- gleiches Muster
+    # wie beim Ruhezeit-Check in ShiftAssignmentSerializer: die eigentliche
+    # Tenant-Prüfung passiert explizit unten in validate(), nicht implizit
+    # über eine (zur Importzeit eingefrorene) gefilterte Queryset.
+    requester_assignment = serializers.PrimaryKeyRelatedField(queryset=ShiftAssignment.all_objects.all())
+    target_employee = serializers.PrimaryKeyRelatedField(queryset=Employee.all_objects.all())
+    target_assignment = serializers.PrimaryKeyRelatedField(
+        queryset=ShiftAssignment.all_objects.all(), required=False, allow_null=True
+    )
+
+    class Meta:
+        model = ShiftTradeRequest
+        fields = [
+            "id",
+            "requester_assignment",
+            "target_employee",
+            "target_assignment",
+            "status",
+            "note",
+            "created_at",
+            "resolved_at",
+        ]
+        read_only_fields = ["status", "created_at", "resolved_at"]
+
+    def validate(self, attrs):
+        tenant = self.context["request"].tenant
+        for field_name in ("requester_assignment", "target_employee", "target_assignment"):
+            obj = attrs.get(field_name)
+            if obj is not None and obj.tenant_id != tenant.id:
+                raise serializers.ValidationError({field_name: "Gehört nicht zu diesem Tenant."})
+
+        instance = self.instance or ShiftTradeRequest()
+        for field in ["requester_assignment", "target_employee", "target_assignment"]:
+            if field in attrs:
+                setattr(instance, field, attrs[field])
+        instance.tenant = tenant
         instance.clean()
         return attrs

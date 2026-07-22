@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 
-export default function ShiftCell({ templates, selectedTemplateId, templateInfo, onChange }) {
+const DRAG_MIME = "application/x-dienstplan-shift";
+
+export default function ShiftCell({
+  templates,
+  selectedTemplateId,
+  templateInfo,
+  onChange,
+  employeeId,
+  date,
+  onMove,
+}) {
   const [editing, setEditing] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const selectRef = useRef(null);
 
   useEffect(() => {
@@ -31,12 +42,40 @@ export default function ShiftCell({ templates, selectedTemplateId, templateInfo,
     );
   }
 
+  function handleDragStart(e) {
+    if (!templateInfo) return;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ employeeId, date }));
+  }
+
+  function handleDragOver(e) {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOver(true);
+  }
+
+  function handleDrop(e) {
+    if (!e.dataTransfer.types.includes(DRAG_MIME)) return;
+    e.preventDefault();
+    setDragOver(false);
+    const raw = e.dataTransfer.getData(DRAG_MIME);
+    if (!raw) return;
+    const source = JSON.parse(raw);
+    onMove(source.employeeId, source.date, employeeId, date);
+  }
+
   return (
     <button
       type="button"
-      className="shift-chip-btn"
+      className={`shift-chip-btn${dragOver ? " is-drop-target" : ""}`}
+      draggable={Boolean(templateInfo)}
       onClick={() => setEditing(true)}
-      aria-label={templateInfo ? `${templateInfo.name}, Schicht ändern` : "Schicht zuweisen"}
+      onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={handleDrop}
+      aria-label={templateInfo ? `${templateInfo.name}, Schicht ändern oder ziehen` : "Schicht zuweisen"}
     >
       {templateInfo ? (
         <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>

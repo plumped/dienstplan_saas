@@ -93,6 +93,70 @@ export default function PlanGrid({ nodeId, year, month, onError }) {
     }
   }
 
+  async function handleMove(fromEmployeeId, fromDate, toEmployeeId, toDate) {
+    if (fromEmployeeId === toEmployeeId && fromDate === toDate) return;
+    const source = assignmentMap.get(`${fromEmployeeId}:${fromDate}`);
+    if (!source) return;
+    if (assignmentMap.has(`${toEmployeeId}:${toDate}`)) {
+      onError("Zielfeld ist bereits belegt. Bitte zuerst leeren, bevor eine Schicht dorthin verschoben wird.");
+      return;
+    }
+    try {
+      const updated = await api.updateShiftAssignment(source.id, {
+        employee: toEmployeeId,
+        date: toDate,
+      });
+      setAssignments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+    } catch (e) {
+      // Greift z. B. bei einer Ruhezeit-Verletzung am Zieltag (siehe ShiftAssignment.clean())
+      onError(e.message);
+    }
+  }
+
+  async function handleCopyWeekPattern(employeeId) {
+    const sourceDays = days.filter((d) => d <= 7);
+    const hasSourceShift = sourceDays.some((d) =>
+      assignmentMap.has(`${employeeId}:${isoDate(year, month, d)}`)
+    );
+    if (!hasSourceShift) {
+      onError("Die erste Woche hat für diesen Mitarbeiter noch keine Schichten zum Kopieren.");
+      return;
+    }
+
+    const created = [];
+    let skippedByConflict = 0;
+    for (let targetDay = 8; targetDay <= days.length; targetDay += 1) {
+      const sourceDay = ((targetDay - 1) % 7) + 1;
+      const source = assignmentMap.get(`${employeeId}:${isoDate(year, month, sourceDay)}`);
+      if (!source) continue;
+      const targetDate = isoDate(year, month, targetDay);
+      if (assignmentMap.has(`${employeeId}:${targetDate}`)) continue; // bestehende Einträge nicht überschreiben
+
+      try {
+        const createdAssignment = await api.createShiftAssignment({
+          employee: employeeId,
+          node: nodeId,
+          date: targetDate,
+          template: source.template,
+        });
+        created.push(createdAssignment);
+      } catch {
+        // z. B. Ruhezeit- oder Höchstarbeitszeit-Konflikt an diesem Tag -- Zelle
+        // überspringen, restliche Wochen trotzdem weiterkopieren.
+        skippedByConflict += 1;
+      }
+    }
+
+    if (created.length) {
+      setAssignments((prev) => [...prev, ...created]);
+    }
+    if (skippedByConflict > 0) {
+      onError(
+        `Wochenmuster kopiert, ${skippedByConflict} Tag(e) wegen Regel-Konflikten (z. B. Ruhezeit) übersprungen.`
+      );
+    }
+  }
+
   if (loading) return <p className="loading-state">Planblatt wird geladen …</p>;
   if (!employees.length) {
     return (
@@ -123,8 +187,18 @@ export default function PlanGrid({ nodeId, year, month, onError }) {
           {employees.map((emp) => (
             <tr key={emp.id}>
               <th scope="row" className="col-employee">
-                {emp.first_name} {emp.last_name}
+                <span className="employee-name">
+                  {emp.first_name} {emp.last_name}
+                </span>
                 <span className="pct">{emp.employment_pct}%</span>
+                <button
+                  type="button"
+                  className="btn-copy-week"
+                  title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
+                  onClick={() => handleCopyWeekPattern(emp.id)}
+                >
+                  ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
+                </button>
               </th>
               {days.map((d) => {
                 const date = isoDate(year, month, d);
@@ -137,7 +211,10 @@ export default function PlanGrid({ nodeId, year, month, onError }) {
                       templates={templates}
                       selectedTemplateId={assignment?.template ?? null}
                       templateInfo={template}
+                      employeeId={emp.id}
+                      date={date}
                       onChange={(templateId) => handleAssign(emp.id, date, templateId)}
+                      onMove={handleMove}
                     />
                   </td>
                 );

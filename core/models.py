@@ -1,9 +1,21 @@
 import uuid
 
 from django.conf import settings
+from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 from core.context import get_current_tenant
+
+
+class User(AbstractUser):
+    """
+    Eigenes User-Model statt django.contrib.auth.User, von Anfang an, damit ein
+    späterer Wechsel (schmerzhaft, sobald einmal Produktivdaten existieren)
+    nicht mehr nötig ist. Vorerst keine zusätzlichen Felder gegenüber
+    AbstractUser -- die Erweiterung (z. B. bevorzugte Sprache, Telefon für
+    Diensttausch-Benachrichtigungen) kann später ohne Datenmigration der
+    Auth-Tabellen ergänzt werden.
+    """
 
 
 class Tenant(models.Model):

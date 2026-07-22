@@ -1,37 +1,30 @@
 from core.context import set_current_tenant
-from core.models import Membership
 
 
-class TenantMiddleware:
+class TenantContextCleanupMiddleware:
     """
-    Ermittelt den aktuellen Tenant aus der Mitgliedschaft des eingeloggten
-    Users und macht ihn über request.tenant sowie die ContextVar
-    (core.context) für die Dauer des Requests verfügbar.
+    Setzt die Tenant-ContextVar (core.context) nach jedem Request zurück.
 
-    MVP-Annahme: ein User gehört zu genau einem Tenant. Für Mitarbeitende,
-    die an mehreren Einrichtungen arbeiten, könnte hier später ein Header
-    (z. B. X-Tenant-Slug) ausgewertet werden, um zwischen mehreren
-    Memberships zu wählen.
+    Eine frühere Version dieser Middleware hat den Tenant hier auch
+    GESETZT -- das wurde entfernt (siehe core/tenancy.py: request.user ist
+    an dieser Stelle bei TokenAuthentication noch AnonymousUser, das Setzen
+    passiert daher bewusst in TenantScopedViewSet.initial()). Ohne diese
+    Middleware bliebe die ContextVar aber nach dem Request auf dem
+    zuletzt aufgelösten Tenant stehen: WSGI-Worker-Threads werden über
+    mehrere Requests hinweg wiederverwendet, und jeder Code, der über
+    TenantScopedManager (core/models.py) ungefiltert auf ein Modell
+    zugreift -- z. B. `employee.skills.all()`, eine Shell-Session oder ein
+    Celery-Task auf demselben Thread -- würde sonst den ContextVar-Tenant
+    des vorherigen Requests sehen. Das ist ein Cross-Tenant-Datenleck, auch
+    wenn die DRF-ViewSets zusätzlich explizit über request.tenant filtern
+    (die eigentliche Sicherheitsgrenze, siehe core/tenancy.py).
     """
 
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
-        tenant = None
-        if request.user.is_authenticated:
-            membership = (
-                Membership.objects.select_related("tenant")
-                .filter(user=request.user)
-                .first()
-            )
-            if membership:
-                tenant = membership.tenant
-
-        request.tenant = tenant
-        set_current_tenant(tenant)
         try:
-            response = self.get_response(request)
+            return self.get_response(request)
         finally:
             set_current_tenant(None)
-        return response

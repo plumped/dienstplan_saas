@@ -58,7 +58,10 @@ MIDDLEWARE = [
     'simple_history.middleware.HistoryRequestMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'core.middleware.TenantContextCleanupMiddleware',
 ]
+
+AUTH_USER_MODEL = 'core.User'
 
 ROOT_URLCONF = 'config.urls'
 

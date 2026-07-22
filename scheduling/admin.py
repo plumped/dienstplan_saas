@@ -2,7 +2,7 @@ from django.contrib import admin
 from treebeard.admin import TreeAdmin
 from treebeard.forms import movenodeform_factory
 
-from .models import Employee, Node, ShiftAssignment, Skill, TimeTemplate
+from .models import Absence, Employee, Node, ShiftAssignment, ShiftTradeRequest, Skill, TimeTemplate
 
 
 @admin.register(Node)
@@ -36,3 +36,16 @@ class ShiftAssignmentAdmin(admin.ModelAdmin):
     list_display = ["employee", "date", "template", "node", "tenant"]
     list_filter = ["tenant", "node", "date"]
     date_hierarchy = "date"
+
+
+@admin.register(Absence)
+class AbsenceAdmin(admin.ModelAdmin):
+    list_display = ["employee", "type", "start_date", "end_date", "tenant"]
+    list_filter = ["tenant", "type"]
+    date_hierarchy = "start_date"
+
+
+@admin.register(ShiftTradeRequest)
+class ShiftTradeRequestAdmin(admin.ModelAdmin):
+    list_display = ["requester_assignment", "target_employee", "status", "tenant", "created_at"]
+    list_filter = ["tenant", "status"]

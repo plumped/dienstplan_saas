@@ -21,10 +21,10 @@ function weekdayLabel(year, month, day) {
   return WEEKDAYS_SHORT[jsDay === 0 ? 6 : jsDay - 1];
 }
 
-export default function PlanGrid({ nodeId, year, month, onError }) {
-  const [employees, setEmployees] = useState([]);
+export default function PlanGrid({ nodeId, year, month, employees, onError }) {
   const [templates, setTemplates] = useState([]);
   const [assignments, setAssignments] = useState([]);
+  const [absences, setAbsences] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const days = useMemo(
@@ -38,18 +38,15 @@ export default function PlanGrid({ nodeId, year, month, onError }) {
     let cancelled = false;
     setLoading(true);
     Promise.all([
-      api.getEmployees(),
       api.getTimeTemplates(),
       api.getShiftAssignments(nodeId, dateFrom, dateTo),
+      api.getAbsences(),
     ])
-      .then(([employeesRes, templatesRes, assignmentsRes]) => {
+      .then(([templatesRes, assignmentsRes, absencesRes]) => {
         if (cancelled) return;
-        const employeeList = (employeesRes.results ?? employeesRes).filter((e) =>
-          e.nodes.includes(nodeId)
-        );
-        setEmployees(employeeList);
         setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === nodeId));
         setAssignments(assignmentsRes.results ?? assignmentsRes);
+        setAbsences(absencesRes.results ?? absencesRes);
       })
       .catch((e) => onError(e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -64,6 +61,13 @@ export default function PlanGrid({ nodeId, year, month, onError }) {
     for (const a of assignments) map.set(`${a.employee}:${a.date}`, a);
     return map;
   }, [assignments]);
+
+  function findAbsence(employeeId, date) {
+    // ISO-Datumsstrings (YYYY-MM-DD) lassen sich direkt lexikographisch vergleichen.
+    return absences.find(
+      (a) => a.employee === employeeId && a.start_date <= date && date <= a.end_date
+    );
+  }
 
   async function handleAssign(employeeId, date, templateId) {
     const key = `${employeeId}:${date}`;
@@ -157,6 +161,24 @@ export default function PlanGrid({ nodeId, year, month, onError }) {
     }
   }
 
+  async function handleOfferTrade(employeeId, date, targetEmployeeId) {
+    const assignment = assignmentMap.get(`${employeeId}:${date}`);
+    if (!assignment) return;
+    try {
+      await api.createShiftTradeRequest({
+        requester_assignment: assignment.id,
+        target_employee: targetEmployeeId,
+      });
+      const targetName = employees.find((e) => e.id === targetEmployeeId);
+      onError(
+        `Tausch angeboten an ${targetName ? `${targetName.first_name} ${targetName.last_name}` : "Kolleg:in"} ` +
+          "-- siehe Tab „Diensttausch“."
+      );
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
   if (loading) return <p className="loading-state">Planblatt wird geladen …</p>;
   if (!employees.length) {
     return (
@@ -204,6 +226,7 @@ export default function PlanGrid({ nodeId, year, month, onError }) {
                 const date = isoDate(year, month, d);
                 const assignment = assignmentMap.get(`${emp.id}:${date}`);
                 const template = templates.find((t) => t.id === assignment?.template);
+                const absence = findAbsence(emp.id, date);
                 const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
                 return (
                   <td key={d} className={weekend ? "is-weekend" : ""}>
@@ -213,8 +236,13 @@ export default function PlanGrid({ nodeId, year, month, onError }) {
                       templateInfo={template}
                       employeeId={emp.id}
                       date={date}
+                      absence={absence}
+                      colleagues={employees.filter((e) => e.id !== emp.id)}
                       onChange={(templateId) => handleAssign(emp.id, date, templateId)}
                       onMove={handleMove}
+                      onOfferTrade={(targetEmployeeId) =>
+                        handleOfferTrade(emp.id, date, targetEmployeeId)
+                      }
                     />
                   </td>
                 );

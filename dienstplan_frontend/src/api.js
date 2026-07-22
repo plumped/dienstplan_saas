@@ -60,10 +60,26 @@ export const api = {
   getTimeTemplates: () => request("/time-templates/"),
   getShiftAssignments: (nodeId, dateFrom, dateTo) =>
     request(`/shift-assignments/?node=${nodeId}&date_from=${dateFrom}&date_to=${dateTo}`),
+  getShiftAssignment: (id) => request(`/shift-assignments/${id}/`),
   createShiftAssignment: (payload) =>
     request("/shift-assignments/", { method: "POST", body: payload }),
   updateShiftAssignment: (id, payload) =>
     request(`/shift-assignments/${id}/`, { method: "PATCH", body: payload }),
   deleteShiftAssignment: (id) =>
     request(`/shift-assignments/${id}/`, { method: "DELETE" }),
+
+  getAbsences: (employeeId) =>
+    request(employeeId ? `/absences/?employee=${employeeId}` : "/absences/"),
+  createAbsence: (payload) => request("/absences/", { method: "POST", body: payload }),
+  deleteAbsence: (id) => request(`/absences/${id}/`, { method: "DELETE" }),
+
+  getShiftTradeRequests: () => request("/shift-trade-requests/"),
+  createShiftTradeRequest: (payload) =>
+    request("/shift-trade-requests/", { method: "POST", body: payload }),
+  acceptShiftTradeRequest: (id) =>
+    request(`/shift-trade-requests/${id}/accept/`, { method: "POST" }),
+  declineShiftTradeRequest: (id) =>
+    request(`/shift-trade-requests/${id}/decline/`, { method: "POST" }),
+  cancelShiftTradeRequest: (id) =>
+    request(`/shift-trade-requests/${id}/cancel/`, { method: "POST" }),
 };

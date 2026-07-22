@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
+import AbsencePanel from "./components/AbsencePanel.jsx";
 import LoginForm from "./components/LoginForm.jsx";
 import MonthNav from "./components/MonthNav.jsx";
 import NodeSelector from "./components/NodeSelector.jsx";
 import PlanGrid from "./components/PlanGrid.jsx";
+import TradeRequestPanel from "./components/TradeRequestPanel.jsx";
+
+const TABS = [
+  { id: "grid", label: "Planblatt" },
+  { id: "absences", label: "Abwesenheiten" },
+  { id: "trades", label: "Diensttausch" },
+];
 
 function currentPeriod() {
   const now = new Date();
@@ -14,7 +22,9 @@ export default function App() {
   const [loggedIn, setLoggedIn] = useState(api.isLoggedIn());
   const [nodes, setNodes] = useState([]);
   const [nodeId, setNodeId] = useState(null);
+  const [employees, setEmployees] = useState([]);
   const [period, setPeriod] = useState(currentPeriod());
+  const [tab, setTab] = useState("grid");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -32,6 +42,23 @@ export default function App() {
       });
   }, [loggedIn]);
 
+  useEffect(() => {
+    if (!loggedIn || !nodeId) {
+      setEmployees([]);
+      return;
+    }
+    api
+      .getEmployees()
+      .then((data) => {
+        const list = data.results ?? data;
+        setEmployees(list.filter((e) => e.nodes.includes(nodeId)));
+      })
+      .catch((e) => {
+        if (e.message === "unauthorized") setLoggedIn(false);
+        else setError(e.message);
+      });
+  }, [loggedIn, nodeId]);
+
   if (!loggedIn) {
     return <LoginForm onSuccess={() => setLoggedIn(true)} />;
   }
@@ -46,12 +73,27 @@ export default function App() {
           Dienstplan
         </div>
 
+        <nav className="tab-nav">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`tab-btn${tab === t.id ? " is-active" : ""}`}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+
         {nodes.length > 0 && <NodeSelector nodes={nodes} value={nodeId} onChange={setNodeId} />}
-        <MonthNav
-          year={period.year}
-          month={period.month}
-          onChange={(year, month) => setPeriod({ year, month })}
-        />
+        {tab === "grid" && (
+          <MonthNav
+            year={period.year}
+            month={period.month}
+            onChange={(year, month) => setPeriod({ year, month })}
+          />
+        )}
 
         <button
           type="button"
@@ -75,12 +117,24 @@ export default function App() {
       )}
 
       <main>
-        {nodeId ? (
-          <PlanGrid nodeId={nodeId} year={period.year} month={period.month} onError={setError} />
-        ) : (
+        {!nodeId ? (
           <p className="empty-state">
             Keine Stationen vorhanden. Im Admin unter „Nodes“ zuerst einen Standort anlegen.
           </p>
+        ) : (
+          <>
+            {tab === "grid" && (
+              <PlanGrid
+                nodeId={nodeId}
+                year={period.year}
+                month={period.month}
+                employees={employees}
+                onError={setError}
+              />
+            )}
+            {tab === "absences" && <AbsencePanel employees={employees} onError={setError} />}
+            {tab === "trades" && <TradeRequestPanel onError={setError} />}
+          </>
         )}
       </main>
     </div>

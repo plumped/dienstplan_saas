@@ -4,6 +4,12 @@ Django + DRF Skelett gemäss `funktionsumfang-dienstplanung-saas.md` (Abschnitte
 Multi-Tenancy per `tenant_id` (shared database), getestet inkl. Cross-Tenant-Sicherheitschecks
 (`core/tests.py`, `scheduling/tests.py`).
 
+**Zielgruppe**: kleine Kliniken, Arztpraxen und ähnliche Gesundheitsbetriebe in der Schweiz
+(typischerweise 5–50 Mitarbeitende, eine bis wenige Stationen/Standorte). Die Regel-Engine soll
+langfristig das Schweizer Arbeitsgesetz (ArG) abbilden — aktuell sind Ruhezeit und
+Wochenhöchstarbeitszeit als bewusst einfache Platzhalter umgesetzt, siehe
+[MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife) für das, was für einen echten Praxiseinsatz noch fehlt.
+
 ## Setup
 
 ```bash
@@ -80,7 +86,8 @@ ihre eigene per `migrate`.
   `POST /api/shift-trade-requests/<id>/accept|decline|cancel/` — `accept()` durchläuft dabei
   zwingend die volle Regel-Engine für die resultierende(n) Zuweisung(en) und bleibt bei einem
   Konflikt (z. B. Ruhezeit) auf `pending`, ohne etwas zu ändern. Bewusst kein
-  Genehmigungs-Workflow durch Vorgesetzte (siehe "Nächste Schritte").
+  Genehmigungs-Workflow durch Vorgesetzte (siehe [MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife),
+  Block 2.3).
 
 ## Frontend
 
@@ -97,15 +104,101 @@ Klick + Dropdown auch:
   Zieltage werden nicht überschrieben; Tage, die an der Regel-Engine scheitern (z. B.
   Ruhezeit-Konflikt), werden übersprungen und am Ende summarisch gemeldet.
 
-## Nächste sinnvolle Schritte
+## MVP-Fahrplan bis zur Marktreife
 
-1. Regel-Engine-Grenzwerte (`MINIMUM_REST_HOURS`, `MAXIMUM_WEEKLY_HOURS`) pro Tenant/Branche
-   konfigurierbar machen statt globaler Konstanten; Mindestbesetzung pro Schicht ergänzen.
-2. Genehmigungs-Workflow für Diensttausch durch Vorgesetzte (aktuell: direktes `accept` durch
-   den Zielmitarbeiter, ohne Planer-Freigabe).
-3. Benachrichtigungen (E-Mail/Push) bei neuer Diensttausch-Anfrage bzw. deren Annahme/Ablehnung.
-4. Rollenbasierte Berechtigungen: `Membership.role` (Admin/Planer/Mitarbeiter/HR) existiert
-   bereits als Datenmodell, wird aber von den ViewSets noch nicht ausgewertet — aktuell darf
-   jeder authentifizierte Tenant-Angehörige alles innerhalb seines Tenants.
-5. Diensttausch als echten Swap statt Move auch im Drag & Drop des Planblatt-Grids anbieten
-   (aktuell: Ziehen auf eine belegte Zelle wird abgelehnt statt getauscht).
+Priorisiert für den Verkauf an kleine Kliniken/Praxen in der Schweiz. Block 1 ist die
+fachliche Kernanforderung (ohne die ist das Produkt für Gesundheitsbetriebe nicht seriös
+einsetzbar), Blöcke 2–5 sind nötig, damit eine Praxis das Produkt tatsächlich selbständig
+nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
+
+### 1. Schweizer Arbeitsgesetz (ArG) — Regel-Engine vervollständigen
+
+Aktuell (`ShiftAssignment.clean()`) geprüft: Ruhezeit (11h, Art. 15a ArG) und eine globale
+Wochenhöchstarbeitszeit-Konstante. Für den echten Einsatz fehlen:
+
+1. **Pro Tenant/Branche konfigurierbare Grenzwerte** statt globaler Konstanten
+   (`MINIMUM_REST_HOURS`, `MAXIMUM_WEEKLY_HOURS`) — das ArG kennt 45h/Woche (Büro-,
+   Gesundheits-, Detailhandelspersonal u. a.) vs. 50h/Woche (übrige Betriebe, Art. 9 ArG); viele
+   Kliniken haben zusätzlich einen strengeren GAV (Gesamtarbeitsvertrag, z. B. GAV Santésuisse).
+2. **Pausenregelung** (Art. 15 ArG): > 5.5h Arbeit → 15 Min., > 7h → 30 Min., > 9h → 1h Pause,
+   automatisch gegen `TimeTemplate.break_minutes` geprüft statt nur erfasst.
+3. **Nachtarbeit** (23:00–06:00, Art. 16 ff. ArG): Zeitzuschlag (i. d. R. +10% Zeitgutschrift bei
+   regelmässiger/periodischer Nachtarbeit), Hinweis-/Warnpflicht bei Bewilligungsbedarf und
+   arbeitsmedizinische Untersuchungspflicht für Mitarbeitende mit regelmässiger Nachtarbeit.
+4. **Sonntagsarbeit** (Art. 19/27 ArG): Gesundheitsbetriebe sind von der Bewilligungspflicht
+   ausgenommen, benötigen aber einen Ersatzruhetag (Art. 20 ArG) und ggf. einen Lohnzuschlag —
+   beides von der Regel-Engine nachverfolgbar machen.
+5. **Wöchentlicher freier Tag**: mind. 1 ganzer freier Tag/Woche, davon im Schnitt einmal
+   monatlich ein Sonntag (Art. 21 ArG) — bislang nicht geprüft.
+6. **Tägliche Höchstarbeitszeit inkl. Pausen** (Art. 10 ArG: Arbeitszeit-„Fenster" max. 14h/Tag).
+7. **Überzeitarbeit**: Nachverfolgung + Zuschlag (i. d. R. 25%, Art. 13 ArG), Jahres-/
+   Wochengrenzen für Überzeit.
+8. **Jugendschutz**, falls Lernende/Auszubildende eingeplant werden (Art. 31 ArG: strengere
+   Ruhezeit- und Nachtarbeitsregeln für unter 18-Jährige).
+9. **Ist-Arbeitszeiterfassung** (Art. 73 ArGV 1: Pflicht zur Aufzeichnung von Beginn, Ende und
+   Pausen der tatsächlich geleisteten Arbeitszeit) — heute bildet die App nur die **Planung**
+   (Soll) ab; ein Ist-Erfassungsmodul (Stempeluhr/Self-Service-Korrektur) ist ein separater
+   Ausbauschritt, wird aber für Lohnabrechnung und Rechtskonformität benötigt.
+
+### 2. Fehlende Kernfunktionen für den Praxisalltag
+
+1. **Rollenbasierte Berechtigungen durchsetzen**: `Membership.role` (Admin/Planer/Mitarbeiter/HR)
+   existiert als Datenmodell, wird von den ViewSets aber noch nicht ausgewertet — aktuell darf
+   jeder authentifizierte Tenant-Angehörige das komplette Planblatt bearbeiten.
+2. **Self-Service für Mitarbeitende**: eigenen Plan einsehen (mobilfreundlich), Absenzen/Ferien
+   nur *beantragen* statt direkt anzulegen.
+3. **Genehmigungs-Workflows**: Absenzen (aktuell: sofort wirksam, keine Freigabe durch
+   Vorgesetzte) und Diensttausch (aktuell: `accept` direkt durch den Zielmitarbeiter) brauchen
+   für den Praxisbetrieb eine Planer-Freigabe-Stufe.
+4. **Benachrichtigungen** (mind. E-Mail) bei neuer Absenz-/Tauschanfrage, Genehmigung/Ablehnung
+   und Veröffentlichung eines neuen Monatsplans.
+5. **Export** (PDF/Excel) des Monatsplans — für Aushang in der Praxis und Übergabe an externe
+   Lohnbuchhaltung, die selten direkt an die API angebunden ist.
+6. **Monatsauswertung Soll/Ist-Stunden pro Mitarbeiter** (inkl. Nacht-/Sonntagszuschläge,
+   Überzeit) als Basis für den Lohnlauf.
+7. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
+   eine belegte Zelle wird abgelehnt statt getauscht).
+8. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn
+   sie unterschritten wird.
+
+### 3. Onboarding & Mandantenfähigkeit für Self-Signup
+
+1. **Setup-Wizard**: eine neue Praxis registriert sich selbst (Tenant, erster Admin-Account,
+   Grundstruktur Node/Skills/TimeTemplates) — heute nur über den Django-Admin möglich, für
+   nicht-technische Kund:innen nicht zumutbar.
+2. **Einladungs-Flow** für weitere Mitarbeitende (E-Mail-Einladung statt manuellem Anlegen im
+   Admin).
+3. **Passwort-Reset** — aktuell nicht vorhanden, nur `POST /api/auth/token/` mit bekanntem
+   Passwort.
+4. **Rollenverwaltung im Frontend**, sobald Block 2.1 (rollenbasierte Berechtigungen) steht.
+
+### 4. Produktionsreife & Sicherheit
+
+1. **Postgres statt SQLite**, saubere Settings-Trennung dev/prod, `SECRET_KEY` aus Env-Variable,
+   `DEBUG=False`, HTTPS erzwingen (`python manage.py check --deploy` ist aktuell rot, siehe
+   `config/settings.py`).
+2. **Auth härten**: Token-Ablauf/-Rotation oder Umstieg auf JWT mit Refresh (DRF's
+   `TokenAuthentication` gibt aktuell unbegrenzt gültige Tokens aus), Rate-Limiting auf
+   `/api/auth/token/`.
+3. **Backups & Restore-Prozess** für die Produktivdatenbank (Patientenzusammenhang macht das
+   Praxen besonders wichtig, auch wenn diese App selbst keine Patientendaten speichert).
+4. **CI-Pipeline**: Tests + Migration-Check vor jedem Deploy (heute nur lokal per
+   `python manage.py test` ausführbar).
+
+### 5. Datenschutz (revDSG) & Rechtliches
+
+1. **Auftragsverarbeitungsvertrag (AVV)**-Vorlage für Kund:innen, da Personendaten von
+   Mitarbeitenden (inkl. Krankheitsabsenzen — besondere Personendaten nach Art. 5 lit. c revDSG)
+   verarbeitet werden.
+2. **Datenschutzerklärung, AGB, Impressum**.
+3. **Löschkonzept/Aufbewahrungsfristen** klären (u. a. Lohnunterlagen: 10 Jahre nach OR 958f;
+   Absenz-/Krankheitsdaten deutlich kürzer aufbewahren).
+4. **Hosting-Standort** (Schweiz/EU) festlegen und dokumentieren — für Gesundheitsbetriebe oft
+   ein Verkaufsargument bzw. eine Kundenanforderung.
+5. **Betroffenenrechte** (Auskunft/Löschung/Berichtigung) technisch umsetzbar machen.
+
+### 6. Abrechnung (falls kommerziell verkauft)
+
+1. Zahlungsanbieter-Integration (z. B. Stripe) für ein Abo pro Praxis/Anzahl aktiver
+   Mitarbeitende.
+2. Trial-Phase und Plan-/Mitarbeiterlimits pro Tenant.

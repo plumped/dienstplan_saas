@@ -557,6 +557,107 @@ class RuleEngineTests(TestCase):
         self.assertTrue(sunday.is_sunday)
         self.assertFalse(monday.is_sunday)
 
+    def test_adult_may_work_nights_and_sundays(self):
+        # Gegenprobe zu den Jugendschutz-Tests unten: für Erwachsene (kein
+        # birth_date) sind Nacht-/Sonntagsarbeit nur informativ, nicht blockiert.
+        night_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.night_template,
+        )
+        night_shift.clean()  # keine Exception
+
+        sunday_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 2),  # ein Sonntag
+            template=self.day_template,
+        )
+        sunday_shift.clean()  # keine Exception
+
+    def test_youth_minimum_rest_hours_is_stricter(self):
+        minor = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Nina",
+            last_name="Jung",
+            birth_date=date(2009, 1, 1),  # 17 Jahre alt am 2026-08-04
+            employment_pct=100,
+        )
+        early_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst kurz", start_time=time(3, 0), end_time=time(7, 0)
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=minor,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.day_template,  # endet 16:00
+        )
+        next_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=minor,
+            node=self.node,
+            date=date(2026, 8, 4),
+            template=early_template,  # beginnt 03:00 -> 11h Pause
+        )
+        # 11h Ruhezeit reicht für Erwachsene (Tenant-Default), aber nicht für
+        # Jugendliche (ArGV 5 verlangt 12h).
+        with self.assertRaises(ValidationError):
+            next_shift.clean()
+
+    def test_youth_no_night_work_is_rejected(self):
+        minor = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Nina",
+            last_name="Jung",
+            birth_date=date(2009, 1, 1),
+            employment_pct=100,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=minor,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.night_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_youth_no_sunday_work_is_rejected(self):
+        minor = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Nina",
+            last_name="Jung",
+            birth_date=date(2009, 1, 1),
+            employment_pct=100,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=minor,
+            node=self.node,
+            date=date(2026, 8, 2),  # ein Sonntag
+            template=self.day_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_is_minor_on_boundary(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Bea",
+            last_name="B",
+            birth_date=date(2008, 8, 4),  # wird am 2026-08-04 genau 18
+            employment_pct=100,
+        )
+        self.assertTrue(employee.is_minor_on(date(2026, 8, 3)))
+        self.assertFalse(employee.is_minor_on(date(2026, 8, 4)))
+
+    def test_employee_without_birth_date_is_not_minor(self):
+        self.assertFalse(self.employee.is_minor_on(date(2026, 8, 3)))
+
 
 class AbsenceModelTests(TestCase):
     def setUp(self):

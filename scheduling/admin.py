@@ -20,7 +20,7 @@ class SkillAdmin(admin.ModelAdmin):
 
 @admin.register(Employee)
 class EmployeeAdmin(admin.ModelAdmin):
-    list_display = ["last_name", "first_name", "tenant", "employment_pct", "is_active"]
+    list_display = ["last_name", "first_name", "tenant", "birth_date", "employment_pct", "is_active"]
     list_filter = ["tenant", "is_active"]
     filter_horizontal = ["nodes", "skills"]
 

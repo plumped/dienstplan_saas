@@ -25,6 +25,11 @@ BREAK_RULES_ART_15 = [
     (5.5 * 60, 15),  # > 5.5h Arbeitszeit -> 15min Pause
 ]
 
+# Jugendschutz (ArGV 5, Verordnung 5 zum Arbeitsgesetz) für unter 18-Jährige:
+# erhöhte Mindestruhezeit statt der tenant-konfigurierbaren Erwachsenen-Regel.
+# Bewusst nicht tenant-konfigurierbar, da gesetzliche Mindestvorgabe.
+YOUTH_MINIMUM_REST_HOURS = 12
+
 
 class Node(MP_Node, TenantScopedModel):
     """
@@ -68,6 +73,12 @@ class Employee(TenantScopedModel):
     )
     first_name = models.CharField(max_length=100)
     last_name = models.CharField(max_length=100)
+    birth_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Optional. Nötig für den Jugendschutz (ArGV 5) bei Lernenden/Auszubildenden "
+        "unter 18 Jahren -- ohne Angabe wird der Mitarbeiter als volljährig behandelt.",
+    )
     employment_pct = models.PositiveSmallIntegerField(help_text="Pensum in %, z. B. 80")
     nodes = models.ManyToManyField(Node, related_name="employees", blank=True)
     skills = models.ManyToManyField(Skill, related_name="employees", blank=True)
@@ -80,6 +91,15 @@ class Employee(TenantScopedModel):
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
+
+    def is_minor_on(self, reference_date):
+        """True, wenn der Mitarbeiter am reference_date unter 18 Jahre alt ist."""
+        if not self.birth_date:
+            return False
+        age = reference_date.year - self.birth_date.year - (
+            (reference_date.month, reference_date.day) < (self.birth_date.month, self.birth_date.day)
+        )
+        return age < 18
 
 
 class Absence(TenantScopedModel):
@@ -214,12 +234,15 @@ class ShiftAssignment(TenantScopedModel):
         stiller Ablehnung, damit der Planer die Übersteuerung mit Begründung
         im UI vornehmen kann. Geprüft werden die *harten* Grenzen (Ruhezeit,
         Höchstarbeitszeit, Pausen, Tagesspanne, wöchentlicher freier Tag,
-        Qualifikation, Absenzen). Nacht- und Sonntagsarbeit werden nur
-        *erkannt* (`night_hours`/`is_sunday`) statt blockiert, weil Zuschläge
-        und Ersatzruhetage eine Lohn-/Planungsentscheidung sind, keine
-        Ablehnung der Zuweisung; Überzeit-Zuschläge und die automatische
-        Kontrolle des Ersatzruhetags sind bewusst nicht Teil dieser Engine,
-        sondern der geplanten Monatsauswertung (siehe README, MVP-Fahrplan).
+        Jugendschutz, Qualifikation, Absenzen). Nacht- und Sonntagsarbeit
+        werden für Erwachsene nur *erkannt* (`night_hours`/`is_sunday`) statt
+        blockiert, weil Zuschläge und Ersatzruhetage eine Lohn-/
+        Planungsentscheidung sind, keine Ablehnung der Zuweisung;
+        Überzeit-Zuschläge und die automatische Kontrolle des Ersatzruhetags
+        sind bewusst nicht Teil dieser Engine, sondern der geplanten
+        Monatsauswertung (siehe README, MVP-Fahrplan). Für minderjährige
+        Mitarbeitende (`Employee.birth_date`) gelten dagegen die strengeren,
+        hart durchgesetzten Regeln aus `_check_youth_protection()`.
         """
         if not (self.employee_id and self.template_id and self.date):
             return
@@ -230,6 +253,7 @@ class ShiftAssignment(TenantScopedModel):
         self._check_break_minutes()
         self._check_daily_span()
         self._check_weekly_rest_day()
+        self._check_youth_protection()
         self._check_no_absence_conflict()
 
     def _check_required_skill(self):
@@ -262,10 +286,14 @@ class ShiftAssignment(TenantScopedModel):
                 gap_hours = (other_start - this_end).total_seconds() / 3600
 
             minimum_rest_hours = self.tenant.minimum_rest_hours
+            law_reference = "Art. 15a ArG"
+            if self.employee.is_minor_on(self.date):
+                minimum_rest_hours = max(minimum_rest_hours, YOUTH_MINIMUM_REST_HOURS)
+                law_reference = "Art. 15a ArG / ArGV 5 (Jugendschutz)"
             if gap_hours < minimum_rest_hours:
                 raise ValidationError(
                     f"Ruhezeit zu {other.date} ({other.template.name}) beträgt nur "
-                    f"{gap_hours:.1f}h, mindestens {minimum_rest_hours}h erforderlich (Art. 15a ArG)."
+                    f"{gap_hours:.1f}h, mindestens {minimum_rest_hours}h erforderlich ({law_reference})."
                 )
 
     def _check_maximum_weekly_hours(self):
@@ -329,6 +357,31 @@ class ShiftAssignment(TenantScopedModel):
             raise ValidationError(
                 f"{self.employee} hätte in der Woche ab {week_start} keinen freien Tag mehr "
                 "(Art. 21 ArG: mindestens ein ganzer freier Tag pro Woche)."
+            )
+
+    def _check_youth_protection(self):
+        """
+        Vereinfachter Jugendschutz-Check (ArGV 5, Verordnung 5 zum
+        Arbeitsgesetz) für unter 18-jährige Mitarbeitende: kein Nachtarbeit,
+        keine Sonntagsarbeit. Die erhöhte Mindestruhezeit (12h) wird bereits
+        in _check_rest_period() berücksichtigt. Bildet nicht alle
+        gesetzlichen Ausnahmen ab (z. B. Berufsbildung mit Nachtarbeit in
+        bestimmten Branchen, bewilligte Sonntagsarbeit in Gesundheitsberufen
+        unter Auflagen) -- bei Lernenden/Auszubildenden im Betrieb empfiehlt
+        sich eine arbeitsrechtliche Prüfung der konkreten Ausnahmetatbestände.
+        """
+        if not self.employee.is_minor_on(self.date):
+            return
+
+        if self.night_hours > 0:
+            raise ValidationError(
+                f"{self.employee} ist minderjährig: Nachtarbeit (23:00–06:00) ist für unter "
+                "18-Jährige grundsätzlich untersagt (ArGV 5)."
+            )
+        if self.is_sunday:
+            raise ValidationError(
+                f"{self.employee} ist minderjährig: Sonntagsarbeit ist für unter 18-Jährige "
+                "grundsätzlich untersagt (ArGV 5)."
             )
 
     def _check_no_absence_conflict(self):

@@ -78,7 +78,9 @@ ihre eigene per `migrate`.
   Gesundheits-/Büropersonal. Geprüft (harte Ablehnung) werden: Ruhezeit zum Vor-/Folgetag
   (Art. 15a), Wochenhöchstarbeitszeit (Art. 9), Pausenpflicht gestaffelt nach Netto-Arbeitszeit
   (Art. 15), Tagesspanne (Art. 10), mindestens ein freier Tag pro Kalenderwoche (Art. 21),
-  Pflicht-Qualifikation (`TimeTemplate.required_skill`) und Kollision mit einer `Absence`.
+  Jugendschutz für unter 18-Jährige (`Employee.birth_date`/`is_minor_on()`: erhöhte Ruhezeit,
+  kein Nacht-/Sonntagsarbeit, ArGV 5), Pflicht-Qualifikation (`TimeTemplate.required_skill`) und
+  Kollision mit einer `Absence`.
   Zusätzlich berechnet (informativ, blockiert nichts): `night_hours` (Überlappung mit
   23:00–06:00, Art. 16) und `is_sunday` -- als Grundlage für Zuschläge/Ersatzruhetag in einer
   künftigen Lohnauswertung (siehe [MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife), Block 1).
@@ -146,16 +148,19 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    betriebe sind von der Bewilligungspflicht ausgenommen). *Noch offen*: automatische Kontrolle,
    ob der gesetzlich vorgeschriebene Ersatzruhetag (Art. 20 ArG) tatsächlich gewährt wurde, sowie
    ein allfälliger Lohnzuschlag.
+7. ✅ **Jugendschutz** (ArGV 5) für unter 18-Jährige: `Employee.birth_date` (optional) +
+   `Employee.is_minor_on(date)`. Für Minderjährige gilt eine erhöhte Mindestruhezeit (12h statt
+   der Tenant-Vorgabe) sowie ein hartes Verbot von Nacht- und Sonntagsarbeit. Vereinfachte
+   Version ohne die branchenspezifischen Ausnahmetatbestände (z. B. Berufsbildung mit
+   Nachtarbeit in bestimmten Branchen) — bei Lernenden im Betrieb empfiehlt sich eine
+   arbeitsrechtliche Prüfung der konkreten Ausnahmen.
 
 **Noch offen**:
 
-7. **Überzeitarbeit**: Soll/Ist-Vergleich pro Woche (Soll aus `Employee.employment_pct`) und
+8. **Überzeitarbeit**: Soll/Ist-Vergleich pro Woche (Soll aus `Employee.employment_pct`) und
    Zuschlag (i. d. R. 25%, Art. 13 ArG). Bewusst nicht Teil der Regel-Engine selbst, sondern der
    geplanten Monatsauswertung (Block 2.6), weil Überzeit eine Auswertungs-/Lohnfrage ist, keine
    Ablehnung einer Zuweisung.
-8. **Jugendschutz**, falls Lernende/Auszubildende eingeplant werden (Art. 31 ArG: strengere
-   Ruhezeit- und Nachtarbeitsregeln für unter 18-Jährige). Braucht zuerst ein Geburtsdatum-Feld
-   auf `Employee`.
 9. **Ist-Arbeitszeiterfassung** (Art. 73 ArGV 1: Pflicht zur Aufzeichnung von Beginn, Ende und
    Pausen der tatsächlich geleisteten Arbeitszeit) — heute bildet die App nur die **Planung**
    (Soll) ab; ein Ist-Erfassungsmodul (Stempeluhr/Self-Service-Korrektur) ist ein separater

@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -9,15 +9,21 @@ from treebeard.mp_tree import MP_Node
 
 from core.models import TenantScopedModel
 
-# Gesetzliches Mindest-Ruhezeit-Minimum (Platzhalter, siehe Docstring von
-# ShiftAssignment.clean). In einer echten Regel-Engine würde das pro Tenant
-# konfigurierbar sein (Abschnitt 4 im Funktionsumfang).
-MINIMUM_REST_HOURS = 11
+# Nachtarbeitszeitraum nach Art. 10 Abs. 1 / Art. 16 ArG (Grundregel; einzelne
+# Branchenverordnungen können abweichen, hier bewusst nicht tenant-konfigurierbar
+# gehalten, da es sich um eine gesetzliche Definition und nicht um einen
+# betrieblichen Spielraum handelt).
+NIGHT_WORK_START = time(23, 0)
+NIGHT_WORK_END = time(6, 0)
 
-# Wöchentliche Höchstarbeitszeit (Platzhalter, wie MINIMUM_REST_HOURS -- in
-# einer echten Regel-Engine pro Tenant/Branche konfigurierbar, z. B.
-# unterschiedliche ArG-Grenzwerte für Gesundheitspersonal).
-MAXIMUM_WEEKLY_HOURS = 50
+# Pausenmindestdauer nach Art. 15 ArG, gestaffelt nach Netto-Arbeitszeit
+# (Arbeitszeit *ohne* Pause) an einem Tag. Absteigend sortiert, damit der
+# erste zutreffende Schwellenwert in _required_break_minutes() gewinnt.
+BREAK_RULES_ART_15 = [
+    (9 * 60, 60),  # > 9h Arbeitszeit -> 1h Pause
+    (7 * 60, 30),  # > 7h Arbeitszeit -> 30min Pause
+    (5.5 * 60, 15),  # > 5.5h Arbeitszeit -> 15min Pause
+]
 
 
 class Node(MP_Node, TenantScopedModel):
@@ -162,14 +168,58 @@ class ShiftAssignment(TenantScopedModel):
         worked = (end - start) - timedelta(minutes=template.break_minutes)
         return worked.total_seconds() / 3600
 
+    @staticmethod
+    def _required_break_minutes(net_work_minutes):
+        """Pausenmindestdauer nach Art. 15 ArG, gestaffelt nach Netto-Arbeitszeit."""
+        for threshold_minutes, required in BREAK_RULES_ART_15:
+            if net_work_minutes > threshold_minutes:
+                return required
+        return 0
+
+    @classmethod
+    def _night_hours(cls, date, template):
+        """
+        Überlappung der Schicht mit dem Nachtarbeitszeitraum (23:00-06:00,
+        Art. 10/16 ArG). Prüft sowohl das Nachtfenster der Vornacht (falls die
+        Schicht z. B. um 05:00 beginnt) als auch das der aktuellen Nacht
+        (falls sie über Mitternacht hinausgeht).
+        """
+        start, end = cls._shift_datetimes(date, template)
+        total = 0.0
+        for offset in (-1, 0):
+            night_start = datetime.combine(date + timedelta(days=offset), NIGHT_WORK_START)
+            night_end = night_start + timedelta(hours=7)  # 23:00 -> 06:00
+            overlap_start = max(start, night_start)
+            overlap_end = min(end, night_end)
+            if overlap_end > overlap_start:
+                total += (overlap_end - overlap_start).total_seconds() / 3600
+        return total
+
+    @property
+    def night_hours(self):
+        """Informativ (Art. 17b ArG: Zeitgutschrift bei regelmässiger Nachtarbeit) -- blockiert nichts."""
+        if not (self.date and self.template_id):
+            return 0.0
+        return round(self._night_hours(self.date, self.template), 2)
+
+    @property
+    def is_sunday(self):
+        """Informativ (Art. 19/20 ArG: Sonntagszuschlag/Ersatzruhetag) -- blockiert nichts."""
+        return self.date.weekday() == 6 if self.date else None
+
     def clean(self):
         """
-        Regel-Engine-Platzhalter für Abschnitt 4 des Funktionsumfangs:
-        Ruhezeit, Wochenhöchstarbeitszeit und Pflicht-Qualifikation. Bewusst
-        als Warnung/Exception statt stiller Ablehnung, damit der Planer die
-        Übersteuerung mit Begründung im UI vornehmen kann. Eine vollständige
-        Regel-Engine würde diese Grenzwerte pro Tenant/Branche konfigurierbar
-        machen und weitere Regeln (z. B. Mindestbesetzung) ergänzen.
+        Regel-Engine für Abschnitt 4 des Funktionsumfangs, orientiert am
+        Schweizer Arbeitsgesetz (ArG). Bewusst als Warnung/Exception statt
+        stiller Ablehnung, damit der Planer die Übersteuerung mit Begründung
+        im UI vornehmen kann. Geprüft werden die *harten* Grenzen (Ruhezeit,
+        Höchstarbeitszeit, Pausen, Tagesspanne, wöchentlicher freier Tag,
+        Qualifikation, Absenzen). Nacht- und Sonntagsarbeit werden nur
+        *erkannt* (`night_hours`/`is_sunday`) statt blockiert, weil Zuschläge
+        und Ersatzruhetage eine Lohn-/Planungsentscheidung sind, keine
+        Ablehnung der Zuweisung; Überzeit-Zuschläge und die automatische
+        Kontrolle des Ersatzruhetags sind bewusst nicht Teil dieser Engine,
+        sondern der geplanten Monatsauswertung (siehe README, MVP-Fahrplan).
         """
         if not (self.employee_id and self.template_id and self.date):
             return
@@ -177,6 +227,9 @@ class ShiftAssignment(TenantScopedModel):
         self._check_required_skill()
         self._check_rest_period()
         self._check_maximum_weekly_hours()
+        self._check_break_minutes()
+        self._check_daily_span()
+        self._check_weekly_rest_day()
         self._check_no_absence_conflict()
 
     def _check_required_skill(self):
@@ -208,10 +261,11 @@ class ShiftAssignment(TenantScopedModel):
             else:
                 gap_hours = (other_start - this_end).total_seconds() / 3600
 
-            if gap_hours < MINIMUM_REST_HOURS:
+            minimum_rest_hours = self.tenant.minimum_rest_hours
+            if gap_hours < minimum_rest_hours:
                 raise ValidationError(
                     f"Ruhezeit zu {other.date} ({other.template.name}) beträgt nur "
-                    f"{gap_hours:.1f}h, mindestens {MINIMUM_REST_HOURS}h erforderlich."
+                    f"{gap_hours:.1f}h, mindestens {minimum_rest_hours}h erforderlich (Art. 15a ArG)."
                 )
 
     def _check_maximum_weekly_hours(self):
@@ -230,10 +284,51 @@ class ShiftAssignment(TenantScopedModel):
         total_hours = self._shift_hours(self.date, self.template)
         total_hours += sum(self._shift_hours(a.date, a.template) for a in week_assignments)
 
-        if total_hours > MAXIMUM_WEEKLY_HOURS:
+        maximum_weekly_hours = self.tenant.maximum_weekly_hours
+        if total_hours > maximum_weekly_hours:
             raise ValidationError(
                 f"Wochenarbeitszeit von {self.employee} wäre {total_hours:.1f}h "
-                f"(Woche ab {week_start}), maximal {MAXIMUM_WEEKLY_HOURS}h erlaubt."
+                f"(Woche ab {week_start}), maximal {maximum_weekly_hours}h erlaubt (Art. 9 ArG)."
+            )
+
+    def _check_break_minutes(self):
+        net_work_minutes = self._shift_hours(self.date, self.template) * 60
+        required = self._required_break_minutes(net_work_minutes)
+        if self.template.break_minutes < required:
+            raise ValidationError(
+                f"'{self.template.name}' hat nur {self.template.break_minutes} Min. Pause hinterlegt, "
+                f"bei {net_work_minutes / 60:.1f}h Arbeitszeit sind mindestens {required} Min. "
+                f"vorgeschrieben (Art. 15 ArG)."
+            )
+
+    def _check_daily_span(self):
+        start, end = self._shift_datetimes(self.date, self.template)
+        span_hours = (end - start).total_seconds() / 3600
+        maximum_daily_span_hours = self.tenant.maximum_daily_span_hours
+        if span_hours > maximum_daily_span_hours:
+            raise ValidationError(
+                f"Tagesspanne von '{self.template.name}' beträgt {span_hours:.1f}h, "
+                f"maximal {maximum_daily_span_hours}h erlaubt (Art. 10 ArG)."
+            )
+
+    def _check_weekly_rest_day(self):
+        week_start = self.date - timedelta(days=self.date.weekday())  # Montag
+        week_dates = {week_start + timedelta(days=i) for i in range(7)}
+
+        occupied_dates = set(
+            ShiftAssignment.all_objects.filter(
+                employee=self.employee,
+                date__range=[week_start, week_start + timedelta(days=6)],
+            )
+            .exclude(pk=self.pk)
+            .values_list("date", flat=True)
+        )
+        occupied_dates.add(self.date)
+
+        if week_dates.issubset(occupied_dates):
+            raise ValidationError(
+                f"{self.employee} hätte in der Woche ab {week_start} keinen freien Tag mehr "
+                "(Art. 21 ArG: mindestens ein ganzer freier Tag pro Woche)."
             )
 
     def _check_no_absence_conflict(self):

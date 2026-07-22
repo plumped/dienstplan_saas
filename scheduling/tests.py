@@ -231,10 +231,20 @@ class RuleEngineTests(TestCase):
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
         self.day_template = TimeTemplate.objects.create(
-            tenant=self.tenant, node=self.node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,  # 8h Spanne -> 7.5h netto -> Art. 15 ArG verlangt 30 Min.
         )
         self.night_template = TimeTemplate.objects.create(
-            tenant=self.tenant, node=self.node, name="Nachtdienst", start_time=time(20, 0), end_time=time(8, 0)
+            tenant=self.tenant,
+            node=self.node,
+            name="Nachtdienst",
+            start_time=time(20, 0),
+            end_time=time(8, 0),
+            break_minutes=60,  # 12h Spanne -> 11h netto -> Art. 15 ArG verlangt 60 Min.
         )
 
     def test_valid_assignment_passes_clean(self):
@@ -315,7 +325,7 @@ class RuleEngineTests(TestCase):
 
     def test_maximum_weekly_hours_violation_is_rejected(self):
         monday = date(2026, 8, 3)
-        for offset in range(6):  # Mo-Sa, je 8h = 48h
+        for offset in range(6):  # Mo-Sa, je 7.5h netto = 45h
             ShiftAssignment.objects.create(
                 tenant=self.tenant,
                 employee=self.employee,
@@ -328,7 +338,7 @@ class RuleEngineTests(TestCase):
             employee=self.employee,
             node=self.node,
             date=monday + timedelta(days=6),
-            template=self.day_template,  # weitere 8h -> 56h, über dem Limit
+            template=self.day_template,  # weitere 7.5h -> 52.5h, über dem 45h-Limit des Tenants
         )
         with self.assertRaises(ValidationError):
             sunday_shift.clean()
@@ -377,6 +387,176 @@ class RuleEngineTests(TestCase):
         )
         self.assertFalse(serializer.is_valid())
 
+    def test_break_minutes_violation_is_rejected(self):
+        # 8h Spanne (>7h netto), aber keine Pause hinterlegt -> Art. 15 ArG verlangt 30 Min.
+        template_without_break = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Ohne Pause", start_time=time(8, 0), end_time=time(16, 0)
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=template_without_break,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_break_minutes_sufficient_passes(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.day_template,  # hat bereits 30 Min. Pause (siehe setUp)
+        )
+        assignment.clean()  # keine Exception
+
+    def test_daily_span_violation_is_rejected(self):
+        # 15h Spanne -> über der Tenant-Grenze von 14h (Art. 10 ArG), Pause ausreichend
+        # hoch angesetzt, damit gezielt nur die Tagesspanne greift.
+        long_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Marathon-Schicht",
+            start_time=time(6, 0),
+            end_time=time(21, 0),
+            break_minutes=60,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=long_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_weekly_rest_day_violation_is_rejected(self):
+        # Kurze Schichten (2h/Tag), damit nicht schon die Wochenhöchstarbeitszeit greift --
+        # gezielter Test für Art. 21 ArG (mind. 1 freier Tag pro Woche).
+        short_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Kurzeinsatz", start_time=time(9, 0), end_time=time(11, 0)
+        )
+        monday = date(2026, 8, 3)
+        for offset in range(6):  # Mo-Sa belegt
+            ShiftAssignment.objects.create(
+                tenant=self.tenant,
+                employee=self.employee,
+                node=self.node,
+                date=monday + timedelta(days=offset),
+                template=short_template,
+            )
+        sunday_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=monday + timedelta(days=6),
+            template=short_template,  # 7. Tag derselben Woche -> kein freier Tag mehr übrig
+        )
+        with self.assertRaises(ValidationError):
+            sunday_shift.clean()
+
+    def test_weekly_rest_day_with_one_free_day_passes(self):
+        short_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Kurzeinsatz", start_time=time(9, 0), end_time=time(11, 0)
+        )
+        monday = date(2026, 8, 3)
+        for offset in range(5):  # Mo-Fr belegt, Sa+So frei
+            ShiftAssignment.objects.create(
+                tenant=self.tenant,
+                employee=self.employee,
+                node=self.node,
+                date=monday + timedelta(days=offset),
+                template=short_template,
+            )
+        saturday_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=monday + timedelta(days=5),
+            template=short_template,  # Sonntag bleibt frei
+        )
+        saturday_shift.clean()  # keine Exception
+
+    def test_maximum_weekly_hours_is_tenant_configurable(self):
+        strict_tenant = Tenant.objects.create(
+            name="Klinik streng", slug="klinik-streng", maximum_weekly_hours=10
+        )
+        node = Node.add_root(name="Station", tenant=strict_tenant)
+        employee = Employee.objects.create(
+            tenant=strict_tenant, first_name="Chris", last_name="C", employment_pct=100
+        )
+        template = TimeTemplate.objects.create(
+            tenant=strict_tenant,
+            node=node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,  # 7.5h netto
+        )
+        ShiftAssignment.objects.create(
+            tenant=strict_tenant, employee=employee, node=node, date=date(2026, 8, 3), template=template
+        )
+        second_assignment = ShiftAssignment(
+            tenant=strict_tenant,
+            employee=employee,
+            node=node,
+            date=date(2026, 8, 4),
+            template=template,
+        )
+        with self.assertRaises(ValidationError):
+            second_assignment.clean()  # 2x7.5h = 15h > 10h-Limit dieses Tenants
+
+        # Zum Vergleich: derselbe Fall wäre unter dem Standard-Tenant-Limit (45h) unproblematisch.
+        default_assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 4),
+            template=self.day_template,
+        )
+        default_assignment.clean()  # keine Exception
+
+    def test_night_hours_covers_full_night_window(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.night_template,  # 20:00-08:00, deckt 23:00-06:00 vollständig ab
+        )
+        self.assertEqual(assignment.night_hours, 7.0)
+
+    def test_night_hours_zero_for_day_shift(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.day_template,
+        )
+        self.assertEqual(assignment.night_hours, 0.0)
+
+    def test_is_sunday_property(self):
+        sunday = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 2),  # ein Sonntag
+            template=self.day_template,
+        )
+        monday = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.day_template,
+        )
+        self.assertTrue(sunday.is_sunday)
+        self.assertFalse(monday.is_sunday)
+
 
 class AbsenceModelTests(TestCase):
     def setUp(self):
@@ -409,7 +589,12 @@ class ShiftTradeRequestTests(TestCase):
             tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
         )
         self.template = TimeTemplate.objects.create(
-            tenant=self.tenant, node=self.node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,  # 8h Spanne -> 7.5h netto -> Art. 15 ArG verlangt 30 Min.
         )
         self.assignment_1 = ShiftAssignment.objects.create(
             tenant=self.tenant,
@@ -522,7 +707,12 @@ class ShiftTradeRequestAPITests(APITestCase):
             tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
         )
         self.template = TimeTemplate.objects.create(
-            tenant=self.tenant, node=self.node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,  # 8h Spanne -> 7.5h netto -> Art. 15 ArG verlangt 30 Min.
         )
         self.assignment = ShiftAssignment.objects.create(
             tenant=self.tenant,

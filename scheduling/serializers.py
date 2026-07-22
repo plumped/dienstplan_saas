@@ -68,9 +68,16 @@ class TimeTemplateSerializer(serializers.ModelSerializer):
 
 
 class ShiftAssignmentSerializer(serializers.ModelSerializer):
+    # Informativ, nicht Teil der Validierung -- siehe ShiftAssignment.clean()
+    # Docstring: Nacht-/Sonntagsarbeit werden erkannt statt blockiert, damit
+    # Planer und eine spätere Lohnauswertung Zuschläge/Ersatzruhetage
+    # berücksichtigen können.
+    night_hours = serializers.FloatField(read_only=True)
+    is_sunday = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = ShiftAssignment
-        fields = ["id", "employee", "node", "date", "template", "note"]
+        fields = ["id", "employee", "node", "date", "template", "note", "night_hours", "is_sunday"]
 
     def validate(self, attrs):
         """

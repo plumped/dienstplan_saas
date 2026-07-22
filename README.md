@@ -5,10 +5,12 @@ Multi-Tenancy per `tenant_id` (shared database), getestet inkl. Cross-Tenant-Sic
 (`core/tests.py`, `scheduling/tests.py`).
 
 **Zielgruppe**: kleine Kliniken, Arztpraxen und ähnliche Gesundheitsbetriebe in der Schweiz
-(typischerweise 5–50 Mitarbeitende, eine bis wenige Stationen/Standorte). Die Regel-Engine soll
-langfristig das Schweizer Arbeitsgesetz (ArG) abbilden — aktuell sind Ruhezeit und
-Wochenhöchstarbeitszeit als bewusst einfache Platzhalter umgesetzt, siehe
-[MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife) für das, was für einen echten Praxiseinsatz noch fehlt.
+(typischerweise 5–50 Mitarbeitende, eine bis wenige Stationen/Standorte). Die Regel-Engine bildet
+bereits mehrere Kernpunkte des Schweizer Arbeitsgesetzes (ArG) ab (siehe nächster Abschnitt) --
+was für einen rechtssicheren Praxiseinsatz noch fehlt (u. a. automatische Ersatzruhetag-Kontrolle,
+Überzeit-Zuschläge, Ist-Arbeitszeiterfassung), steht im
+[MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife). **Kein Ersatz für eine arbeitsrechtliche
+Prüfung** — die hinterlegten Grenzwerte sind Standardwerte, kein Rechtsrat.
 
 ## Setup
 
@@ -69,12 +71,19 @@ ihre eigene per `migrate`.
   `IntegrityError`. `NodeViewSet.perform_create` kapselt das bereits für die API
   (`POST /api/nodes/` mit optionalem `parent`-Feld).
 
-- **Regel-Engine** (`ShiftAssignment.clean()`, Abschnitt 4): bewusst einfache Platzhalter statt
-  einer vollen, pro Tenant konfigurierbaren Engine — Konstanten `MINIMUM_REST_HOURS` und
-  `MAXIMUM_WEEKLY_HOURS` in `scheduling/models.py`. Geprüft werden: Ruhezeit zum Vor-/Folgetag,
-  Wochenhöchstarbeitszeit (Mo–So um das Zieldatum), Pflicht-Qualifikation
-  (`TimeTemplate.required_skill`) und Kollision mit einer `Absence`. Greift über die API, weil
-  `ShiftAssignmentSerializer.validate()` `clean()` aufruft — nicht nur im Admin.
+- **Regel-Engine** (`ShiftAssignment.clean()`, Abschnitt 4, orientiert am Schweizer ArG): die
+  numerischen Grenzwerte (`minimum_rest_hours`, `maximum_weekly_hours`,
+  `maximum_daily_span_hours`) sitzen als Felder auf `core.models.Tenant` -- pro Klinik/Praxis im
+  Admin anpassbar (z. B. für einen strengeren GAV), Defaults entsprechen Art. 9/10/15a ArG für
+  Gesundheits-/Büropersonal. Geprüft (harte Ablehnung) werden: Ruhezeit zum Vor-/Folgetag
+  (Art. 15a), Wochenhöchstarbeitszeit (Art. 9), Pausenpflicht gestaffelt nach Netto-Arbeitszeit
+  (Art. 15), Tagesspanne (Art. 10), mindestens ein freier Tag pro Kalenderwoche (Art. 21),
+  Pflicht-Qualifikation (`TimeTemplate.required_skill`) und Kollision mit einer `Absence`.
+  Zusätzlich berechnet (informativ, blockiert nichts): `night_hours` (Überlappung mit
+  23:00–06:00, Art. 16) und `is_sunday` -- als Grundlage für Zuschläge/Ersatzruhetag in einer
+  künftigen Lohnauswertung (siehe [MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife), Block 1).
+  Greift über die API, weil `ShiftAssignmentSerializer.validate()` `clean()` aufruft — nicht nur
+  im Admin.
 
 - **Absenzen** (`Absence`, Abschnitt 6): Ferien/Krankheit/Sonstiges pro Mitarbeiter und
   Zeitraum. Blockiert überlappende `ShiftAssignment`s über die Regel-Engine.
@@ -113,28 +122,40 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 
 ### 1. Schweizer Arbeitsgesetz (ArG) — Regel-Engine vervollständigen
 
-Aktuell (`ShiftAssignment.clean()`) geprüft: Ruhezeit (11h, Art. 15a ArG) und eine globale
-Wochenhöchstarbeitszeit-Konstante. Für den echten Einsatz fehlen:
+**Bereits umgesetzt** (`scheduling/models.py: ShiftAssignment`, `core/tests.py`,
+`scheduling/tests.py`):
 
-1. **Pro Tenant/Branche konfigurierbare Grenzwerte** statt globaler Konstanten
-   (`MINIMUM_REST_HOURS`, `MAXIMUM_WEEKLY_HOURS`) — das ArG kennt 45h/Woche (Büro-,
-   Gesundheits-, Detailhandelspersonal u. a.) vs. 50h/Woche (übrige Betriebe, Art. 9 ArG); viele
-   Kliniken haben zusätzlich einen strengeren GAV (Gesamtarbeitsvertrag, z. B. GAV Santésuisse).
-2. **Pausenregelung** (Art. 15 ArG): > 5.5h Arbeit → 15 Min., > 7h → 30 Min., > 9h → 1h Pause,
-   automatisch gegen `TimeTemplate.break_minutes` geprüft statt nur erfasst.
-3. **Nachtarbeit** (23:00–06:00, Art. 16 ff. ArG): Zeitzuschlag (i. d. R. +10% Zeitgutschrift bei
-   regelmässiger/periodischer Nachtarbeit), Hinweis-/Warnpflicht bei Bewilligungsbedarf und
-   arbeitsmedizinische Untersuchungspflicht für Mitarbeitende mit regelmässiger Nachtarbeit.
-4. **Sonntagsarbeit** (Art. 19/27 ArG): Gesundheitsbetriebe sind von der Bewilligungspflicht
-   ausgenommen, benötigen aber einen Ersatzruhetag (Art. 20 ArG) und ggf. einen Lohnzuschlag —
-   beides von der Regel-Engine nachverfolgbar machen.
-5. **Wöchentlicher freier Tag**: mind. 1 ganzer freier Tag/Woche, davon im Schnitt einmal
-   monatlich ein Sonntag (Art. 21 ArG) — bislang nicht geprüft.
-6. **Tägliche Höchstarbeitszeit inkl. Pausen** (Art. 10 ArG: Arbeitszeit-„Fenster" max. 14h/Tag).
-7. **Überzeitarbeit**: Nachverfolgung + Zuschlag (i. d. R. 25%, Art. 13 ArG), Jahres-/
-   Wochengrenzen für Überzeit.
+1. ✅ **Pro Tenant/Branche konfigurierbare Grenzwerte**: `minimum_rest_hours` (Default 11h,
+   Art. 15a ArG), `maximum_weekly_hours` (Default 45h, Art. 9 ArG) und `maximum_daily_span_hours`
+   (Default 14h, Art. 10 ArG) sitzen als Felder auf `core.models.Tenant`, im Admin editierbar --
+   für Betriebe mit 50h-Regelung oder strengerem GAV (Gesamtarbeitsvertrag, z. B. GAV
+   Santésuisse) pro Klinik/Praxis anpassbar.
+2. ✅ **Pausenregelung** (Art. 15 ArG): > 5.5h Netto-Arbeitszeit → 15 Min., > 7h → 30 Min.,
+   > 9h → 1h Pause, automatisch gegen `TimeTemplate.break_minutes` geprüft statt nur erfasst.
+3. ✅ **Tägliche Höchstarbeitszeit inkl. Pausen** (Art. 10 ArG: Tagesspanne max.
+   `maximum_daily_span_hours`, Default 14h).
+4. ✅ **Wöchentlicher freier Tag**: mindestens ein ganzer freier Tag pro Kalenderwoche
+   (Art. 21 ArG) wird geprüft. *Noch offen*: die zusätzliche Anforderung "im Schnitt einmal
+   monatlich ein Sonntag frei" ist nicht automatisiert.
+5. 🟡 **Nachtarbeit** (23:00–06:00, Art. 16 ff. ArG): wird pro Schicht als `night_hours` erkannt
+   und über die API ausgegeben (informativ). *Noch offen*: Zeitzuschlag-Berechnung
+   (i. d. R. +10% Zeitgutschrift bei regelmässiger Nachtarbeit), automatische
+   Bewilligungs-/Warnhinweise und Tracking der arbeitsmedizinischen Untersuchungspflicht bei
+   regelmässiger Nachtarbeit.
+6. 🟡 **Sonntagsarbeit** (Art. 19/27 ArG): wird pro Schicht als `is_sunday` erkannt (Gesundheits-
+   betriebe sind von der Bewilligungspflicht ausgenommen). *Noch offen*: automatische Kontrolle,
+   ob der gesetzlich vorgeschriebene Ersatzruhetag (Art. 20 ArG) tatsächlich gewährt wurde, sowie
+   ein allfälliger Lohnzuschlag.
+
+**Noch offen**:
+
+7. **Überzeitarbeit**: Soll/Ist-Vergleich pro Woche (Soll aus `Employee.employment_pct`) und
+   Zuschlag (i. d. R. 25%, Art. 13 ArG). Bewusst nicht Teil der Regel-Engine selbst, sondern der
+   geplanten Monatsauswertung (Block 2.6), weil Überzeit eine Auswertungs-/Lohnfrage ist, keine
+   Ablehnung einer Zuweisung.
 8. **Jugendschutz**, falls Lernende/Auszubildende eingeplant werden (Art. 31 ArG: strengere
-   Ruhezeit- und Nachtarbeitsregeln für unter 18-Jährige).
+   Ruhezeit- und Nachtarbeitsregeln für unter 18-Jährige). Braucht zuerst ein Geburtsdatum-Feld
+   auf `Employee`.
 9. **Ist-Arbeitszeiterfassung** (Art. 73 ArGV 1: Pflicht zur Aufzeichnung von Beginn, Ende und
    Pausen der tatsächlich geleisteten Arbeitszeit) — heute bildet die App nur die **Planung**
    (Soll) ab; ein Ist-Erfassungsmodul (Stempeluhr/Self-Service-Korrektur) ist ein separater

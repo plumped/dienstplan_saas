@@ -27,6 +27,29 @@ class Tenant(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
 
+    # Pro Tenant/Branche konfigurierbare Grenzwerte für die Regel-Engine
+    # (scheduling.models.ShiftAssignment.clean). Defaults entsprechen dem
+    # Schweizer Arbeitsgesetz (ArG) für Gesundheits-/Büropersonal -- andere
+    # Branchen oder ein strengerer GAV (Gesamtarbeitsvertrag) können das pro
+    # Tenant überschreiben. Diese Felder bilden nur die numerischen
+    # Grenzwerte ab; die eigentlichen gesetzlichen Regeln (Pausenpflicht,
+    # wöchentlicher freier Tag, Nacht-/Sonntagsarbeit) sind in der
+    # Regel-Engine selbst fest verdrahtet, siehe deren Docstrings.
+    minimum_rest_hours = models.PositiveSmallIntegerField(
+        default=11,
+        help_text="Mindestruhezeit zwischen zwei Schichten in Stunden (Art. 15a ArG: 11h Minimum).",
+    )
+    maximum_weekly_hours = models.PositiveSmallIntegerField(
+        default=45,
+        help_text="Wöchentliche Höchstarbeitszeit in Stunden (Art. 9 ArG: 45h für Gesundheits- und "
+        "Büropersonal, 50h für übrige Betriebe -- je nach Branche/GAV anpassen).",
+    )
+    maximum_daily_span_hours = models.PositiveSmallIntegerField(
+        default=14,
+        help_text="Maximale Tagesspanne von Arbeitsbeginn bis Arbeitsende inkl. Pausen, in Stunden "
+        "(Art. 10 Abs. 3 ArG).",
+    )
+
     class Meta:
         ordering = ["name"]
 

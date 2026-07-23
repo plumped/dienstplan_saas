@@ -204,8 +204,34 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Ablehnung einer Zuweisung.
 9. **Ist-Arbeitszeiterfassung** (Art. 73 ArGV 1: Pflicht zur Aufzeichnung von Beginn, Ende und
    Pausen der tatsächlich geleisteten Arbeitszeit) — heute bildet die App nur die **Planung**
-   (Soll) ab; ein Ist-Erfassungsmodul (Stempeluhr/Self-Service-Korrektur) ist ein separater
-   Ausbauschritt, wird aber für Lohnabrechnung und Rechtskonformität benötigt.
+   (Soll) ab, z. B. Frühdienst geplant 07:00–16:00, aber tatsächlich erst 07:12 begonnen. Konkrete
+   Teilschritte für dieses Modul:
+   1. **Datenmodell**: neues `TimeRecord` (tenant-scoped, `OneToOneField` auf `ShiftAssignment`,
+      damit jede Ist-Erfassung eindeutig einer Soll-Schicht zugeordnet ist) mit `actual_start`,
+      `actual_end`, `actual_break_minutes`, `note`, `recorded_by` (User), `recorded_at`.
+   2. **Self-Service-Eingabe**: Mitarbeitende dürfen Ist-Zeiten nur für die **eigene**
+      (`Employee.user`) und bereits **stattgefundene** Schicht erfassen
+      (`ShiftAssignment.date <= heute`) — dasselbe Berechtigungsmuster wie
+      `OwnEmployeeRecordPermission` für Absenzen.
+   3. **Soll/Ist-Abweichung**: Differenz zu `TimeTemplate.start_time`/`end_time` berechnen und
+      anzeigen (z. B. "+12 Min."); ab einer konfigurierbaren Toleranz (z. B. 15 Min.) eine
+      Begründung/Notiz verlangen.
+   4. **Korrektur-/Prüf-Workflow**: analog zu `Absence`/`ShiftTradeRequest` sollten Ist-Einträge
+      von Admin/Planer eingesehen und bei Bedarf korrigiert werden können (z. B. Status
+      `submitted`/`confirmed`) — reine Selbstauskunft ohne jede Kontrolle wäre gegenüber
+      Behörden/Revision wenig belastbar.
+   5. **Regel-Engine-Bezug**: optional die tatsächliche Pause nachträglich gegen Art. 15 ArG
+      prüfen (nur als Warnung/Hinweis, da rückwirkend nichts mehr verhindert werden kann).
+   6. **API**: `/api/time-records/` als neues ViewSet, Tenant-Scoping und Rollenprüfung nach
+      demselben Muster wie die bestehenden Endpunkte (`core.permissions`).
+   7. **Frontend**: Eingabemaske für eigene, vergangene Schichten (z. B. Klick auf die eigene
+      Zelle im Planblatt öffnet Soll-Zeiten vorausgefüllt zur Korrektur, oder eigener Tab
+      "Zeiterfassung"); Planer-Ansicht mit einer Übersicht aller Abweichungen zur Prüfung.
+   8. **Anschluss an Block 2.6**: die geplante Monatsauswertung (Soll/Ist-Stunden, Überzeit,
+      Nacht-/Sonntagszuschläge) sollte, sobald dieses Modul existiert, auf `TimeRecord` statt nur
+      auf der Planung (`ShiftAssignment`) basieren.
+   9. **Aufbewahrung**: Ist-Daten fallen unter dieselbe Aufbewahrungspflicht wie Lohnunterlagen
+      (siehe Block 5.3) — beim Löschkonzept mitdenken.
 
 ### 2. Fehlende Kernfunktionen für den Praxisalltag
 

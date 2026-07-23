@@ -48,7 +48,11 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
         if (cancelled) return;
         setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === nodeId));
         setAssignments(assignmentsRes.results ?? assignmentsRes);
-        setAbsences(absencesRes.results ?? absencesRes);
+        // Nur genehmigte Absenzen blockieren/zeigen sich im Grid (siehe
+        // ShiftAssignment._check_no_absence_conflict im Backend) -- offene
+        // Anträge sieht man im Tab "Abwesenheiten", nicht hier.
+        const absenceList = absencesRes.results ?? absencesRes;
+        setAbsences(absenceList.filter((a) => a.status === "approved"));
       })
       .catch((e) => onError(e.message))
       .finally(() => !cancelled && setLoading(false));

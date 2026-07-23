@@ -98,7 +98,11 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
 class AbsenceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Absence
-        fields = ["id", "employee", "start_date", "end_date", "type", "note"]
+        fields = ["id", "employee", "start_date", "end_date", "type", "status", "note"]
+        # status wird nicht direkt gesetzt, sondern über perform_create
+        # (Admin/Planer -> sofort APPROVED, sonst PENDING) bzw. die
+        # approve/reject-Actions (siehe AbsenceViewSet, Block 2.3).
+        read_only_fields = ["status"]
 
     def validate(self, attrs):
         instance = self.instance or Absence()

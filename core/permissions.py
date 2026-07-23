@@ -38,13 +38,17 @@ class IsTenantManager(BasePermission):
 
 class OwnEmployeeRecordPermission(BasePermission):
     """
-    Für Absenzen: Admin/Planer dürfen alles. Mitarbeitende dürfen lesen und
-    für sich selbst (Employee.user == request.user, siehe
-    request.employee_profile) Absenzen anlegen/ändern/löschen. HR bleibt
-    aussen vor (nur Reporting). Die Objekt-Prüfung (has_object_permission)
-    greift bei update/partial_update/destroy; die Prüfung, für WEN eine neue
-    Absenz angelegt wird, passiert zusätzlich in AbsenceViewSet.perform_create
-    (das Objekt existiert bei create ja noch nicht).
+    Für Absenzen: Admin/Planer dürfen alles, inkl. der Genehmigungs-Actions
+    `approve`/`reject` (Block 2.3) -- die bleiben Mitarbeitenden immer
+    verwehrt, unabhängig von Eigentümerschaft, sonst könnte man seine eigene
+    Absenz selbst genehmigen. Mitarbeitende dürfen lesen und für sich selbst
+    (Employee.user == request.user, siehe request.employee_profile) Absenzen
+    anlegen sowie ändern/löschen, SOLANGE die Absenz noch nicht entschieden
+    ist (status == PENDING) -- eine bereits genehmigte/abgelehnte Absenz ist
+    für die Mitarbeiter-Rolle nur noch lesbar. HR bleibt aussen vor (nur
+    Reporting). Die Prüfung, für WEN eine neue Absenz angelegt wird, passiert
+    zusätzlich in AbsenceViewSet.perform_create (das Objekt existiert bei
+    create ja noch nicht).
     """
 
     def has_permission(self, request, view):
@@ -61,20 +65,28 @@ class OwnEmployeeRecordPermission(BasePermission):
         membership = getattr(request, "membership", None)
         if membership and membership.role in MANAGER_ROLES:
             return True
+        if view.action in ("approve", "reject"):
+            return False
         employee_profile = getattr(request, "employee_profile", None)
-        return bool(employee_profile and obj.employee_id == employee_profile.id)
+        if not employee_profile or obj.employee_id != employee_profile.id:
+            return False
+        return obj.status == "pending"  # Absence.Status.PENDING
 
 
 class ShiftTradeRequestPermission(BasePermission):
     """
-    Admin/Planer dürfen alles. Mitarbeitende dürfen lesen, eigene
+    Admin/Planer dürfen alles, inkl. der Genehmigungs-Actions
+    `approve`/`reject` (Block 2.3), die Mitarbeitenden immer verwehrt
+    bleiben (fallen unten durch auf `return False`, da sie in keiner der
+    Mitarbeiter-Bedingungen auftauchen). Mitarbeitende dürfen lesen, eigene
     Tauschangebote erstellen (Prüfung in ShiftTradeRequestViewSet.perform_create,
-    das Objekt existiert bei create noch nicht) und über die Custom-Actions
-    reagieren: `cancel` nur als anbietende Person (requester_assignment),
-    `accept`/`decline` nur als Zielperson (target_employee). Direktes
-    update/partial_update/destroy ist niemandem ausser Admin/Planer erlaubt
-    -- Statusänderungen laufen ausschliesslich über die Actions, damit die
-    Regel-Engine in ShiftTradeRequest.accept() garantiert durchlaufen wird.
+    das Objekt existiert bei create noch nicht) und über die übrigen
+    Custom-Actions reagieren: `cancel` nur als anbietende Person
+    (requester_assignment), `accept`/`decline` nur als Zielperson
+    (target_employee). Direktes update/partial_update/destroy ist niemandem
+    ausser Admin/Planer erlaubt -- Statusänderungen laufen ausschliesslich
+    über die Actions, damit die Regel-Engine in ShiftTradeRequest.approve()
+    garantiert durchlaufen wird.
     """
 
     def has_permission(self, request, view):

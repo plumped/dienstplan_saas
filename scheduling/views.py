@@ -158,12 +158,16 @@ class AbsenceViewSet(TenantScopedViewSet):
     """
     Unterstützt ?employee=<id>, um die Abwesenheiten eines Mitarbeiters zu laden.
 
-    Admin/Planer dürfen Absenzen für jeden anlegen/ändern/löschen.
-    Mitarbeitende dürfen nur für sich selbst (request.employee_profile)
-    schreiben -- durchgesetzt hier in perform_create (das Objekt existiert
-    bei create noch nicht, deshalb reicht has_object_permission allein
-    nicht) sowie über OwnEmployeeRecordPermission.has_object_permission für
-    update/destroy. HR ist aussen vor (nur Reporting).
+    Admin/Planer dürfen Absenzen für jeden anlegen/ändern/löschen; von ihnen
+    angelegte Absenzen sind sofort APPROVED (die Freigabe ist durch die
+    anlegende Rolle bereits impliziert). Mitarbeitende dürfen nur für sich
+    selbst (request.employee_profile) schreiben -- durchgesetzt hier in
+    perform_create (das Objekt existiert bei create noch nicht, deshalb
+    reicht has_object_permission allein nicht) sowie über
+    OwnEmployeeRecordPermission.has_object_permission für update/destroy;
+    ihre Absenzen starten als PENDING (Model-Default) und brauchen
+    approve()/reject() durch Admin/Planer (Block 2.3). HR ist aussen vor
+    (nur Reporting).
     """
 
     permission_classes = [permissions.IsAuthenticated, OwnEmployeeRecordPermission]
@@ -178,27 +182,51 @@ class AbsenceViewSet(TenantScopedViewSet):
         return qs
 
     def perform_create(self, serializer):
-        if self.request.membership.role == Membership.Role.EMPLOYEE:
+        is_manager = self.request.membership.role in (Membership.Role.ADMIN, Membership.Role.PLANNER)
+        if not is_manager:
             target_employee = serializer.validated_data.get("employee")
             employee_profile = self.request.employee_profile
             if not employee_profile or target_employee.id != employee_profile.id:
                 raise PermissionDenied("Mitarbeitende dürfen nur eigene Absenzen anlegen.")
-        super().perform_create(serializer)
+        serializer.save(
+            tenant=self.request.tenant,
+            status=Absence.Status.APPROVED if is_manager else Absence.Status.PENDING,
+        )
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        absence = self.get_object()
+        if absence.status != Absence.Status.PENDING:
+            raise ValidationError("Nur offene Absenzanträge können genehmigt werden.")
+        absence.status = Absence.Status.APPROVED
+        absence.save(update_fields=["status"])
+        return Response(self.get_serializer(absence).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        absence = self.get_object()
+        if absence.status != Absence.Status.PENDING:
+            raise ValidationError("Nur offene Absenzanträge können abgelehnt werden.")
+        absence.status = Absence.Status.REJECTED
+        absence.save(update_fields=["status"])
+        return Response(self.get_serializer(absence).data)
 
 
 class ShiftTradeRequestViewSet(TenantScopedViewSet):
     """
-    Diensttausch-Anfragen (Abschnitt 7). Die eigentliche Umsetzung des
-    Tauschs läuft über die Custom-Action `accept`, nicht über ein PATCH auf
-    `status`, damit die volle Regel-Engine (siehe ShiftTradeRequest.accept())
-    dabei zwingend durchlaufen wird statt sich auf Client-Disziplin zu
-    verlassen.
+    Diensttausch-Anfragen (Abschnitt 7). Zweistufiger Genehmigungs-Workflow
+    (Block 2.3, siehe ShiftTradeRequest-Docstring): `accept` (Zielperson)
+    markiert nur die Zustimmung, `approve` (Admin/Planer) vollzieht den
+    Tausch tatsächlich -- nicht über ein PATCH auf `status`, damit die volle
+    Regel-Engine (siehe ShiftTradeRequest.approve()) dabei zwingend
+    durchlaufen wird statt sich auf Client-Disziplin zu verlassen.
 
-    Admin/Planer dürfen alles. Mitarbeitende dürfen nur eigene Schichten zum
-    Tausch anbieten (geprüft in perform_create) und über die Actions
-    reagieren -- `cancel` als anbietende Person, `accept`/`decline` als
-    Zielperson (geprüft in ShiftTradeRequestPermission.has_object_permission,
-    da get_object() in jeder Action aufgerufen wird).
+    Admin/Planer dürfen alles, inkl. approve/reject. Mitarbeitende dürfen
+    nur eigene Schichten zum Tausch anbieten (geprüft in perform_create) und
+    über die übrigen Actions reagieren -- `cancel` als anbietende Person,
+    `accept`/`decline` als Zielperson (geprüft in
+    ShiftTradeRequestPermission.has_object_permission, da get_object() in
+    jeder Action aufgerufen wird).
     """
 
     permission_classes = [permissions.IsAuthenticated, ShiftTradeRequestPermission]
@@ -220,9 +248,30 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):
+        """Zielperson stimmt zu -- vollzieht den Tausch noch nicht, siehe `approve`."""
         trade_request = self.get_object()
         try:
             trade_request.accept()
+        except DjangoValidationError as e:
+            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
+        return Response(self.get_serializer(trade_request).data)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        """Admin/Planer-Freigabe -- vollzieht den Tausch (siehe ShiftTradeRequest.approve())."""
+        trade_request = self.get_object()
+        try:
+            trade_request.approve()
+        except DjangoValidationError as e:
+            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
+        return Response(self.get_serializer(trade_request).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        """Admin/Planer lehnt ab (zu unterscheiden von `decline`, das die Zielperson selbst auslöst)."""
+        trade_request = self.get_object()
+        try:
+            trade_request.reject()
         except DjangoValidationError as e:
             raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
         return Response(self.get_serializer(trade_request).data)
@@ -240,8 +289,11 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
         trade_request = self.get_object()
-        if trade_request.status != ShiftTradeRequest.Status.PENDING:
-            raise ValidationError("Nur offene Tauschanfragen können zurückgezogen werden.")
+        if trade_request.status not in (
+            ShiftTradeRequest.Status.PENDING,
+            ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED,
+        ):
+            raise ValidationError("Nur offene oder angenommene Tauschanfragen können zurückgezogen werden.")
         trade_request.status = ShiftTradeRequest.Status.CANCELLED
         trade_request.resolved_at = timezone.now()
         trade_request.save(update_fields=["status", "resolved_at"])

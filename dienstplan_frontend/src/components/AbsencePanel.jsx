@@ -10,6 +10,12 @@ const TYPE_OPTIONS = [
 
 const TYPE_LABELS = Object.fromEntries(TYPE_OPTIONS.map((t) => [t.value, t.label]));
 
+const STATUS_LABELS = {
+  pending: "Offen",
+  approved: "Genehmigt",
+  rejected: "Abgelehnt",
+};
+
 function emptyForm(defaultEmployeeId) {
   return {
     employee: defaultEmployeeId ?? "",
@@ -86,6 +92,24 @@ export default function AbsencePanel({ employees, me, onError }) {
     try {
       await api.deleteAbsence(id);
       setAbsences((prev) => prev.filter((a) => a.id !== id));
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
+  async function handleApprove(id) {
+    try {
+      const updated = await api.approveAbsence(id);
+      setAbsences((prev) => prev.map((a) => (a.id === id ? updated : a)));
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
+  async function handleReject(id) {
+    try {
+      const updated = await api.rejectAbsence(id);
+      setAbsences((prev) => prev.map((a) => (a.id === id ? updated : a)));
     } catch (e) {
       onError(e.message);
     }
@@ -184,24 +208,41 @@ export default function AbsencePanel({ employees, me, onError }) {
         ) : (
           <ul className="entry-list">
             {absences.map((a) => {
-              const canDelete = canManage || (a.employee === ownEmployeeId && ownEmployeeId !== null);
+              const isOwnPending =
+                a.status === "pending" && a.employee === ownEmployeeId && ownEmployeeId !== null;
+              const canDelete = canManage || isOwnPending;
               return (
                 <li key={a.id} className="entry-list-item">
                   <span className={`type-badge type-badge--${a.type}`}>{TYPE_LABELS[a.type] ?? a.type}</span>
+                  <span className={`status-badge status-badge--${a.status}`}>
+                    {STATUS_LABELS[a.status] ?? a.status}
+                  </span>
                   <span className="entry-main">
                     <strong>{employeeName(a.employee)}</strong> · {a.start_date} – {a.end_date}
                     {a.note && <span className="entry-note"> · {a.note}</span>}
                   </span>
-                  {canDelete && (
-                    <button
-                      type="button"
-                      className="btn-ghost"
-                      onClick={() => handleDelete(a.id)}
-                      aria-label="Abwesenheit löschen"
-                    >
-                      Löschen
-                    </button>
-                  )}
+                  <span className="entry-actions">
+                    {canManage && a.status === "pending" && (
+                      <>
+                        <button type="button" onClick={() => handleApprove(a.id)}>
+                          Genehmigen
+                        </button>
+                        <button type="button" className="btn-ghost" onClick={() => handleReject(a.id)}>
+                          Ablehnen
+                        </button>
+                      </>
+                    )}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={() => handleDelete(a.id)}
+                        aria-label="Abwesenheit löschen"
+                      >
+                        Löschen
+                      </button>
+                    )}
+                  </span>
                 </li>
               );
             })}

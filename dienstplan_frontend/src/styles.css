@@ -697,7 +697,13 @@ thead .col-employee {
   color: var(--primary);
 }
 
-.status-badge--accepted {
+.status-badge--employee_accepted {
+  background: #fff4e0;
+  color: #a15c00;
+}
+
+.status-badge--accepted,
+.status-badge--approved {
   background: #e3f3e6;
   color: #2e7d32;
 }
@@ -706,6 +712,11 @@ thead .col-employee {
 .status-badge--cancelled {
   background: #eee;
   color: var(--ink-muted);
+}
+
+.status-badge--rejected {
+  background: var(--warn-soft);
+  color: var(--warn);
 }
 
 @media (max-width: 640px) {

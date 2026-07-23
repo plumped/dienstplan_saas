@@ -87,18 +87,25 @@ ihre eigene per `migrate`.
   Greift über die API, weil `ShiftAssignmentSerializer.validate()` `clean()` aufruft — nicht nur
   im Admin.
 
-- **Absenzen** (`Absence`, Abschnitt 6): Ferien/Krankheit/Sonstiges pro Mitarbeiter und
-  Zeitraum. Blockiert überlappende `ShiftAssignment`s über die Regel-Engine.
+- **Absenzen** (`Absence`, Abschnitt 6, Genehmigungs-Workflow siehe Block 2.3): Ferien/Krankheit/
+  Sonstiges pro Mitarbeiter und Zeitraum, mit `status` (PENDING/APPROVED/REJECTED). Von
+  Mitarbeitenden erstellte Absenzen starten als PENDING und brauchen `POST
+  /api/absences/<id>/approve|reject/` durch Admin/Planer; von Admin/Planer selbst erstellte sind
+  sofort APPROVED (`AbsenceViewSet.perform_create`). Nur **APPROVED**-Absenzen blockieren
+  überlappende `ShiftAssignment`s über die Regel-Engine (`_check_no_absence_conflict`) -- ein
+  offener Antrag schränkt die Planung noch nicht ein.
 
-- **Diensttausch** (`ShiftTradeRequest`, Abschnitt 7): ein Mitarbeiter bietet eine eigene Schicht
-  entweder zur einfachen Übernahme an (`target_assignment` leer) oder als echten Tausch gegen
-  eine konkrete Schicht von `target_employee` (`target_assignment` gesetzt). Der eigentliche
-  Tausch läuft **nicht** über ein PATCH auf `status`, sondern über die Custom-Actions
-  `POST /api/shift-trade-requests/<id>/accept|decline|cancel/` — `accept()` durchläuft dabei
-  zwingend die volle Regel-Engine für die resultierende(n) Zuweisung(en) und bleibt bei einem
-  Konflikt (z. B. Ruhezeit) auf `pending`, ohne etwas zu ändern. Bewusst kein
-  Genehmigungs-Workflow durch Vorgesetzte (siehe [MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife),
-  Block 2.3).
+- **Diensttausch** (`ShiftTradeRequest`, Abschnitt 7, Genehmigungs-Workflow siehe Block 2.3): ein
+  Mitarbeiter bietet eine eigene Schicht entweder zur einfachen Übernahme an (`target_assignment`
+  leer) oder als echten Tausch gegen eine konkrete Schicht von `target_employee`
+  (`target_assignment` gesetzt). Zweistufig: `POST .../accept/` durch die Zielperson markiert nur
+  die Zustimmung (Status `employee_accepted`), vollzieht **noch keinen** Tausch. Erst `POST
+  .../approve/` durch Admin/Planer vollzieht ihn tatsächlich (`ShiftTradeRequest.approve()`) und
+  durchläuft dabei zwingend die volle Regel-Engine für die resultierende(n) Zuweisung(en) --
+  bleibt sie erfolglos (z. B. Ruhezeit-Konflikt), bleibt die Anfrage im bisherigen Status stehen,
+  ohne etwas zu ändern. `approve()` kann auch direkt aus `pending` aufgerufen werden, falls
+  Admin/Planer die Zustimmung z. B. telefonisch eingeholt haben. `POST .../reject/` (Admin/Planer)
+  lehnt ab und ist von `decline/` (Zielperson lehnt selbst ab) zu unterscheiden.
 
 - **Rollenbasierte Berechtigungen** (`core.permissions`, Abschnitt 10): `Membership.role`
   (Admin/Planer/Mitarbeiter/HR) wird jetzt durchgesetzt, nicht nur gespeichert. Lesen ist für
@@ -139,11 +146,15 @@ Klick + Dropdown auch:
   denselben Plan nur lesend (Zellen als `<span>` statt `<button>`, kein Klick, kein Drag, kein
   Wochenmuster-Button) -- ausser dem ⇄-Symbol auf den **eigenen** Schichten, um sie zum Tausch
   anzubieten. Im Tab "Abwesenheiten" ist das Mitarbeiter-Feld im Formular auf die eigene Person
-  gesperrt, und der "Löschen"-Button erscheint nur bei eigenen Einträgen. Im Tab "Diensttausch"
-  erscheinen Annehmen/Ablehnen nur bei Angeboten, deren Zielperson man selbst ist, Zurückziehen
-  nur bei selbst erstellten Angeboten. HR sieht überall nur Lesezugriff, keine
+  gesperrt, und der "Löschen"-Button erscheint nur bei eigenen **offenen** Einträgen. Im Tab
+  "Diensttausch" erscheinen Annehmen/Ablehnen nur bei Angeboten, deren Zielperson man selbst ist,
+  Zurückziehen nur bei selbst erstellten Angeboten. HR sieht überall nur Lesezugriff, keine
   Bearbeitungs-Buttons. Das Frontend blendet damit nur Bedienelemente aus, die der Server über
   `core.permissions` ohnehin mit 403 ablehnen würde -- die eigentliche Absicherung bleibt serverseitig.
+- **Genehmigungs-Workflow** (Block 2.3): Admin/Planer sehen bei offenen Absenzanträgen und
+  Diensttausch-Angeboten zusätzlich "Genehmigen"/"Freigeben" und "Ablehnen"-Buttons. Im Planblatt
+  werden nur genehmigte Absenzen als Sperr-Chip angezeigt -- ein offener Antrag taucht nur im Tab
+  "Abwesenheiten" auf, blockiert das Grid aber (noch) nicht.
 
 ## MVP-Fahrplan bis zur Marktreife
 
@@ -209,9 +220,11 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    mit Selbstbedienung für eigene Absenzen/eigenen Diensttausch, HR nur Lesezugriff (siehe
    Frontend-Abschnitt oben). *Noch offen*: keine dedizierte mobile Ansicht (das bestehende Grid
    ist responsive genug für Desktop/Tablet, aber nicht für schmale Phone-Screens optimiert).
-3. **Genehmigungs-Workflows**: Absenzen (aktuell: sofort wirksam, keine Freigabe durch
-   Vorgesetzte) und Diensttausch (aktuell: `accept` direkt durch den Zielmitarbeiter) brauchen
-   für den Praxisbetrieb eine Planer-Freigabe-Stufe.
+3. ✅ **Genehmigungs-Workflows**: Absenzen (`Absence.status`: PENDING/APPROVED/REJECTED,
+   `AbsenceViewSet.approve/reject`) und Diensttausch (`ShiftTradeRequest`: `accept` markiert nur
+   die Zustimmung der Zielperson, `approve`/`reject` durch Admin/Planer vollziehen/verwerfen den
+   Tausch tatsächlich) haben jetzt eine Planer-Freigabe-Stufe. Details siehe Architektur-Abschnitt
+   oben (Absenzen/Diensttausch) und Frontend-Abschnitt (Genehmigungs-Workflow).
 4. **Benachrichtigungen** (mind. E-Mail) bei neuer Absenz-/Tauschanfrage, Genehmigung/Ablehnung
    und Veröffentlichung eines neuen Monatsplans.
 5. **Export** (PDF/Excel) des Monatsplans — für Aushang in der Praxis und Übergabe an externe

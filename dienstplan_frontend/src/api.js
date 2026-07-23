@@ -74,6 +74,8 @@ export const api = {
     request(employeeId ? `/absences/?employee=${employeeId}` : "/absences/"),
   createAbsence: (payload) => request("/absences/", { method: "POST", body: payload }),
   deleteAbsence: (id) => request(`/absences/${id}/`, { method: "DELETE" }),
+  approveAbsence: (id) => request(`/absences/${id}/approve/`, { method: "POST" }),
+  rejectAbsence: (id) => request(`/absences/${id}/reject/`, { method: "POST" }),
 
   getShiftTradeRequests: () => request("/shift-trade-requests/"),
   createShiftTradeRequest: (payload) =>
@@ -84,4 +86,8 @@ export const api = {
     request(`/shift-trade-requests/${id}/decline/`, { method: "POST" }),
   cancelShiftTradeRequest: (id) =>
     request(`/shift-trade-requests/${id}/cancel/`, { method: "POST" }),
+  approveShiftTradeRequest: (id) =>
+    request(`/shift-trade-requests/${id}/approve/`, { method: "POST" }),
+  rejectShiftTradeRequest: (id) =>
+    request(`/shift-trade-requests/${id}/reject/`, { method: "POST" }),
 };

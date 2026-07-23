@@ -4,9 +4,11 @@ import { canManageSchedule } from "../roles.js";
 
 const STATUS_LABELS = {
   pending: "Offen",
-  accepted: "Angenommen",
+  employee_accepted: "Angenommen, wartet auf Freigabe",
+  accepted: "Freigegeben",
   declined: "Abgelehnt",
   cancelled: "Zurückgezogen",
+  rejected: "Von Planer abgelehnt",
 };
 
 export default function TradeRequestPanel({ me, onError }) {
@@ -98,13 +100,15 @@ export default function TradeRequestPanel({ me, onError }) {
           <ul className="entry-list">
             {requests.map((r) => {
               const requesterAssignment = assignmentsById.get(r.requester_assignment);
+              const isOpen = r.status === "pending" || r.status === "employee_accepted";
               // Deckt sich mit core.permissions.ShiftTradeRequestPermission im
-              // Backend: nur Zielperson darf annehmen/ablehnen, nur die
-              // anbietende Person darf zurückziehen (Admin/Planer dürfen immer).
-              const isTarget = canManage || (ownEmployeeId !== null && r.target_employee === ownEmployeeId);
-              const isRequester =
-                canManage ||
-                (ownEmployeeId !== null && requesterAssignment?.employee === ownEmployeeId);
+              // Backend: Admin/Planer geben frei/lehnen ab (approve/reject),
+              // die Zielperson nimmt nur an/lehnt ab (accept/decline), die
+              // anbietende Person zieht nur zurück (cancel) -- nie beides.
+              const isEmployeeTarget =
+                !canManage && ownEmployeeId !== null && r.target_employee === ownEmployeeId;
+              const isEmployeeRequester =
+                !canManage && ownEmployeeId !== null && requesterAssignment?.employee === ownEmployeeId;
               return (
                 <li key={r.id} className="entry-list-item entry-list-item--trade">
                   <span className={`status-badge status-badge--${r.status}`}>
@@ -119,37 +123,54 @@ export default function TradeRequestPanel({ me, onError }) {
                     )}
                     {r.note && <span className="entry-note"> · {r.note}</span>}
                   </span>
-                  {r.status === "pending" && (isTarget || isRequester) && (
+                  {canManage && isOpen && (
                     <span className="entry-actions">
-                      {isTarget && (
-                        <>
-                          <button
-                            type="button"
-                            disabled={busyId === r.id}
-                            onClick={() => runAction(r.id, api.acceptShiftTradeRequest)}
-                          >
-                            Annehmen
-                          </button>
-                          <button
-                            type="button"
-                            className="btn-ghost"
-                            disabled={busyId === r.id}
-                            onClick={() => runAction(r.id, api.declineShiftTradeRequest)}
-                          >
-                            Ablehnen
-                          </button>
-                        </>
-                      )}
-                      {isRequester && (
-                        <button
-                          type="button"
-                          className="btn-ghost"
-                          disabled={busyId === r.id}
-                          onClick={() => runAction(r.id, api.cancelShiftTradeRequest)}
-                        >
-                          Zurückziehen
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        disabled={busyId === r.id}
+                        onClick={() => runAction(r.id, api.approveShiftTradeRequest)}
+                      >
+                        Freigeben
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        disabled={busyId === r.id}
+                        onClick={() => runAction(r.id, api.rejectShiftTradeRequest)}
+                      >
+                        Ablehnen
+                      </button>
+                    </span>
+                  )}
+                  {r.status === "pending" && isEmployeeTarget && (
+                    <span className="entry-actions">
+                      <button
+                        type="button"
+                        disabled={busyId === r.id}
+                        onClick={() => runAction(r.id, api.acceptShiftTradeRequest)}
+                      >
+                        Annehmen
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        disabled={busyId === r.id}
+                        onClick={() => runAction(r.id, api.declineShiftTradeRequest)}
+                      >
+                        Ablehnen
+                      </button>
+                    </span>
+                  )}
+                  {isOpen && isEmployeeRequester && (
+                    <span className="entry-actions">
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        disabled={busyId === r.id}
+                        onClick={() => runAction(r.id, api.cancelShiftTradeRequest)}
+                      >
+                        Zurückziehen
+                      </button>
                     </span>
                   )}
                 </li>

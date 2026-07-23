@@ -350,6 +350,7 @@ class RuleEngineTests(TestCase):
             start_date=date(2026, 8, 1),
             end_date=date(2026, 8, 10),
             type=Absence.Type.VACATION,
+            status=Absence.Status.APPROVED,
         )
         assignment = ShiftAssignment(
             tenant=self.tenant,
@@ -369,6 +370,7 @@ class RuleEngineTests(TestCase):
             employee=self.employee,
             start_date=date(2026, 8, 1),
             end_date=date(2026, 8, 10),
+            status=Absence.Status.APPROVED,
         )
         from unittest.mock import MagicMock
 
@@ -731,7 +733,9 @@ class ShiftTradeRequestTests(TestCase):
         with self.assertRaises(ValidationError):
             trade.clean()
 
-    def test_accept_simple_handoff_reassigns_employee(self):
+    def test_accept_marks_employee_accepted_without_swapping(self):
+        # accept() ist nur die Zustimmung der Zielperson (Block 2.3) -- der
+        # eigentliche Tausch passiert erst in approve() durch Admin/Planer.
         trade = ShiftTradeRequest.objects.create(
             tenant=self.tenant,
             requester_assignment=self.assignment_1,
@@ -741,11 +745,41 @@ class ShiftTradeRequestTests(TestCase):
 
         trade.refresh_from_db()
         self.assignment_1.refresh_from_db()
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED)
+        self.assertIsNone(trade.resolved_at)
+        self.assertEqual(self.assignment_1.employee_id, self.employee_1.id)
+
+    def test_approve_after_accept_reassigns_employee(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.accept()
+        trade.approve()
+
+        trade.refresh_from_db()
+        self.assignment_1.refresh_from_db()
         self.assertEqual(trade.status, ShiftTradeRequest.Status.ACCEPTED)
         self.assertIsNotNone(trade.resolved_at)
         self.assertEqual(self.assignment_1.employee_id, self.employee_2.id)
 
-    def test_accept_full_swap_exchanges_employees(self):
+    def test_approve_directly_from_pending(self):
+        # Admin/Planer können die Zustimmung der Zielperson überspringen
+        # (z. B. telefonisch eingeholt) und direkt aus PENDING freigeben.
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.approve()
+
+        trade.refresh_from_db()
+        self.assignment_1.refresh_from_db()
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.ACCEPTED)
+        self.assertEqual(self.assignment_1.employee_id, self.employee_2.id)
+
+    def test_approve_full_swap_exchanges_employees(self):
         assignment_2 = ShiftAssignment.objects.create(
             tenant=self.tenant,
             employee=self.employee_2,
@@ -760,13 +794,14 @@ class ShiftTradeRequestTests(TestCase):
             target_assignment=assignment_2,
         )
         trade.accept()
+        trade.approve()
 
         self.assignment_1.refresh_from_db()
         assignment_2.refresh_from_db()
         self.assertEqual(self.assignment_1.employee_id, self.employee_2.id)
         self.assertEqual(assignment_2.employee_id, self.employee_1.id)
 
-    def test_accept_blocked_by_rule_engine_leaves_state_unchanged(self):
+    def test_approve_blocked_by_rule_engine_leaves_state_unchanged(self):
         skill = Skill.objects.create(tenant=self.tenant, name="Nachtdienst-berechtigt")
         self.template.required_skill = skill
         self.template.save()
@@ -778,12 +813,13 @@ class ShiftTradeRequestTests(TestCase):
             requester_assignment=self.assignment_1,
             target_employee=self.employee_2,
         )
+        trade.accept()
         with self.assertRaises(ValidationError):
-            trade.accept()
+            trade.approve()
 
         trade.refresh_from_db()
         self.assignment_1.refresh_from_db()
-        self.assertEqual(trade.status, ShiftTradeRequest.Status.PENDING)
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED)
         self.assertEqual(self.assignment_1.employee_id, self.employee_1.id)
 
     def test_accept_twice_is_rejected(self):
@@ -795,6 +831,42 @@ class ShiftTradeRequestTests(TestCase):
         trade.accept()
         with self.assertRaises(ValidationError):
             trade.accept()
+
+    def test_reject_by_planner(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.reject()
+
+        trade.refresh_from_db()
+        self.assignment_1.refresh_from_db()
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.REJECTED)
+        self.assertIsNotNone(trade.resolved_at)
+        self.assertEqual(self.assignment_1.employee_id, self.employee_1.id)
+
+    def test_reject_after_employee_accepted(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.accept()
+        trade.reject()
+
+        trade.refresh_from_db()
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.REJECTED)
+
+    def test_reject_already_accepted_trade_is_rejected(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.approve()
+        with self.assertRaises(ValidationError):
+            trade.reject()
 
 
 class ShiftTradeRequestAPITests(APITestCase):
@@ -825,7 +897,7 @@ class ShiftTradeRequestAPITests(APITestCase):
         token, _ = Token.objects.get_or_create(user=self.user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
 
-    def test_accept_endpoint_reassigns_and_returns_updated_status(self):
+    def test_accept_endpoint_marks_employee_accepted(self):
         create_response = self.client.post(
             "/api/shift-trade-requests/",
             {"requester_assignment": self.assignment.id, "target_employee": self.employee_2.id},
@@ -835,10 +907,53 @@ class ShiftTradeRequestAPITests(APITestCase):
 
         accept_response = self.client.post(f"/api/shift-trade-requests/{trade_id}/accept/")
         self.assertEqual(accept_response.status_code, status.HTTP_200_OK)
-        self.assertEqual(accept_response.data["status"], "accepted")
+        self.assertEqual(accept_response.data["status"], "employee_accepted")
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.employee_id, self.employee_1.id)
+
+    def test_approve_endpoint_reassigns_and_returns_updated_status(self):
+        create_response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": self.assignment.id, "target_employee": self.employee_2.id},
+        )
+        trade_id = create_response.data["id"]
+        self.client.post(f"/api/shift-trade-requests/{trade_id}/accept/")
+
+        approve_response = self.client.post(f"/api/shift-trade-requests/{trade_id}/approve/")
+        self.assertEqual(approve_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(approve_response.data["status"], "accepted")
 
         self.assignment.refresh_from_db()
         self.assertEqual(self.assignment.employee_id, self.employee_2.id)
+
+    def test_approve_endpoint_works_directly_from_pending(self):
+        create_response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": self.assignment.id, "target_employee": self.employee_2.id},
+        )
+        trade_id = create_response.data["id"]
+
+        approve_response = self.client.post(f"/api/shift-trade-requests/{trade_id}/approve/")
+        self.assertEqual(approve_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(approve_response.data["status"], "accepted")
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.employee_id, self.employee_2.id)
+
+    def test_reject_endpoint(self):
+        create_response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": self.assignment.id, "target_employee": self.employee_2.id},
+        )
+        trade_id = create_response.data["id"]
+
+        reject_response = self.client.post(f"/api/shift-trade-requests/{trade_id}/reject/")
+        self.assertEqual(reject_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(reject_response.data["status"], "rejected")
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.employee_id, self.employee_1.id)
 
     def test_decline_endpoint_leaves_assignment_untouched(self):
         create_response = self.client.post(
@@ -1064,3 +1179,75 @@ class RoleBasedPermissionTests(APITestCase):
             self.client.post(f"/api/shift-trade-requests/{trade.id}/accept/").status_code,
             status.HTTP_200_OK,
         )
+
+    def test_only_manager_can_approve_or_reject_trade(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.alice_assignment, target_employee=self.bob
+        )
+        # Bob ist die Zielperson, darf aber trotzdem nicht selbst freigeben/ablehnen --
+        # das bleibt Admin/Planer vorbehalten (Block 2.3).
+        self.auth_as(self.bob_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/approve/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/reject/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        self.auth_as(self.planner_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/approve/").status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_employee_cannot_approve_or_reject_own_absence(self):
+        absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2)
+        )
+        self.auth_as(self.alice_user)
+        self.assertEqual(
+            self.client.post(f"/api/absences/{absence.id}/approve/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.post(f"/api/absences/{absence.id}/reject/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_planner_can_approve_absence(self):
+        absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2)
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/absences/{absence.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "approved")
+
+    def test_employee_created_absence_starts_pending_planner_created_is_approved(self):
+        self.auth_as(self.alice_user)
+        employee_response = self.client.post(
+            "/api/absences/",
+            {"employee": self.alice.id, "start_date": "2026-09-10", "end_date": "2026-09-11", "type": "vacation"},
+        )
+        self.assertEqual(employee_response.data["status"], "pending")
+
+        self.auth_as(self.planner_user)
+        planner_response = self.client.post(
+            "/api/absences/",
+            {"employee": self.bob.id, "start_date": "2026-09-10", "end_date": "2026-09-11", "type": "vacation"},
+        )
+        self.assertEqual(planner_response.data["status"], "approved")
+
+    def test_employee_cannot_edit_own_absence_once_decided(self):
+        absence = Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 2),
+            status=Absence.Status.APPROVED,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.delete(f"/api/absences/{absence.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

@@ -103,17 +103,32 @@ class Employee(TenantScopedModel):
 
 
 class Absence(TenantScopedModel):
-    """Ferien/Krankheit/Sonstiges (Abschnitt 6). Blockiert Schichtzuweisungen im überlappenden Zeitraum."""
+    """
+    Ferien/Krankheit/Sonstiges (Abschnitt 6). Blockiert Schichtzuweisungen im
+    überlappenden Zeitraum -- aber nur, solange sie APPROVED ist (siehe
+    _check_no_absence_conflict auf ShiftAssignment). Genehmigungs-Workflow
+    (MVP-Fahrplan, Block 2.3): Von Mitarbeitenden erstellte Absenzen starten
+    als PENDING und müssen von Admin/Planer freigegeben werden
+    (AbsenceViewSet.approve/reject); von Admin/Planer selbst erstellte
+    Absenzen sind sofort APPROVED (AbsenceViewSet.perform_create), weil die
+    Freigabe in dem Fall bereits durch die anlegende Person erfolgt ist.
+    """
 
     class Type(models.TextChoices):
         VACATION = "vacation", "Ferien"
         SICK = "sick", "Krankheit"
         OTHER = "other", "Sonstiges"
 
+    class Status(models.TextChoices):
+        PENDING = "pending", "Offen"
+        APPROVED = "approved", "Genehmigt"
+        REJECTED = "rejected", "Abgelehnt"
+
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="absences")
     start_date = models.DateField()
     end_date = models.DateField()
     type = models.CharField(max_length=20, choices=Type.choices, default=Type.VACATION)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     note = models.CharField(max_length=200, blank=True)
 
     history = HistoricalRecords()
@@ -385,14 +400,17 @@ class ShiftAssignment(TenantScopedModel):
             )
 
     def _check_no_absence_conflict(self):
+        # Nur genehmigte Absenzen blockieren -- ein offener (PENDING) Antrag
+        # soll die Planung nicht schon vor der Freigabe einschränken (Block 2.3).
         conflict = Absence.all_objects.filter(
             employee=self.employee,
+            status=Absence.Status.APPROVED,
             start_date__lte=self.date,
             end_date__gte=self.date,
         ).first()
         if conflict:
             raise ValidationError(
-                f"{self.employee} hat am {self.date} eine Abwesenheit "
+                f"{self.employee} hat am {self.date} eine genehmigte Abwesenheit "
                 f"({conflict.get_type_display()}, {conflict.start_date}–{conflict.end_date})."
             )
 
@@ -402,18 +420,30 @@ class ShiftTradeRequest(TenantScopedModel):
     Diensttausch (Abschnitt 7): ein Mitarbeiter bietet eine eigene Schicht an,
     entweder zur einfachen Übernahme durch target_employee (target_assignment
     leer) oder als echten Tausch gegen eine konkrete Schicht von
-    target_employee (target_assignment gesetzt). Bewusst ohne Genehmigungs-
-    Workflow durch Vorgesetzte (Abschnitt 7 erwähnt das als optionale
-    Erweiterung) -- accept() prüft aber die volle Regel-Engine (Ruhezeit,
-    Höchstarbeitszeit, Qualifikation, Absenzen) für die resultierende(n)
-    Zuweisung(en), bevor der Tausch tatsächlich vollzogen wird.
+    target_employee (target_assignment gesetzt).
+
+    Zweistufiger Genehmigungs-Workflow (MVP-Fahrplan, Block 2.3):
+    1. Die Zielperson stimmt über accept() zu -> Status EMPLOYEE_ACCEPTED.
+       Das vollzieht den Tausch NOCH NICHT.
+    2. Admin/Planer geben über approve() frei -> erst hier wird der Tausch
+       tatsächlich vollzogen, inkl. voller Regel-Engine-Prüfung (Ruhezeit,
+       Höchstarbeitszeit, Qualifikation, Absenzen) für die resultierende(n)
+       Zuweisung(en). approve() kann auch direkt aus PENDING aufgerufen
+       werden, falls Admin/Planer die Zustimmung z. B. telefonisch eingeholt
+       haben und nicht auf den Klick der Zielperson warten wollen.
+    reject() lehnt eine offene oder bereits von der Zielperson angenommene
+    Anfrage als Admin/Planer ab (z. B. wegen eines Konflikts, den nur der
+    Planer sieht) -- zu unterscheiden von decline() (Zielperson lehnt selbst
+    ab) und cancel() (anbietende Person zieht zurück).
     """
 
     class Status(models.TextChoices):
         PENDING = "pending", "Offen"
+        EMPLOYEE_ACCEPTED = "employee_accepted", "Von Mitarbeiter angenommen, wartet auf Freigabe"
         ACCEPTED = "accepted", "Angenommen"
         DECLINED = "declined", "Abgelehnt"
         CANCELLED = "cancelled", "Zurückgezogen"
+        REJECTED = "rejected", "Von Planer abgelehnt"
 
     requester_assignment = models.ForeignKey(
         ShiftAssignment, on_delete=models.CASCADE, related_name="trade_requests_as_source"
@@ -450,13 +480,23 @@ class ShiftTradeRequest(TenantScopedModel):
             raise ValidationError({"target_assignment": "Zielschicht gehört nicht zum Zielmitarbeiter."})
 
     def accept(self):
-        """
-        Vollzieht den Tausch. Wirft ValidationError (z. B. bei Ruhezeit- oder
-        Qualifikationskonflikt durch den Tausch), ohne etwas zu speichern --
-        die Anfrage bleibt dann 'pending' und der Planer sieht den Grund im UI.
-        """
+        """Zielperson stimmt zu. Vollzieht den Tausch noch NICHT -- das passiert erst in approve()."""
         if self.status != self.Status.PENDING:
             raise ValidationError("Nur offene Tauschanfragen können angenommen werden.")
+        self.status = self.Status.EMPLOYEE_ACCEPTED
+        self.save(update_fields=["status"])
+
+    def approve(self):
+        """
+        Admin/Planer-Freigabe: vollzieht den eigentlichen Tausch. Wirft
+        ValidationError (z. B. bei Ruhezeit- oder Qualifikationskonflikt
+        durch den Tausch), ohne etwas zu speichern -- die Anfrage bleibt
+        dann im bisherigen Status und der Planer sieht den Grund im UI.
+        """
+        if self.status not in (self.Status.PENDING, self.Status.EMPLOYEE_ACCEPTED):
+            raise ValidationError(
+                "Nur offene oder von der Zielperson angenommene Anfragen können freigegeben werden."
+            )
 
         with transaction.atomic():
             requester_assignment = ShiftAssignment.all_objects.select_for_update().get(
@@ -482,3 +522,13 @@ class ShiftTradeRequest(TenantScopedModel):
             self.status = self.Status.ACCEPTED
             self.resolved_at = timezone.now()
             self.save(update_fields=["status", "resolved_at"])
+
+    def reject(self):
+        """Admin/Planer lehnt eine offene oder von der Zielperson angenommene Anfrage ab."""
+        if self.status not in (self.Status.PENDING, self.Status.EMPLOYEE_ACCEPTED):
+            raise ValidationError(
+                "Nur offene oder von der Zielperson angenommene Anfragen können abgelehnt werden."
+            )
+        self.status = self.Status.REJECTED
+        self.resolved_at = timezone.now()
+        self.save(update_fields=["status", "resolved_at"])

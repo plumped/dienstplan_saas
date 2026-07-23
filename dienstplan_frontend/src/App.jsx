@@ -5,6 +5,7 @@ import LoginForm from "./components/LoginForm.jsx";
 import MonthNav from "./components/MonthNav.jsx";
 import NodeSelector from "./components/NodeSelector.jsx";
 import PlanGrid from "./components/PlanGrid.jsx";
+import TimeRecordPanel from "./components/TimeRecordPanel.jsx";
 import TradeRequestPanel from "./components/TradeRequestPanel.jsx";
 import { ROLE_LABELS } from "./roles.js";
 
@@ -12,6 +13,7 @@ const TABS = [
   { id: "grid", label: "Planblatt" },
   { id: "absences", label: "Abwesenheiten" },
   { id: "trades", label: "Diensttausch" },
+  { id: "timerecords", label: "Zeiterfassung" },
 ];
 
 function currentPeriod() {
@@ -103,7 +105,7 @@ export default function App() {
         </nav>
 
         {nodes.length > 0 && <NodeSelector nodes={nodes} value={nodeId} onChange={setNodeId} />}
-        {tab === "grid" && (
+        {(tab === "grid" || tab === "timerecords") && (
           <MonthNav
             year={period.year}
             month={period.month}
@@ -153,6 +155,16 @@ export default function App() {
             )}
             {tab === "absences" && <AbsencePanel employees={employees} me={me} onError={setError} />}
             {tab === "trades" && <TradeRequestPanel me={me} onError={setError} />}
+            {tab === "timerecords" && (
+              <TimeRecordPanel
+                nodeId={nodeId}
+                year={period.year}
+                month={period.month}
+                employees={employees}
+                me={me}
+                onError={setError}
+              />
+            )}
           </>
         )}
       </main>

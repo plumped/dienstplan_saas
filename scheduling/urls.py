@@ -7,6 +7,7 @@ from .views import (
     ShiftAssignmentViewSet,
     ShiftTradeRequestViewSet,
     SkillViewSet,
+    TimeRecordViewSet,
     TimeTemplateViewSet,
 )
 
@@ -18,5 +19,6 @@ router.register("time-templates", TimeTemplateViewSet, basename="timetemplate")
 router.register("shift-assignments", ShiftAssignmentViewSet, basename="shiftassignment")
 router.register("absences", AbsenceViewSet, basename="absence")
 router.register("shift-trade-requests", ShiftTradeRequestViewSet, basename="shifttraderequest")
+router.register("time-records", TimeRecordViewSet, basename="timerecord")
 
 urlpatterns = router.urls

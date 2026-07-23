@@ -49,6 +49,11 @@ class Tenant(models.Model):
         help_text="Maximale Tagesspanne von Arbeitsbeginn bis Arbeitsende inkl. Pausen, in Stunden "
         "(Art. 10 Abs. 3 ArG).",
     )
+    time_record_deviation_tolerance_minutes = models.PositiveSmallIntegerField(
+        default=15,
+        help_text="Ab dieser Abweichung (in Minuten) zwischen geplanter und tatsächlicher "
+        "Arbeitszeit verlangt die Ist-Zeiterfassung eine Begründung (scheduling.models.TimeRecord).",
+    )
 
     class Meta:
         ordering = ["name"]

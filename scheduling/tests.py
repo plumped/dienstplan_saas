@@ -3,6 +3,7 @@ from datetime import date, time, timedelta
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
@@ -16,6 +17,7 @@ from .models import (
     ShiftAssignment,
     ShiftTradeRequest,
     Skill,
+    TimeRecord,
     TimeTemplate,
 )
 
@@ -679,6 +681,141 @@ class AbsenceModelTests(TestCase):
             absence.clean()
 
 
+class TimeRecordTests(TestCase):
+    """Ist-Arbeitszeiterfassung (Art. 73 ArGV 1, MVP-Fahrplan Block 1.9)."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Fruehdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            break_minutes=30,
+        )
+        self.yesterday = timezone.localdate() - timedelta(days=1)
+        self.assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=self.yesterday, template=self.template
+        )
+
+    def test_valid_time_record_within_tolerance_passes_clean(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 5),
+            actual_end=time(15, 5),
+            actual_break_minutes=30,
+        )
+        record.clean()  # 5 Min. Abweichung, unter der Default-Toleranz von 15 Min.
+
+    def test_future_assignment_is_rejected(self):
+        tomorrow = timezone.localdate() + timedelta(days=1)
+        future_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=tomorrow, template=self.template
+        )
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=future_assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        with self.assertRaises(ValidationError):
+            record.clean()
+
+    def test_large_deviation_without_note_is_rejected(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 30),  # 30 Min. Abweichung > Default-Toleranz von 15 Min.
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        with self.assertRaises(ValidationError):
+            record.clean()
+
+    def test_large_deviation_with_note_passes(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 30),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+            note="Verspätung wegen Stau",
+        )
+        record.clean()  # keine Exception, Begründung vorhanden
+
+    def test_deviation_minutes_property(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 12),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        self.assertEqual(record.deviation_minutes, 12)
+
+    def test_actual_hours_property(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        self.assertEqual(record.actual_hours, 7.5)
+
+    def test_break_below_minimum_is_flagged(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=10,  # 8h brutto -> netto >7h verlangt 30 Min. Pause (Art. 15 ArG)
+            note="Pause verkürzt",
+        )
+        self.assertTrue(record.break_below_minimum)
+
+    def test_sufficient_break_is_not_flagged(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        self.assertFalse(record.break_below_minimum)
+
+    def test_confirm_transitions_status(self):
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        record.confirm()
+        record.refresh_from_db()
+        self.assertEqual(record.status, TimeRecord.Status.CONFIRMED)
+
+    def test_confirm_twice_is_rejected(self):
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        record.confirm()
+        with self.assertRaises(ValidationError):
+            record.confirm()
+
+
 class ShiftTradeRequestTests(TestCase):
     """Diensttausch: sowohl einfache Übernahme als auch echter Tausch, jeweils inkl. Regel-Engine."""
 
@@ -1013,6 +1150,15 @@ class RoleBasedPermissionTests(APITestCase):
         self.bob_assignment = ShiftAssignment.objects.create(
             tenant=self.tenant, employee=self.bob, node=self.node, date=date(2026, 8, 4), template=self.template
         )
+        # Für TimeRecord-Tests: eine bereits stattgefundene Schicht (TimeRecord.clean()
+        # lehnt Ist-Erfassung für Schichten in der Zukunft ab).
+        self.alice_past_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node,
+            date=timezone.localdate() - timedelta(days=1),
+            template=self.template,
+        )
 
     def auth_as(self, user):
         token, _ = Token.objects.get_or_create(user=user)
@@ -1250,4 +1396,77 @@ class RoleBasedPermissionTests(APITestCase):
         )
         self.auth_as(self.alice_user)
         response = self.client.delete(f"/api/absences/{absence.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_can_record_own_time_record(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/time-records/",
+            {
+                "assignment": self.alice_past_assignment.id,
+                "actual_start": "08:05",
+                "actual_end": "16:00",
+                "actual_break_minutes": 30,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], "submitted")
+        self.assertEqual(response.data["deviation_minutes"], 5)
+
+    def test_employee_cannot_record_time_for_others_shift(self):
+        bob_past_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.bob,
+            node=self.node,
+            date=timezone.localdate() - timedelta(days=1),
+            template=self.template,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/time-records/",
+            {
+                "assignment": bob_past_assignment.id,
+                "actual_start": "08:00",
+                "actual_end": "16:00",
+                "actual_break_minutes": 30,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_cannot_confirm_own_time_record(self):
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.alice_past_assignment,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(f"/api/time-records/{record.id}/confirm/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_planner_can_confirm_time_record(self):
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.alice_past_assignment,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/time-records/{record.id}/confirm/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "confirmed")
+
+    def test_employee_cannot_edit_time_record_once_confirmed(self):
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.alice_past_assignment,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+            status=TimeRecord.Status.CONFIRMED,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.delete(f"/api/time-records/{record.id}/")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

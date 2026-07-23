@@ -719,6 +719,42 @@ thead .col-employee {
   color: var(--warn);
 }
 
+.status-badge--submitted {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.status-badge--confirmed {
+  background: #e3f3e6;
+  color: #2e7d32;
+}
+
+.time-record-form {
+  align-items: center;
+}
+
+.time-record-form input[type="time"],
+.time-record-form input[type="number"] {
+  width: 84px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+.time-record-form input[type="number"] {
+  width: 64px;
+}
+
+.time-record-form input[type="text"] {
+  flex: 1;
+  min-width: 140px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
 @media (max-width: 640px) {
   .topbar {
     flex-wrap: wrap;

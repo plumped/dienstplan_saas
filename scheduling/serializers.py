@@ -7,6 +7,7 @@ from .models import (
     ShiftAssignment,
     ShiftTradeRequest,
     Skill,
+    TimeRecord,
     TimeTemplate,
 )
 
@@ -109,6 +110,43 @@ class AbsenceSerializer(serializers.ModelSerializer):
         for field in ["employee", "start_date", "end_date", "type"]:
             if field in attrs:
                 setattr(instance, field, attrs[field])
+        instance.clean()
+        return attrs
+
+
+class TimeRecordSerializer(serializers.ModelSerializer):
+    # Informativ, berechnet aus assignment.template -- siehe TimeRecord-Docstring.
+    deviation_minutes = serializers.IntegerField(read_only=True)
+    actual_hours = serializers.FloatField(read_only=True)
+    break_below_minimum = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = TimeRecord
+        fields = [
+            "id",
+            "assignment",
+            "actual_start",
+            "actual_end",
+            "actual_break_minutes",
+            "note",
+            "status",
+            "recorded_by",
+            "recorded_at",
+            "deviation_minutes",
+            "actual_hours",
+            "break_below_minimum",
+        ]
+        # status/recorded_by/recorded_at werden nicht direkt gesetzt, sondern
+        # über TimeRecordViewSet.perform_create (recorded_by) bzw. die
+        # confirm-Action (status) gesteuert (siehe Block 1.9 im README).
+        read_only_fields = ["status", "recorded_by", "recorded_at"]
+
+    def validate(self, attrs):
+        instance = self.instance or TimeRecord()
+        for field in ["assignment", "actual_start", "actual_end", "actual_break_minutes", "note"]:
+            if field in attrs:
+                setattr(instance, field, attrs[field])
+        instance.tenant = self.context["request"].tenant
         instance.clean()
         return attrs
 

@@ -90,4 +90,11 @@ export const api = {
     request(`/shift-trade-requests/${id}/approve/`, { method: "POST" }),
   rejectShiftTradeRequest: (id) =>
     request(`/shift-trade-requests/${id}/reject/`, { method: "POST" }),
+
+  getTimeRecords: () => request("/time-records/"),
+  createTimeRecord: (payload) => request("/time-records/", { method: "POST", body: payload }),
+  updateTimeRecord: (id, payload) =>
+    request(`/time-records/${id}/`, { method: "PATCH", body: payload }),
+  deleteTimeRecord: (id) => request(`/time-records/${id}/`, { method: "DELETE" }),
+  confirmTimeRecord: (id) => request(`/time-records/${id}/confirm/`, { method: "POST" }),
 };

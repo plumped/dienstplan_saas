@@ -7,10 +7,15 @@ from rest_framework.response import Response
 
 from core.context import set_current_tenant
 from core.models import Membership
-from core.permissions import IsTenantManager, OwnEmployeeRecordPermission, ShiftTradeRequestPermission
+from core.permissions import (
+    IsTenantManager,
+    OwnEmployeeRecordPermission,
+    ShiftTradeRequestPermission,
+    TimeRecordPermission,
+)
 from core.tenancy import resolve_membership_for_user
 
-from .models import Absence, Employee, Node, ShiftAssignment, ShiftTradeRequest, Skill, TimeTemplate
+from .models import Absence, Employee, Node, ShiftAssignment, ShiftTradeRequest, Skill, TimeRecord, TimeTemplate
 from .serializers import (
     AbsenceSerializer,
     EmployeeSerializer,
@@ -18,6 +23,7 @@ from .serializers import (
     ShiftAssignmentSerializer,
     ShiftTradeRequestSerializer,
     SkillSerializer,
+    TimeRecordSerializer,
     TimeTemplateSerializer,
 )
 
@@ -298,3 +304,47 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
         trade_request.resolved_at = timezone.now()
         trade_request.save(update_fields=["status", "resolved_at"])
         return Response(self.get_serializer(trade_request).data)
+
+
+class TimeRecordViewSet(TenantScopedViewSet):
+    """
+    Ist-Arbeitszeiterfassung (Art. 73 ArGV 1, MVP-Fahrplan Block 1.9).
+    Unterstützt ?assignment=<id> und ?employee=<id> zum Filtern.
+
+    Admin/Planer dürfen für jede Schicht Ist-Zeiten anlegen/ändern/löschen
+    und über `confirm` bestätigen. Mitarbeitende dürfen nur für die eigene
+    Schicht schreiben (geprüft in perform_create, das Objekt existiert bei
+    create noch nicht) und ihren Eintrag bearbeiten/löschen, solange er
+    noch nicht bestätigt ist (TimeRecordPermission).
+    """
+
+    permission_classes = [permissions.IsAuthenticated, TimeRecordPermission]
+    queryset = TimeRecord.all_objects.all()
+    serializer_class = TimeRecordSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset().select_related("assignment", "assignment__employee", "assignment__template")
+        assignment = self.request.query_params.get("assignment")
+        if assignment:
+            qs = qs.filter(assignment_id=assignment)
+        employee = self.request.query_params.get("employee")
+        if employee:
+            qs = qs.filter(assignment__employee_id=employee)
+        return qs
+
+    def perform_create(self, serializer):
+        if self.request.membership.role == Membership.Role.EMPLOYEE:
+            assignment = serializer.validated_data.get("assignment")
+            employee_profile = self.request.employee_profile
+            if not employee_profile or assignment.employee_id != employee_profile.id:
+                raise PermissionDenied("Mitarbeitende dürfen nur für eigene Schichten Ist-Zeiten erfassen.")
+        serializer.save(tenant=self.request.tenant, recorded_by=self.request.user)
+
+    @action(detail=True, methods=["post"])
+    def confirm(self, request, pk=None):
+        time_record = self.get_object()
+        try:
+            time_record.confirm()
+        except DjangoValidationError as e:
+            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
+        return Response(self.get_serializer(time_record).data)

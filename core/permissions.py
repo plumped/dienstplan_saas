@@ -111,3 +111,39 @@ class ShiftTradeRequestPermission(BasePermission):
         if view.action in ("accept", "decline"):
             return obj.target_employee_id == employee_profile.id
         return False
+
+
+class TimeRecordPermission(BasePermission):
+    """
+    Für die Ist-Arbeitszeiterfassung (Block 1.9): Admin/Planer dürfen alles,
+    inkl. der Bestätigungs-Action `confirm` -- die bleibt Mitarbeitenden
+    immer verwehrt, sonst könnte man seinen eigenen Ist-Eintrag selbst
+    bestätigen. Mitarbeitende dürfen lesen und für die eigene Schicht
+    (assignment.employee via request.employee_profile) einen Eintrag
+    anlegen sowie ändern/löschen, SOLANGE er noch nicht bestätigt ist
+    (status == SUBMITTED). Die Prüfung, für WESSEN Schicht ein neuer
+    Eintrag angelegt wird, passiert zusätzlich in
+    TimeRecordViewSet.perform_create (das Objekt existiert bei create ja
+    noch nicht).
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        membership = getattr(request, "membership", None)
+        if not membership:
+            return False
+        return membership.role in MANAGER_ROLES or membership.role == Membership.Role.EMPLOYEE
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        membership = getattr(request, "membership", None)
+        if membership and membership.role in MANAGER_ROLES:
+            return True
+        if view.action == "confirm":
+            return False
+        employee_profile = getattr(request, "employee_profile", None)
+        if not employee_profile or obj.assignment.employee_id != employee_profile.id:
+            return False
+        return obj.status == "submitted"  # TimeRecord.Status.SUBMITTED

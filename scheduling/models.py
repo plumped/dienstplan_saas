@@ -532,3 +532,106 @@ class ShiftTradeRequest(TenantScopedModel):
         self.status = self.Status.REJECTED
         self.resolved_at = timezone.now()
         self.save(update_fields=["status", "resolved_at"])
+
+
+class TimeRecord(TenantScopedModel):
+    """
+    Ist-Arbeitszeiterfassung zu einer geplanten Schicht (Art. 73 ArGV 1:
+    Pflicht zur Aufzeichnung von Beginn, Ende und Pausen der tatsächlich
+    geleisteten Arbeitszeit). Ein Eintrag pro ShiftAssignment (OneToOne),
+    damit Ist immer eindeutig einer Soll-Schicht zugeordnet ist.
+
+    Zweistufig wie Absence/ShiftTradeRequest: Mitarbeitende erfassen selbst
+    (Status SUBMITTED) und können ihren Eintrag bearbeiten/löschen, solange
+    er noch nicht geprüft ist; Admin/Planer bestätigen über confirm()
+    (Status CONFIRMED) -- reine Selbstauskunft ohne jede Kontrolle wäre
+    gegenüber Behörden/Revision wenig belastbar. Admin/Planer dürfen auch
+    nach der Bestätigung noch direkt korrigieren (TimeRecordPermission).
+    """
+
+    class Status(models.TextChoices):
+        SUBMITTED = "submitted", "Erfasst"
+        CONFIRMED = "confirmed", "Geprüft"
+
+    assignment = models.OneToOneField(
+        ShiftAssignment, on_delete=models.CASCADE, related_name="time_record"
+    )
+    actual_start = models.TimeField()
+    actual_end = models.TimeField(help_text="Bei Nachtschichten über Mitternacht: Endzeit < Startzeit ist erlaubt.")
+    actual_break_minutes = models.PositiveSmallIntegerField(default=0)
+    note = models.CharField(max_length=200, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.SUBMITTED)
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+"
+    )
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    history = HistoricalRecords()
+
+    class Meta:
+        ordering = ["-assignment__date"]
+
+    def __str__(self):
+        return f"Ist-Zeit {self.assignment} ({self.actual_start}–{self.actual_end})"
+
+    def _actual_datetimes(self):
+        start = datetime.combine(self.assignment.date, self.actual_start)
+        end = datetime.combine(self.assignment.date, self.actual_end)
+        if self.actual_end <= self.actual_start:
+            end += timedelta(days=1)  # Nachtschicht über Mitternacht
+        return start, end
+
+    @property
+    def actual_hours(self):
+        """Netto-Arbeitszeit (Ist), abzüglich der tatsächlichen Pause."""
+        start, end = self._actual_datetimes()
+        worked = (end - start) - timedelta(minutes=self.actual_break_minutes)
+        return round(worked.total_seconds() / 3600, 2)
+
+    @property
+    def deviation_minutes(self):
+        """Abweichung des tatsächlichen vom geplanten Arbeitsbeginn, in Minuten (positiv = später)."""
+        template = self.assignment.template
+        planned_start = datetime.combine(self.assignment.date, template.start_time)
+        actual_start_dt = datetime.combine(self.assignment.date, self.actual_start)
+        return round((actual_start_dt - planned_start).total_seconds() / 60)
+
+    @property
+    def break_below_minimum(self):
+        """Informativ (Art. 15 ArG): true, wenn die tatsächliche Pause unter der Mindestvorgabe liegt."""
+        start, end = self._actual_datetimes()
+        gross_minutes = (end - start).total_seconds() / 60
+        net_minutes = gross_minutes - self.actual_break_minutes
+        required = ShiftAssignment._required_break_minutes(net_minutes)
+        return self.actual_break_minutes < required
+
+    def clean(self):
+        if not (self.assignment_id and self.actual_start and self.actual_end):
+            return
+
+        if self.assignment.date > timezone.localdate():
+            raise ValidationError("Ist-Zeiten können erst nach der Schicht erfasst werden.")
+
+        template = self.assignment.template
+        planned_start = datetime.combine(self.assignment.date, template.start_time)
+        planned_end_date = self.assignment.date
+        if template.end_time <= template.start_time:
+            planned_end_date += timedelta(days=1)
+        planned_end = datetime.combine(planned_end_date, template.end_time)
+
+        actual_start_dt, actual_end_dt = self._actual_datetimes()
+        start_deviation = abs((actual_start_dt - planned_start).total_seconds() / 60)
+        end_deviation = abs((actual_end_dt - planned_end).total_seconds() / 60)
+
+        tolerance = self.tenant.time_record_deviation_tolerance_minutes
+        if (start_deviation > tolerance or end_deviation > tolerance) and not self.note:
+            raise ValidationError(
+                f"Abweichung vom geplanten Zeitfenster beträgt mehr als {tolerance} Minuten -- "
+                "bitte eine Begründung eintragen."
+            )
+
+    def confirm(self):
+        if self.status != self.Status.SUBMITTED:
+            raise ValidationError("Nur erfasste (noch nicht geprüfte) Einträge können bestätigt werden.")
+        self.status = self.Status.CONFIRMED
+        self.save(update_fields=["status"])

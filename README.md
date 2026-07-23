@@ -113,10 +113,12 @@ ihre eigene per `migrate`.
   Rollenprüfung muss **vor** `self.check_permissions()` passieren, aber `request.user` ist erst
   **nach** `self.perform_authentication()` bekannt -- `TenantScopedViewSet.initial()` baut daher
   `APIView.initial()` manuell nach, statt es als Ganzes über `super()` aufzurufen, damit
-  `request.membership`/`request.employee_profile` rechtzeitig gesetzt sind. **Frontend ist noch
-  nicht rollenbewusst**: es zeigt allen eingeloggten Usern dieselbe Planer-Oberfläche; ein Login
-  mit Mitarbeiter-Rolle bekäme beim Versuch, den Plan direkt zu bearbeiten, ein serverseitiges
-  403 zurück, ohne dass die UI das vorher verhindert (siehe MVP-Fahrplan, Block 2.2).
+  `request.membership`/`request.employee_profile` rechtzeitig gesetzt sind.
+
+  `GET /api/me/` (`core.views.MeView`) liefert Rolle, Tenant-Name und die verknüpfte `Employee`
+  (falls vorhanden) des eingeloggten Users -- die Grundlage, auf der das Frontend entscheidet, ob
+  es die volle Planer-Oberfläche oder die read-only Self-Service-Ansicht zeigt (siehe Frontend-
+  Abschnitt unten).
 
 ## Frontend
 
@@ -132,6 +134,16 @@ Klick + Dropdown auch:
   erste angezeigte Woche des Monats auf alle weiteren Wochen desselben Monats. Bereits belegte
   Zieltage werden nicht überschrieben; Tage, die an der Regel-Engine scheitern (z. B.
   Ruhezeit-Konflikt), werden übersprungen und am Ende summarisch gemeldet.
+- **Rollenbewusste Oberfläche** (`src/roles.js: canManageSchedule`, gespiesen aus `GET /api/me/`):
+  Admin/Planer sehen die volle Bearbeitungs-Oberfläche wie oben beschrieben. Mitarbeitende sehen
+  denselben Plan nur lesend (Zellen als `<span>` statt `<button>`, kein Klick, kein Drag, kein
+  Wochenmuster-Button) -- ausser dem ⇄-Symbol auf den **eigenen** Schichten, um sie zum Tausch
+  anzubieten. Im Tab "Abwesenheiten" ist das Mitarbeiter-Feld im Formular auf die eigene Person
+  gesperrt, und der "Löschen"-Button erscheint nur bei eigenen Einträgen. Im Tab "Diensttausch"
+  erscheinen Annehmen/Ablehnen nur bei Angeboten, deren Zielperson man selbst ist, Zurückziehen
+  nur bei selbst erstellten Angeboten. HR sieht überall nur Lesezugriff, keine
+  Bearbeitungs-Buttons. Das Frontend blendet damit nur Bedienelemente aus, die der Server über
+  `core.permissions` ohnehin mit 403 ablehnen würde -- die eigentliche Absicherung bleibt serverseitig.
 
 ## MVP-Fahrplan bis zur Marktreife
 
@@ -190,13 +202,13 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    `OwnEmployeeRecordPermission`, `ShiftTradeRequestPermission`) wertet `Membership.role`
    jetzt in allen ViewSets aus. Lesen bleibt für alle Rollen offen; Schreiben an
    Stammdaten/Planblatt ist Admin/Planer vorbehalten, HR schreibt nirgends, Mitarbeitende dürfen
-   nur eigene Absenzen und eigenen Diensttausch verwalten. *Noch offen*: das Frontend ist nicht
-   rollenbewusst (zeigt allen die volle Planer-Oberfläche, siehe Block 2.2) und es gibt noch
-   keine Verwaltung der Rollen/Einladungen selbst im Frontend (siehe Block 3.4).
-2. **Self-Service-Oberfläche für Mitarbeitende**: eine auf die Mitarbeiter-Rolle zugeschnittene,
-   mobilfreundliche Ansicht (eigener Plan, Absenz beantragen, Diensttausch anbieten/annehmen) --
-   das Backend erlaubt das jetzt (siehe Block 2.1), das bestehende Frontend zeigt aber noch allen
-   Rollen dieselbe volle Planblatt-Oberfläche.
+   nur eigene Absenzen und eigenen Diensttausch verwalten. *Noch offen*: es gibt noch keine
+   Verwaltung der Rollen/Einladungen selbst im Frontend (siehe Block 3.4).
+2. ✅ **Rollenbewusste Oberfläche**: `GET /api/me/` + `src/roles.js` steuern, was das Frontend
+   zeigt -- Admin/Planer die volle Bearbeitungs-Oberfläche, Mitarbeitende eine read-only Ansicht
+   mit Selbstbedienung für eigene Absenzen/eigenen Diensttausch, HR nur Lesezugriff (siehe
+   Frontend-Abschnitt oben). *Noch offen*: keine dedizierte mobile Ansicht (das bestehende Grid
+   ist responsive genug für Desktop/Tablet, aber nicht für schmale Phone-Screens optimiert).
 3. **Genehmigungs-Workflows**: Absenzen (aktuell: sofort wirksam, keine Freigabe durch
    Vorgesetzte) und Diensttausch (aktuell: `accept` direkt durch den Zielmitarbeiter) brauchen
    für den Praxisbetrieb eine Planer-Freigabe-Stufe.

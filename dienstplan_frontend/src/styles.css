@@ -173,6 +173,17 @@ button {
   border-radius: 6px;
 }
 
+.role-badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
 .btn-ghost:hover {
   background: var(--primary-soft);
   color: var(--primary);
@@ -428,6 +439,10 @@ thead .col-employee {
   box-shadow: inset 0 0 0 2px var(--primary);
 }
 
+.shift-chip-btn.is-readonly {
+  cursor: default;
+}
+
 .shift-chip {
   --chip-color: var(--primary);
   display: inline-flex;
@@ -568,6 +583,11 @@ thead .col-employee {
   border-radius: 6px;
   color: var(--ink);
   background: var(--surface);
+}
+
+.panel-form input:disabled {
+  color: var(--ink-muted);
+  background: var(--bg);
 }
 
 .panel-form button[type="submit"] {

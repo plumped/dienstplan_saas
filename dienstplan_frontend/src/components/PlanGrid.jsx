@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
+import { canManageSchedule } from "../roles.js";
 import ShiftCell from "./ShiftCell.jsx";
 
 const WEEKDAYS_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
@@ -21,11 +22,12 @@ function weekdayLabel(year, month, day) {
   return WEEKDAYS_SHORT[jsDay === 0 ? 6 : jsDay - 1];
 }
 
-export default function PlanGrid({ nodeId, year, month, employees, onError }) {
+export default function PlanGrid({ nodeId, year, month, employees, me, onError }) {
   const [templates, setTemplates] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [absences, setAbsences] = useState([]);
   const [loading, setLoading] = useState(true);
+  const canManage = canManageSchedule(me);
 
   const days = useMemo(
     () => Array.from({ length: daysInMonth(year, month) }, (_, i) => i + 1),
@@ -213,14 +215,16 @@ export default function PlanGrid({ nodeId, year, month, employees, onError }) {
                   {emp.first_name} {emp.last_name}
                 </span>
                 <span className="pct">{emp.employment_pct}%</span>
-                <button
-                  type="button"
-                  className="btn-copy-week"
-                  title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
-                  onClick={() => handleCopyWeekPattern(emp.id)}
-                >
-                  ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
-                </button>
+                {canManage && (
+                  <button
+                    type="button"
+                    className="btn-copy-week"
+                    title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
+                    onClick={() => handleCopyWeekPattern(emp.id)}
+                  >
+                    ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
+                  </button>
+                )}
               </th>
               {days.map((d) => {
                 const date = isoDate(year, month, d);
@@ -228,6 +232,7 @@ export default function PlanGrid({ nodeId, year, month, employees, onError }) {
                 const template = templates.find((t) => t.id === assignment?.template);
                 const absence = findAbsence(emp.id, date);
                 const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
+                const canOfferTrade = canManage || me?.employee?.id === emp.id;
                 return (
                   <td key={d} className={weekend ? "is-weekend" : ""}>
                     <ShiftCell
@@ -238,6 +243,8 @@ export default function PlanGrid({ nodeId, year, month, employees, onError }) {
                       date={date}
                       absence={absence}
                       colleagues={employees.filter((e) => e.id !== emp.id)}
+                      canEdit={canManage}
+                      canOfferTrade={canOfferTrade}
                       onChange={(templateId) => handleAssign(emp.id, date, templateId)}
                       onMove={handleMove}
                       onOfferTrade={(targetEmployeeId) =>

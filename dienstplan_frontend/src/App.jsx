@@ -6,6 +6,7 @@ import MonthNav from "./components/MonthNav.jsx";
 import NodeSelector from "./components/NodeSelector.jsx";
 import PlanGrid from "./components/PlanGrid.jsx";
 import TradeRequestPanel from "./components/TradeRequestPanel.jsx";
+import { ROLE_LABELS } from "./roles.js";
 
 const TABS = [
   { id: "grid", label: "Planblatt" },
@@ -20,12 +21,27 @@ function currentPeriod() {
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(api.isLoggedIn());
+  const [me, setMe] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [nodeId, setNodeId] = useState(null);
   const [employees, setEmployees] = useState([]);
   const [period, setPeriod] = useState(currentPeriod());
   const [tab, setTab] = useState("grid");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!loggedIn) {
+      setMe(null);
+      return;
+    }
+    api
+      .getMe()
+      .then(setMe)
+      .catch((e) => {
+        if (e.message === "unauthorized") setLoggedIn(false);
+        else setError(e.message);
+      });
+  }, [loggedIn]);
 
   useEffect(() => {
     if (!loggedIn) return;
@@ -95,6 +111,8 @@ export default function App() {
           />
         )}
 
+        {me?.role && <span className="role-badge">{ROLE_LABELS[me.role] ?? me.role}</span>}
+
         <button
           type="button"
           className="btn-ghost"
@@ -129,11 +147,12 @@ export default function App() {
                 year={period.year}
                 month={period.month}
                 employees={employees}
+                me={me}
                 onError={setError}
               />
             )}
-            {tab === "absences" && <AbsencePanel employees={employees} onError={setError} />}
-            {tab === "trades" && <TradeRequestPanel onError={setError} />}
+            {tab === "absences" && <AbsencePanel employees={employees} me={me} onError={setError} />}
+            {tab === "trades" && <TradeRequestPanel me={me} onError={setError} />}
           </>
         )}
       </main>

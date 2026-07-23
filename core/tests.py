@@ -1,11 +1,13 @@
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory, TestCase
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APITestCase
 
 from core.context import get_current_tenant, set_current_tenant
 from core.middleware import TenantContextCleanupMiddleware
 from core.models import Membership, Tenant
 from core.tenancy import resolve_tenant_for_user
-from scheduling.models import Skill
+from scheduling.models import Employee, Skill
 
 User = get_user_model()
 
@@ -87,3 +89,49 @@ class TenantContextCleanupMiddlewareTests(TestCase):
             middleware(request)
 
         self.assertIsNone(get_current_tenant())
+
+
+class MeViewTests(APITestCase):
+    """GET /api/me/ -- Grundlage für ein rollenbewusstes Frontend."""
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_user_without_membership_gets_empty_response(self):
+        user = User.objects.create_user(username="orphan", password="irrelevant-123")
+        self.auth_as(user)
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"role": None, "tenant_name": None, "employee": None})
+
+    def test_planner_without_employee_profile(self):
+        tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        user = User.objects.create_user(username="planner", password="irrelevant-123")
+        Membership.objects.create(user=user, tenant=tenant, role=Membership.Role.PLANNER)
+        self.auth_as(user)
+
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["role"], "planner")
+        self.assertEqual(response.data["tenant_name"], "Klinik A")
+        self.assertIsNone(response.data["employee"])
+
+    def test_employee_with_linked_employee_profile(self):
+        tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        user = User.objects.create_user(username="anna", password="irrelevant-123")
+        Membership.objects.create(user=user, tenant=tenant, role=Membership.Role.EMPLOYEE)
+        employee = Employee.objects.create(
+            tenant=tenant, user=user, first_name="Anna", last_name="Berger", employment_pct=100
+        )
+        self.auth_as(user)
+
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["role"], "employee")
+        self.assertEqual(response.data["employee"]["id"], employee.id)
+        self.assertEqual(response.data["employee"]["first_name"], "Anna")
+
+    def test_anonymous_request_is_rejected(self):
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.status_code, 403)

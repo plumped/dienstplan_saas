@@ -55,6 +55,8 @@ export const api = {
     return data;
   },
 
+  getMe: () => request("/me/"),
+
   getNodes: () => request("/nodes/"),
   getEmployees: () => request("/employees/"),
   getTimeTemplates: () => request("/time-templates/"),

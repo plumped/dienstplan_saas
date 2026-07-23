@@ -25,6 +25,8 @@ export default function ShiftCell({
   absence,
   colleagues = [],
   onOfferTrade,
+  canEdit = true,
+  canOfferTrade = true,
 }) {
   const [editing, setEditing] = useState(false);
   const [offering, setOffering] = useState(false);
@@ -94,6 +96,38 @@ export default function ShiftCell({
     );
   }
 
+  if (!canEdit) {
+    // Nicht-Planer sehen den Plan nur (siehe core.permissions.IsTenantManager
+    // im Backend, das schreibende Zugriffe ohnehin mit 403 ablehnen würde) --
+    // deshalb bewusst kein <button>/keine Drag-Handler, nur das Angebot,
+    // die eigene Schicht zum Tausch anzubieten (siehe canOfferTrade unten).
+    return (
+      <span className="cell-wrap">
+        <span className="shift-chip-btn is-readonly">
+          {templateInfo ? (
+            <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>
+              {templateInfo.name.slice(0, 3)}
+            </span>
+          ) : (
+            <span className="shift-chip shift-chip--empty" aria-hidden="true">
+              +
+            </span>
+          )}
+        </span>
+        {templateInfo && canOfferTrade && colleagues.length > 0 && (
+          <button
+            type="button"
+            className="btn-offer-trade"
+            title="Diese Schicht zum Tausch anbieten"
+            onClick={() => setOffering(true)}
+          >
+            ⇄<span className="visually-hidden"> Schicht zum Tausch anbieten</span>
+          </button>
+        )}
+      </span>
+    );
+  }
+
   function handleDragStart(e) {
     if (!templateInfo) return;
     e.dataTransfer.effectAllowed = "move";
@@ -140,7 +174,7 @@ export default function ShiftCell({
           </span>
         )}
       </button>
-      {templateInfo && colleagues.length > 0 && (
+      {templateInfo && canOfferTrade && colleagues.length > 0 && (
         <button
           type="button"
           className="btn-offer-trade"

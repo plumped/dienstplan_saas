@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { canManageSchedule } from "../roles.js";
 
 const STATUS_LABELS = {
   pending: "Offen",
@@ -8,7 +9,9 @@ const STATUS_LABELS = {
   cancelled: "Zurückgezogen",
 };
 
-export default function TradeRequestPanel({ onError }) {
+export default function TradeRequestPanel({ me, onError }) {
+  const canManage = canManageSchedule(me);
+  const ownEmployeeId = me?.employee?.id ?? null;
   const [requests, setRequests] = useState([]);
   const [employeesById, setEmployeesById] = useState(new Map());
   const [assignmentsById, setAssignmentsById] = useState(new Map());
@@ -95,6 +98,13 @@ export default function TradeRequestPanel({ onError }) {
           <ul className="entry-list">
             {requests.map((r) => {
               const requesterAssignment = assignmentsById.get(r.requester_assignment);
+              // Deckt sich mit core.permissions.ShiftTradeRequestPermission im
+              // Backend: nur Zielperson darf annehmen/ablehnen, nur die
+              // anbietende Person darf zurückziehen (Admin/Planer dürfen immer).
+              const isTarget = canManage || (ownEmployeeId !== null && r.target_employee === ownEmployeeId);
+              const isRequester =
+                canManage ||
+                (ownEmployeeId !== null && requesterAssignment?.employee === ownEmployeeId);
               return (
                 <li key={r.id} className="entry-list-item entry-list-item--trade">
                   <span className={`status-badge status-badge--${r.status}`}>
@@ -109,31 +119,37 @@ export default function TradeRequestPanel({ onError }) {
                     )}
                     {r.note && <span className="entry-note"> · {r.note}</span>}
                   </span>
-                  {r.status === "pending" && (
+                  {r.status === "pending" && (isTarget || isRequester) && (
                     <span className="entry-actions">
-                      <button
-                        type="button"
-                        disabled={busyId === r.id}
-                        onClick={() => runAction(r.id, api.acceptShiftTradeRequest)}
-                      >
-                        Annehmen
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-ghost"
-                        disabled={busyId === r.id}
-                        onClick={() => runAction(r.id, api.declineShiftTradeRequest)}
-                      >
-                        Ablehnen
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-ghost"
-                        disabled={busyId === r.id}
-                        onClick={() => runAction(r.id, api.cancelShiftTradeRequest)}
-                      >
-                        Zurückziehen
-                      </button>
+                      {isTarget && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={busyId === r.id}
+                            onClick={() => runAction(r.id, api.acceptShiftTradeRequest)}
+                          >
+                            Annehmen
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-ghost"
+                            disabled={busyId === r.id}
+                            onClick={() => runAction(r.id, api.declineShiftTradeRequest)}
+                          >
+                            Ablehnen
+                          </button>
+                        </>
+                      )}
+                      {isRequester && (
+                        <button
+                          type="button"
+                          className="btn-ghost"
+                          disabled={busyId === r.id}
+                          onClick={() => runAction(r.id, api.cancelShiftTradeRequest)}
+                        >
+                          Zurückziehen
+                        </button>
+                      )}
                     </span>
                   )}
                 </li>

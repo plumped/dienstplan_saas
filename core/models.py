@@ -55,6 +55,24 @@ class Tenant(models.Model):
         "Arbeitszeit verlangt die Ist-Zeiterfassung eine Begründung (scheduling.models.TimeRecord).",
     )
 
+    # Überzeitarbeit (Art. 13 ArG, MVP-Fahrplan Block 1.11): bewusst getrennt von
+    # maximum_weekly_hours -- das ist die gesetzliche/GAV-Höchstgrenze, ab der eine
+    # Zuweisung abgelehnt wird (ShiftAssignment.clean), während standard_weekly_hours
+    # die Normalarbeitszeit eines 100%-Pensums ist, ab der Mehrarbeit als Überzeit mit
+    # Zuschlag gilt (reine Auswertungs-/Lohnfrage, siehe scheduling.models.Employee.
+    # weekly_hours_summary -- keine Ablehnung, nur Berechnung).
+    standard_weekly_hours = models.PositiveSmallIntegerField(
+        default=42,
+        help_text="Normalarbeitszeit eines 100%-Pensums pro Woche, in Stunden (z. B. 42h GAV-Vorgabe "
+        "in vielen Spitälern) -- die Basis für den Soll/Ist-Vergleich bei der Überzeitberechnung "
+        "(Art. 13 ArG). Nicht zu verwechseln mit maximum_weekly_hours, der gesetzlichen Höchstgrenze.",
+    )
+    overtime_surcharge_pct = models.PositiveSmallIntegerField(
+        default=25,
+        help_text="Zuschlag auf Überzeitstunden in Prozent (Art. 13 Abs. 1 ArG: i. d. R. 25%, "
+        "GAV-abhängig anpassbar).",
+    )
+
     class Meta:
         ordering = ["name"]
 

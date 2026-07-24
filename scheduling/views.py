@@ -1,3 +1,5 @@
+from datetime import date
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from rest_framework import permissions, viewsets
@@ -25,6 +27,7 @@ from .serializers import (
     SkillSerializer,
     TimeRecordSerializer,
     TimeTemplateSerializer,
+    WeeklyOvertimeSerializer,
 )
 
 
@@ -124,6 +127,29 @@ class EmployeeViewSet(TenantScopedViewSet):
     permission_classes = [permissions.IsAuthenticated, IsTenantManager]
     queryset = Employee.all_objects.all()
     serializer_class = EmployeeSerializer
+
+    @action(detail=True, methods=["get"], url_path="weekly-overtime")
+    def weekly_overtime(self, request, pk=None):
+        """
+        Soll/Ist-Vergleich + Überzeit-Zuschlag für eine Kalenderwoche
+        (MVP-Fahrplan Block 1.11, Art. 13 ArG). ?week=YYYY-MM-DD (ein
+        beliebiges Datum innerhalb der Woche, Default heute) -- die Woche
+        wird auf Montag-Sonntag normalisiert, siehe
+        Employee.weekly_hours_summary. Lesen ist wie beim übrigen Planblatt
+        für alle Rollen offen (IsTenantManager), nicht nur für den
+        betroffenen Mitarbeiter selbst.
+        """
+        employee = self.get_object()
+        week_param = request.query_params.get("week")
+        if week_param:
+            try:
+                reference_date = date.fromisoformat(week_param)
+            except ValueError:
+                raise ValidationError({"week": "Ungültiges Datum, erwartet YYYY-MM-DD."})
+        else:
+            reference_date = timezone.localdate()
+        summary = employee.weekly_hours_summary(reference_date)
+        return Response(WeeklyOvertimeSerializer(summary).data)
 
 
 class TimeTemplateViewSet(TenantScopedViewSet):

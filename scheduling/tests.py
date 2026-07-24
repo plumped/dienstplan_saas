@@ -1116,6 +1116,118 @@ class SegmentedTimeTemplateAndRecordAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class WeeklyOvertimeTests(APITestCase):
+    """
+    Überzeitarbeit (Art. 13 ArG, MVP-Fahrplan Block 1.11): Soll/Ist-Vergleich pro
+    Woche + Zuschlag. Bewusst getrennt von der Regel-Engine (ShiftAssignment.clean)
+    -- reine Auswertung, keine Ablehnung von Zuweisungen.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(17, 0),
+            break_minutes=60,  # 9h Spanne - 1h Pause = 8h netto pro Schicht
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+        today = timezone.localdate()
+        self.monday = today - timedelta(days=today.weekday())
+
+    def _assign(self, employee, day_offset, template=None):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            node=self.node,
+            date=self.monday + timedelta(days=day_offset),
+            template=template or self.template,
+        )
+
+    def test_no_shifts_means_no_overtime(self):
+        summary = self.employee.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["soll_hours"], 42.0)  # Tenant-Default standard_weekly_hours
+        self.assertEqual(summary["ist_hours"], 0)
+        self.assertEqual(summary["overtime_hours"], 0)
+        self.assertEqual(summary["surcharge_hours"], 0)
+
+    def test_hours_under_soll_yield_no_overtime(self):
+        for day in range(5):  # Mo-Fr, 5 * 8h = 40h < 42h Soll
+            self._assign(self.employee, day)
+        summary = self.employee.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["ist_hours"], 40.0)
+        self.assertEqual(summary["overtime_hours"], 0)
+
+    def test_hours_over_soll_yield_overtime_and_surcharge(self):
+        for day in range(6):  # Mo-Sa, 6 * 8h = 48h > 42h Soll -> 6h Überzeit
+            self._assign(self.employee, day)
+        summary = self.employee.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["ist_hours"], 48.0)
+        self.assertEqual(summary["overtime_hours"], 6.0)
+        self.assertEqual(summary["surcharge_hours"], 1.5)  # 25% Zuschlag (Tenant-Default)
+
+    def test_part_time_soll_is_scaled_by_employment_pct(self):
+        part_time = Employee.objects.create(
+            tenant=self.tenant, first_name="Bob", last_name="B", employment_pct=50
+        )
+        summary = part_time.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["soll_hours"], 21.0)  # 50% von 42h
+
+    def test_time_record_overrides_planned_hours(self):
+        assignment = self._assign(self.employee, 0)
+        for day in range(1, 5):
+            self._assign(self.employee, day)  # weitere 4 Tage a 8h geplant = 32h
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=assignment,
+            actual_start=time(8, 0),
+            actual_end=time(19, 0),  # 11h brutto
+            actual_break_minutes=60,  # 10h netto statt geplanter 8h
+        )
+        summary = self.employee.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["ist_hours"], 42.0)  # 10h (Ist) + 4*8h (Planung) = 42h
+
+    def test_shifts_outside_week_are_excluded(self):
+        self._assign(self.employee, 0)  # Montag dieser Woche
+        self._assign(self.employee, 7)  # Montag nächster Woche
+        summary = self.employee.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["ist_hours"], 8.0)
+
+    def test_week_normalizes_to_monday_regardless_of_reference_weekday(self):
+        for day in range(6):
+            self._assign(self.employee, day)
+        summary_from_saturday = self.employee.weekly_hours_summary(self.monday + timedelta(days=5))
+        self.assertEqual(summary_from_saturday["week_start"], self.monday)
+        self.assertEqual(summary_from_saturday["ist_hours"], 48.0)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_api_returns_weekly_overtime_for_given_week(self):
+        for day in range(6):
+            self._assign(self.employee, day)
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/weekly-overtime/?week={self.monday}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["overtime_hours"], 6.0)
+        self.assertEqual(response.data["surcharge_hours"], 1.5)
+        self.assertEqual(response.data["week_start"], str(self.monday))
+
+    def test_api_rejects_invalid_week_param(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/weekly-overtime/?week=not-a-date")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
 class ShiftTradeRequestTests(TestCase):
     """Diensttausch: sowohl einfache Übernahme als auch echter Tausch, jeweils inkl. Regel-Engine."""
 

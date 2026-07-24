@@ -7,8 +7,8 @@ Multi-Tenancy per `tenant_id` (shared database), getestet inkl. Cross-Tenant-Sic
 **Zielgruppe**: kleine Kliniken, Arztpraxen und ähnliche Gesundheitsbetriebe in der Schweiz
 (typischerweise 5–50 Mitarbeitende, eine bis wenige Stationen/Standorte). Die Regel-Engine bildet
 bereits mehrere Kernpunkte des Schweizer Arbeitsgesetzes (ArG) ab (siehe nächster Abschnitt) --
-was für einen rechtssicheren Praxiseinsatz noch fehlt (u. a. automatische Ersatzruhetag-Kontrolle,
-Überzeit-Zuschläge), steht im
+was für einen rechtssicheren Praxiseinsatz noch fehlt (u. a. automatische
+Ersatzruhetag-Kontrolle), steht im
 [MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife). **Kein Ersatz für eine arbeitsrechtliche
 Prüfung** — die hinterlegten Grenzwerte sind Standardwerte, kein Rechtsrat.
 
@@ -270,13 +270,20 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     `FloatingPopover` (React-Portal auf `document.body`, an den Viewport geklemmt) ausserhalb des
     Tabellen-Scrollcontainers gerendert -- sonst würde es bei Zellen nahe dem rechten Rand vom
     horizontalen Grid-Scrolling abgeschnitten.
+11. ✅ **Überzeitarbeit**: Soll/Ist-Vergleich pro Woche + Zuschlag (Art. 13 ArG). Bewusst nicht
+    Teil der Regel-Engine selbst (`ShiftAssignment.clean` lehnt nichts deswegen ab), sondern reine
+    Auswertung -- `Employee.weekly_hours_summary(reference_date)` normalisiert auf die
+    Kalenderwoche (Montag-Sonntag) des übergebenen Datums und liefert Soll (`employment_pct` ×
+    `Tenant.standard_weekly_hours`, Default 42h Normalarbeitszeit eines 100%-Pensums -- bewusst
+    getrennt von `maximum_weekly_hours`, der gesetzlichen Höchstgrenze), Ist (aus `TimeRecord`,
+    sobald für eine Schicht erfasst, sonst aus der Planung), Überzeit- und Zuschlagsstunden
+    (`Tenant.overtime_surcharge_pct`, Default 25%). API: `GET
+    /api/employees/{id}/weekly-overtime/?week=YYYY-MM-DD`, Lesen für alle Rollen offen wie beim
+    übrigen Planblatt. *Noch offen*: keine Frontend-Anzeige (folgt mit Block 2.6/2.7), keine
+    Monats-/Jahres-Kumulierung (nur pro Kalenderwoche einzeln abrufbar).
 
 **Noch offen**:
 
-11. **Überzeitarbeit**: Soll/Ist-Vergleich pro Woche (Soll aus `Employee.employment_pct`) und
-    Zuschlag (i. d. R. 25%, Art. 13 ArG). Bewusst nicht Teil der Regel-Engine selbst, sondern der
-    geplanten Monatsauswertung (Block 2.6), weil Überzeit eine Auswertungs-/Lohnfrage ist, keine
-    Ablehnung einer Zuweisung.
 12. **Anschluss der Ist-Arbeitszeiterfassung an Block 2.6**: die geplante Monatsauswertung
     (Soll/Ist-Stunden, Überzeit, Nacht-/Sonntagszuschläge) sollte, sobald sie existiert, auf
     `TimeRecord` statt nur auf der Planung (`ShiftAssignment`) basieren.

@@ -125,6 +125,45 @@ class Employee(TenantScopedModel):
         )
         return age < 18
 
+    def weekly_hours_summary(self, reference_date):
+        """
+        Soll/Ist-Vergleich für die Kalenderwoche (Montag-Sonntag) von
+        reference_date -- Basis der Überzeitberechnung (Art. 13 ArG,
+        MVP-Fahrplan Block 1.11). Bewusst nicht Teil der Regel-Engine
+        (ShiftAssignment.clean): eine Auswertungs-/Lohnfrage, keine Ablehnung
+        einer Zuweisung. Ist-Stunden kommen pro Schicht aus TimeRecord,
+        sobald erfasst, sonst aus der Planung (ShiftAssignment._shift_hours)
+        als bester verfügbarer Schätzwert.
+        """
+        week_start = reference_date - timedelta(days=reference_date.weekday())
+        week_end = week_start + timedelta(days=6)
+
+        assignments = ShiftAssignment.all_objects.filter(
+            employee=self, date__range=[week_start, week_end]
+        ).select_related("template", "time_record")
+
+        ist_hours = 0.0
+        for assignment in assignments:
+            time_record = getattr(assignment, "time_record", None)
+            if time_record is not None:
+                ist_hours += time_record.actual_hours
+            else:
+                ist_hours += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+
+        soll_hours = round(self.employment_pct / 100 * self.tenant.standard_weekly_hours, 2)
+        ist_hours = round(ist_hours, 2)
+        overtime_hours = round(max(0.0, ist_hours - soll_hours), 2)
+        surcharge_hours = round(overtime_hours * self.tenant.overtime_surcharge_pct / 100, 2)
+
+        return {
+            "week_start": week_start,
+            "week_end": week_end,
+            "soll_hours": soll_hours,
+            "ist_hours": ist_hours,
+            "overtime_hours": overtime_hours,
+            "surcharge_hours": surcharge_hours,
+        }
+
 
 class Absence(TenantScopedModel):
     """

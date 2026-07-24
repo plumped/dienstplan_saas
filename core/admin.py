@@ -31,6 +31,18 @@ class TenantAdmin(admin.ModelAdmin):
                 "Bei abweichendem GAV (Gesamtarbeitsvertrag) hier pro Klinik/Praxis anpassen.",
             },
         ),
+        (
+            "Ist-Zeiterfassung",
+            {"fields": ("time_record_deviation_tolerance_minutes",)},
+        ),
+        (
+            "Überzeitarbeit (Art. 13 ArG)",
+            {
+                "fields": ("standard_weekly_hours", "overtime_surcharge_pct"),
+                "description": "standard_weekly_hours ist die Normalarbeitszeit eines 100%-Pensums "
+                "(Soll), nicht die gesetzliche Höchstgrenze (maximum_weekly_hours oben).",
+            },
+        ),
     )
 
 

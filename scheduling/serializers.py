@@ -55,6 +55,17 @@ class EmployeeSerializer(serializers.ModelSerializer):
         ]
 
 
+class WeeklyOvertimeSerializer(serializers.Serializer):
+    """Read-only: Ergebnis von Employee.weekly_hours_summary (Block 1.11, Art. 13 ArG)."""
+
+    week_start = serializers.DateField()
+    week_end = serializers.DateField()
+    soll_hours = serializers.FloatField()
+    ist_hours = serializers.FloatField()
+    overtime_hours = serializers.FloatField()
+    surcharge_hours = serializers.FloatField()
+
+
 class TimeTemplateSegmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = TimeTemplateSegment

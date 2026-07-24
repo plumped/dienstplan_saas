@@ -325,11 +325,34 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Lohnbuchhaltung, die selten direkt an die API angebunden ist.
 6. **Monatsauswertung Soll/Ist-Stunden pro Mitarbeiter** (inkl. Nacht-/Sonntagszuschläge,
    Überzeit) als Basis für den Lohnlauf.
-7. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
+7. **Saldo-Übersicht für Mitarbeitende** (Überstunden + Ferien): Mitarbeitende wollen auf einen
+   Blick wissen, ob sie gesamthaft im Plus oder im Minus sind und wie viele Ferienstunden noch
+   übrig sind -- aktuell zeigt das Frontend nirgends einen kumulierten Saldo, nur einzelne
+   Absenzanträge und (ab Block 1.11) eine wöchentliche Über-/Unterzeit. Baut auf Block 1.11
+   (Überzeitarbeit-Berechnung) und Block 2.6 (Monatsauswertung) auf, ist aber eine eigene
+   Aufgabe, weil es hier um die **Mitarbeiter-Selbstauskunft** geht, nicht um die
+   Lohnbuchhaltungs-Auswertung:
+   - **Überstunden-Saldo**: nicht nur pro Woche/Monat, sondern **kumuliert über die Zeit**
+     (Soll aus `Employee.employment_pct`, Ist aus `TimeRecord`, sobald erfasst -- sonst aus der
+     Planung). Braucht vermutlich ein Startsaldo-Feld pro `Employee` (z. B.
+     `overtime_balance_carryover_hours`), da ein Betrieb beim Einstieg ins System nicht bei null
+     Überstunden beginnt, sondern einen bestehenden Saldo mitbringt.
+   - **Feriensaldo**: fehlt heute als Konzept komplett -- `Employee` hat keinen
+     Ferienanspruch/`vacation_days_per_year` (ggf. anteilig nach `employment_pct` und
+     Eintrittsdatum zu berechnen), `Absence` verknüpft genehmigte Ferien-Absenzen nicht mit einem
+     Anspruch/Saldo. Braucht Klärung, ob Resturlaub ins Folgejahr übertragen werden kann/muss
+     (üblich in CH, teils mit Verfallsfrist) -- das betrifft direkt das Löschkonzept/die
+     Datenhaltung, nicht nur die Anzeige.
+   - **Frontend**: kompakte Saldo-Anzeige für Mitarbeitende (z. B. im Topbar-Bereich oder als
+     eigene kleine Kachel/Tab "Mein Saldo") mit den zwei Kernzahlen (Überstunden ± X h,
+     Ferienguthaben X Tage/Std.); Admin/Planer sollten dieselbe Ansicht auch für andere
+     Mitarbeitende einsehen können (z. B. in der Mitarbeiterliste), nicht nur die betroffene
+     Person selbst.
+8. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
    eine belegte Zelle wird abgelehnt statt getauscht).
-8. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn
+9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn
    sie unterschritten wird.
-9. **"Einstellungen"-Bereich im Frontend für Admin/Planer** (Stammdaten-Selfservice): heute lassen
+10. **"Einstellungen"-Bereich im Frontend für Admin/Planer** (Stammdaten-Selfservice): heute lassen
    sich Nodes/Skills/TimeTemplates nur über den Django-Admin pflegen — für den Verkauf an Kliniken
    ohne eigene IT-Abteilung nicht praktikabel, die Klinik muss neue Schichttypen selbst anlegen
    können, nicht der Hersteller. Serverseitig ist das bereits vorbereitet

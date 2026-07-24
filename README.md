@@ -181,7 +181,10 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Art. 15a ArG), `maximum_weekly_hours` (Default 45h, Art. 9 ArG) und `maximum_daily_span_hours`
    (Default 14h, Art. 10 ArG) sitzen als Felder auf `core.models.Tenant`, im Admin editierbar --
    für Betriebe mit 50h-Regelung oder strengerem GAV (Gesamtarbeitsvertrag, z. B. GAV
-   Santésuisse) pro Klinik/Praxis anpassbar.
+   Santésuisse) pro Klinik/Praxis anpassbar. *Noch offen*: `maximum_weekly_hours` ist aktuell ein
+   einzelner Wert **pro Tenant** -- in Spitälern gilt aber je nach Personalkategorie oft
+   unterschiedliches (z. B. 42h GAV-Normalarbeitszeit für Pflegepersonal, 50h ArG-Höchstgrenze für
+   andere Gruppen). Siehe Punkt 14 weiter unten für die geplante Lösung.
 2. ✅ **Pausenregelung** (Art. 15 ArG): > 5.5h Netto-Arbeitszeit → 15 Min., > 7h → 30 Min.,
    > 9h → 1h Pause, automatisch gegen `TimeTemplate.break_minutes` geprüft statt nur erfasst.
 3. ✅ **Tägliche Höchstarbeitszeit inkl. Pausen** (Art. 10 ArG: Tagesspanne max.
@@ -279,6 +282,24 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     `TimeRecord` statt nur auf der Planung (`ShiftAssignment`) basieren.
 13. **Aufbewahrung**: Ist-Daten (`TimeRecord`) fallen unter dieselbe Aufbewahrungspflicht wie
     Lohnunterlagen (siehe Block 5.3) — beim Löschkonzept mitdenken.
+14. **Wöchentliche Höchstarbeitszeit pro Personalkategorie statt nur pro Tenant**: Spitäler haben
+    typischerweise nicht eine einzige Wochenstunden-Grenze, sondern mehrere parallel gültige (z. B.
+    42h GAV-Normalarbeitszeit für Pflegepersonal, 50h ArG-Höchstgrenze Art. 9 Abs. 2 für andere
+    Personalgruppen) -- `Tenant.maximum_weekly_hours` bildet aktuell nur einen einzigen Wert für
+    den ganzen Betrieb ab, `ShiftAssignment._check_maximum_weekly_hours` prüft immer gegen diesen
+    einen Wert. Lösungsrichtung:
+    - Einfachste Variante: optionales Override-Feld direkt auf `Employee`
+      (`maximum_weekly_hours`, `null` = Tenant-Default gilt), da die effektive Grenze letztlich
+      eine Eigenschaft der einzelnen Anstellung ist (Funktion/GAV-Einstufung), nicht der Schicht
+      oder Station.
+    - Alternative, falls sich Grenzwerte eher über Stationen/Abteilungen als über Einzelpersonen
+      gruppieren: Override auf `Node` statt auf `Employee`.
+    - `ShiftAssignment._check_maximum_weekly_hours` müsste dann `self.employee.maximum_weekly_hours
+      or self.tenant.maximum_weekly_hours` (bzw. das Node-Äquivalent) statt direkt
+      `self.tenant.maximum_weekly_hours` verwenden.
+    - Gleiche Überlegung gilt potenziell auch für `minimum_rest_hours` (GAVs setzen teils
+      abweichende Ruhezeiten je Personalkategorie), hier aber erst nachziehen, falls in der Praxis
+      tatsächlich gebraucht -- nicht vorauseilend für alle Tenant-Grenzwerte overengineeren.
 
 ### 2. Fehlende Kernfunktionen für den Praxisalltag
 

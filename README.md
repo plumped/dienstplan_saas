@@ -164,6 +164,11 @@ Klick + Dropdown auch:
   Ende-Abweichung. Zusätzlich lässt sich die eigene Ist-Zeit direkt im Planblatt erfassen
   (Block 1.10): ein Badge auf der eigenen, vergangenen Schicht-Zelle (fehlend/erfasst/geprüft)
   öffnet denselben Segment-Editor als Popover, ohne in den Tab wechseln zu müssen.
+- **Einstellungen** (Block 2.10): eigener Tab, nur für Admin/Planer sichtbar, mit vier Modulen
+  (Schichttypen inkl. Segment-Editor, Mitarbeitende inkl. der Wochenstunden-Override-Felder aus
+  Block 1.14, Stationen, Skills) -- ersetzt den Django-Admin für den täglichen Selfservice-Betrieb.
+  Bleibt auch ohne jede Station erreichbar, damit ein frischer Tenant die erste Station selbst
+  anlegen kann.
 
 ## MVP-Fahrplan bis zur Marktreife
 
@@ -351,23 +356,35 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    eine belegte Zelle wird abgelehnt statt getauscht).
 9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn
    sie unterschritten wird.
-10. **"Einstellungen"-Bereich im Frontend für Admin/Planer** (Stammdaten-Selfservice): heute lassen
-   sich Nodes/Skills/TimeTemplates nur über den Django-Admin pflegen — für den Verkauf an Kliniken
-   ohne eigene IT-Abteilung nicht praktikabel, die Klinik muss neue Schichttypen selbst anlegen
-   können, nicht der Hersteller. Serverseitig ist das bereits vorbereitet
-   (`NodeViewSet`/`SkillViewSet`/`TimeTemplateViewSet` nutzen alle `IsTenantManager`, Planer dürfen
-   also schon schreiben) — es fehlt nur die Oberfläche. Umsetzung:
-   - Neuer Tab "Einstellungen" (nur sichtbar für Admin/Planer via `canManageSchedule`).
-   - Erstes Modul: **Schichttypen-Verwaltung** — Liste bestehender `TimeTemplate`s (Name,
-     Zeitfenster, Station) + Formular zum Anlegen/Bearbeiten inkl. Segment-Editor (siehe
-     Block 1.9) zum Definieren der Blockstruktur/Pausenfenster -- aktuell nur im Django-Admin
-     möglich (`TimeTemplateSegmentInline`), diese Aufgabe ersetzt das durch eine Frontend-Ansicht.
-   - Spätere Module im selben Tab: Stationen (Nodes) und Skills verwalten, sobald das
-     Schichttypen-Modul steht — gleiches UI-Muster (Liste + Formular), kein neuer Tab nötig.
-   - Überschneidet sich mit Block 3.1 (Setup-Wizard bei Self-Signup): der Setup-Wizard erzeugt die
-     Erststruktur einmalig bei der Registrierung, der "Einstellungen"-Tab ist die dauerhafte
-     Verwaltung danach im laufenden Betrieb — beide sollten dieselben Formulare/Komponenten
-     wiederverwenden.
+10. ✅ **"Einstellungen"-Bereich im Frontend für Admin/Planer** (Stammdaten-Selfservice): zuvor
+   liessen sich Nodes/Skills/TimeTemplates/Employee-Zusatzfelder nur über den Django-Admin
+   pflegen — nicht praktikabel für Kliniken ohne eigene IT-Abteilung, und ein Planer
+   (`Membership.Role.PLANNER`) hat ohnehin **keinen** Zugriff auf `/admin/` (das hängt an
+   `User.is_staff`/`is_superuser`, einem von `Membership.Role` komplett getrennten
+   Berechtigungssystem). Neuer Tab "Einstellungen" (`SettingsPanel.jsx`, nur sichtbar für
+   Admin/Planer via `canManageSchedule`) mit Unternavigation für vier Module:
+   - **Schichttypen** (`TimeTemplateSettings.jsx`) — Liste + Formular inkl. `TimeTemplateSegment
+     Editor.jsx` zum Definieren der Blockstruktur (Block 1.9): im Gegensatz zum
+     `TimeRecordSegmentEditor` (Ist-Zeit, fixe Blockanzahl) darf der Planer hier Segmente frei
+     hinzufügen/entfernen, weil das die Struktur ist, die spätere Ist-Erfassungen übernehmen.
+   - **Mitarbeitende** (`EmployeeSettings.jsx`) — Liste + Formular (Name, Geburtsdatum, Pensum,
+     Stationen/Skills-Mehrfachauswahl, aktiv/inaktiv) **inkl. der beiden Wochenstunden-Override-
+     Felder aus Block 1.14**, damit ein Planer z. B. für eine neu eingestellte Ärztin direkt 50h
+     statt der 42h-Tenant-Vorgabe hinterlegen kann, ohne Admin-Zugriff zu brauchen. Löschen bewusst
+     nicht vorgesehen (kaskadiert auf die Planungshistorie) -- Deaktivieren über `is_active`
+     stattdessen.
+   - **Stationen** (`NodeSettings.jsx`) — Liste (eingerückt nach `depth`) + Anlegen (optional mit
+     übergeordneter Station) + Umbenennen + Löschen. Verschieben eines Knotens im Baum (treebeard)
+     ist bewusst nicht Teil dieser Oberfläche.
+   - **Skills** (`SkillSettings.jsx`) — Liste + Anlegen + Umbenennen + Löschen.
+   - Ein frischer Tenant ohne Stationen kann den Tab trotzdem öffnen (`App.jsx` prüft `tab ===
+     "settings"` **vor** der `!nodeId`-Sperre), sonst käme niemand an die erste Stationsanlage
+     heran.
+   - Serverseitig war alles bereits vorbereitet (`NodeViewSet`/`SkillViewSet`/
+     `TimeTemplateViewSet`/`EmployeeViewSet` nutzen alle `IsTenantManager`), es fehlte nur die
+     Oberfläche -- keine Backend-Änderungen nötig ausser den neuen `api.js`-CRUD-Methoden.
+   - *Noch offen*: Überschneidet sich mit Block 3.1 (Setup-Wizard bei Self-Signup) -- der
+     Setup-Wizard sollte dieselben Formulare/Komponenten wiederverwenden, sobald er existiert.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

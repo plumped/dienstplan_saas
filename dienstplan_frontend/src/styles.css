@@ -523,6 +523,63 @@ thead .col-employee {
   color: color-mix(in srgb, var(--chip-color) 70%, black);
 }
 
+/* ---------- Einstellungen (Block 2.10) ---------- */
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-nav {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
+.settings-nav-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 6px 12px;
+  border-radius: 999px;
+}
+
+.settings-nav-btn:hover {
+  color: var(--primary);
+}
+
+.settings-nav-btn.is-active {
+  background: var(--primary-soft);
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
+.panel-form select[multiple] {
+  min-height: 84px;
+}
+
+.panel-form h3 {
+  font-size: 13px;
+  margin: 4px 0 0;
+  color: var(--ink);
+}
+
 /* ---------- Panels (Abwesenheiten / Diensttausch) ---------- */
 
 .side-panel {
@@ -784,6 +841,40 @@ thead .col-employee {
   font-size: 11px;
   color: var(--warn);
   font-weight: 600;
+}
+
+/* Nur im TimeTemplateSegmentEditor (Block 2.10) verwendet -- der Planer darf
+   dort Segmente hinzufügen/entfernen, im TimeRecordSegmentEditor (Ist-Zeit)
+   ist die Blockanzahl fix. */
+.add-segment {
+  align-self: flex-start;
+  margin-top: 4px;
+  border: 1px dashed var(--border-strong, var(--border));
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+.add-segment:hover {
+  background: var(--primary-soft);
+}
+
+.remove-segment {
+  border: none;
+  background: none;
+  color: var(--ink-muted);
+  font-size: 11.5px;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.remove-segment:hover {
+  color: var(--warn);
+  background: var(--warn-soft);
 }
 
 .segment-editor-summary {

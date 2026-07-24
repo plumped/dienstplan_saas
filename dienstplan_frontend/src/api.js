@@ -58,8 +58,24 @@ export const api = {
   getMe: () => request("/me/"),
 
   getNodes: () => request("/nodes/"),
+  createNode: (payload) => request("/nodes/", { method: "POST", body: payload }),
+  updateNode: (id, payload) => request(`/nodes/${id}/`, { method: "PATCH", body: payload }),
+  deleteNode: (id) => request(`/nodes/${id}/`, { method: "DELETE" }),
+
+  getSkills: () => request("/skills/"),
+  createSkill: (payload) => request("/skills/", { method: "POST", body: payload }),
+  updateSkill: (id, payload) => request(`/skills/${id}/`, { method: "PATCH", body: payload }),
+  deleteSkill: (id) => request(`/skills/${id}/`, { method: "DELETE" }),
+
   getEmployees: () => request("/employees/"),
+  createEmployee: (payload) => request("/employees/", { method: "POST", body: payload }),
+  updateEmployee: (id, payload) => request(`/employees/${id}/`, { method: "PATCH", body: payload }),
+
   getTimeTemplates: () => request("/time-templates/"),
+  createTimeTemplate: (payload) => request("/time-templates/", { method: "POST", body: payload }),
+  updateTimeTemplate: (id, payload) =>
+    request(`/time-templates/${id}/`, { method: "PATCH", body: payload }),
+  deleteTimeTemplate: (id) => request(`/time-templates/${id}/`, { method: "DELETE" }),
   getShiftAssignments: (nodeId, dateFrom, dateTo) =>
     request(`/shift-assignments/?node=${nodeId}&date_from=${dateFrom}&date_to=${dateTo}`),
   getShiftAssignment: (id) => request(`/shift-assignments/${id}/`),

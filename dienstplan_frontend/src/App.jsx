@@ -5,15 +5,17 @@ import LoginForm from "./components/LoginForm.jsx";
 import MonthNav from "./components/MonthNav.jsx";
 import NodeSelector from "./components/NodeSelector.jsx";
 import PlanGrid from "./components/PlanGrid.jsx";
+import SettingsPanel from "./components/SettingsPanel.jsx";
 import TimeRecordPanel from "./components/TimeRecordPanel.jsx";
 import TradeRequestPanel from "./components/TradeRequestPanel.jsx";
-import { ROLE_LABELS } from "./roles.js";
+import { canManageSchedule, ROLE_LABELS } from "./roles.js";
 
 const TABS = [
   { id: "grid", label: "Planblatt" },
   { id: "absences", label: "Abwesenheiten" },
   { id: "trades", label: "Diensttausch" },
   { id: "timerecords", label: "Zeiterfassung" },
+  { id: "settings", label: "Einstellungen", managerOnly: true },
 ];
 
 function currentPeriod() {
@@ -92,7 +94,7 @@ export default function App() {
         </div>
 
         <nav className="tab-nav">
-          {TABS.map((t) => (
+          {TABS.filter((t) => !t.managerOnly || canManageSchedule(me)).map((t) => (
             <button
               key={t.id}
               type="button"
@@ -137,9 +139,15 @@ export default function App() {
       )}
 
       <main>
-        {!nodeId ? (
+        {tab === "settings" ? (
+          // Bewusst ausserhalb der !nodeId-Sperre unten: ein frischer Tenant
+          // ohne Stationen muss die Einstellungen erreichen können, um
+          // überhaupt eine erste Station anzulegen (siehe SettingsPanel ->
+          // NodeSettings).
+          <SettingsPanel onError={setError} />
+        ) : !nodeId ? (
           <p className="empty-state">
-            Keine Stationen vorhanden. Im Admin unter „Nodes“ zuerst einen Standort anlegen.
+            Keine Stationen vorhanden. Unter „Einstellungen“ zuerst eine Station anlegen.
           </p>
         ) : (
           <>

@@ -1713,6 +1713,38 @@ class RoleBasedPermissionTests(APITestCase):
         self.assertEqual(response.data["status"], "submitted")
         self.assertEqual(response.data["deviation_minutes"], 5)
 
+    def test_time_records_can_be_filtered_by_date_range(self):
+        # Planblatt-Grid und Zeiterfassungs-Tab laden Ist-Zeiten nur für den
+        # sichtbaren Monat statt aller Einträge des Tenants (Performance).
+        in_range = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.alice_past_assignment,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+        )
+        out_of_range_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node,
+            date=timezone.localdate() - timedelta(days=60),
+            template=self.template,
+        )
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=out_of_range_assignment,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+        )
+        self.auth_as(self.planner_user)
+        date_from = self.alice_past_assignment.date - timedelta(days=1)
+        date_to = self.alice_past_assignment.date + timedelta(days=1)
+        response = self.client.get(f"/api/time-records/?date_from={date_from}&date_to={date_to}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [r["id"] for r in response.data["results"]]
+        self.assertEqual(ids, [in_range.id])
+
     def test_employee_cannot_record_time_for_others_shift(self):
         bob_past_assignment = ShiftAssignment.objects.create(
             tenant=self.tenant,

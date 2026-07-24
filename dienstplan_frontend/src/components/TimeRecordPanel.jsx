@@ -39,7 +39,11 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    Promise.all([api.getShiftAssignments(nodeId, dateFrom, dateTo), api.getTimeRecords(), api.getTimeTemplates()])
+    Promise.all([
+      api.getShiftAssignments(nodeId, dateFrom, dateTo),
+      api.getTimeRecords(dateFrom, dateTo),
+      api.getTimeTemplates(),
+    ])
       .then(([assignmentsRes, recordsRes, templatesRes]) => {
         if (cancelled) return;
         setAssignments(assignmentsRes.results ?? assignmentsRes);

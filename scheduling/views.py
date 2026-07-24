@@ -309,7 +309,11 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
 class TimeRecordViewSet(TenantScopedViewSet):
     """
     Ist-Arbeitszeiterfassung (Art. 73 ArGV 1, MVP-Fahrplan Block 1.9).
-    Unterstützt ?assignment=<id> und ?employee=<id> zum Filtern.
+    Unterstützt ?assignment=<id>, ?employee=<id> und ?date_from=/?date_to=
+    (gegen assignment__date) zum Filtern -- letzteres, damit Planblatt-Grid
+    und Zeiterfassungs-Tab nur den sichtbaren Monat statt aller Ist-Zeiten
+    des gesamten Tenants laden (sonst wächst der Response mit der Zeit
+    unnötig, siehe README Block 1 Frontend-Anmerkung).
 
     Admin/Planer dürfen für jede Schicht Ist-Zeiten anlegen/ändern/löschen
     und über `confirm` bestätigen. Mitarbeitende dürfen nur für die eigene
@@ -330,6 +334,12 @@ class TimeRecordViewSet(TenantScopedViewSet):
         employee = self.request.query_params.get("employee")
         if employee:
             qs = qs.filter(assignment__employee_id=employee)
+        date_from = self.request.query_params.get("date_from")
+        if date_from:
+            qs = qs.filter(assignment__date__gte=date_from)
+        date_to = self.request.query_params.get("date_to")
+        if date_to:
+            qs = qs.filter(assignment__date__lte=date_to)
         return qs
 
     def perform_create(self, serializer):

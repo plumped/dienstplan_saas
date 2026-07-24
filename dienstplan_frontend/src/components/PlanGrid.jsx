@@ -46,7 +46,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
       api.getTimeTemplates(),
       api.getShiftAssignments(nodeId, dateFrom, dateTo),
       api.getAbsences(),
-      api.getTimeRecords(),
+      api.getTimeRecords(dateFrom, dateTo),
     ])
       .then(([templatesRes, assignmentsRes, absencesRes, timeRecordsRes]) => {
         if (cancelled) return;

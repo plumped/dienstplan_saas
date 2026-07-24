@@ -91,7 +91,10 @@ export const api = {
   rejectShiftTradeRequest: (id) =>
     request(`/shift-trade-requests/${id}/reject/`, { method: "POST" }),
 
-  getTimeRecords: () => request("/time-records/"),
+  getTimeRecords: (dateFrom, dateTo) =>
+    request(
+      dateFrom && dateTo ? `/time-records/?date_from=${dateFrom}&date_to=${dateTo}` : "/time-records/"
+    ),
   createTimeRecord: (payload) => request("/time-records/", { method: "POST", body: payload }),
   updateTimeRecord: (id, payload) =>
     request(`/time-records/${id}/`, { method: "PATCH", body: payload }),

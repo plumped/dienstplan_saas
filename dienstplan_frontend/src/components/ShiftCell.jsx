@@ -1,4 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { effectiveRecordSegments, effectiveTemplateSegments } from "../timeRecordSegments.js";
+import FloatingPopover from "./FloatingPopover.jsx";
+import TimeRecordSegmentEditor from "./TimeRecordSegmentEditor.jsx";
 
 const DRAG_MIME = "application/x-dienstplan-shift";
 
@@ -27,15 +30,93 @@ export default function ShiftCell({
   onOfferTrade,
   canEdit = true,
   canOfferTrade = true,
+  timeRecord,
+  canRecordTime = false,
+  onSaveTimeRecord,
+  onDeleteTimeRecord,
 }) {
   const [editing, setEditing] = useState(false);
   const [offering, setOffering] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(false);
+  const [savingTime, setSavingTime] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const selectRef = useRef(null);
+  const recordBadgeRef = useRef(null);
 
   useEffect(() => {
     if (editing || offering) selectRef.current?.focus();
   }, [editing, offering]);
+
+  async function handleSaveTimeRecord(payload) {
+    setSavingTime(true);
+    const ok = await onSaveTimeRecord(payload);
+    setSavingTime(false);
+    if (ok) setRecordingTime(false);
+  }
+
+  async function handleDeleteTimeRecord() {
+    const ok = await onDeleteTimeRecord();
+    if (ok) setRecordingTime(false);
+  }
+
+  // Block 1.13: Badge auf der eigenen vergangenen Schicht-Zelle, damit die
+  // Ist-Zeit direkt im Planblatt erfasst werden kann statt nur über den
+  // separaten Tab "Zeiterfassung" (der als Planer-Prüfliste bestehen
+  // bleibt). Admin/Planer dürfen auch nach der Bestätigung noch korrigieren
+  // (TimeRecordPermission), Mitarbeitende nur solange der Eintrag noch nicht
+  // geprüft ist.
+  function renderTimeRecordBadge() {
+    if (!canRecordTime || !templateInfo) return null;
+    const isConfirmed = timeRecord?.status === "confirmed";
+    const statusClass = !timeRecord ? "is-missing" : isConfirmed ? "is-confirmed" : "is-submitted";
+    const title = !timeRecord
+      ? "Ist-Zeit noch nicht erfasst"
+      : isConfirmed
+        ? "Ist-Zeit geprüft"
+        : "Ist-Zeit erfasst – bearbeiten";
+    const canEditThisRecord = canEdit || !timeRecord || timeRecord.status === "submitted";
+
+    if (!canEditThisRecord) {
+      return (
+        <span className={`btn-record-time ${statusClass}`} title={title} aria-hidden="true">
+          ✓
+        </span>
+      );
+    }
+
+    return (
+      <>
+        <button
+          ref={recordBadgeRef}
+          type="button"
+          className={`btn-record-time ${statusClass}`}
+          title={title}
+          onClick={() => setRecordingTime((v) => !v)}
+        >
+          {timeRecord ? "✓" : "!"}
+          <span className="visually-hidden"> {title}</span>
+        </button>
+        {recordingTime && (
+          <FloatingPopover
+            anchorRef={recordBadgeRef}
+            onClose={() => setRecordingTime(false)}
+            className="time-record-popover"
+          >
+            <TimeRecordSegmentEditor
+              plannedSegments={effectiveTemplateSegments(templateInfo)}
+              initialSegments={effectiveRecordSegments(timeRecord)}
+              initialNote={timeRecord?.note ?? ""}
+              saving={savingTime}
+              canDelete={Boolean(timeRecord)}
+              onSave={handleSaveTimeRecord}
+              onCancel={() => setRecordingTime(false)}
+              onDelete={handleDeleteTimeRecord}
+            />
+          </FloatingPopover>
+        )}
+      </>
+    );
+  }
 
   if (absence) {
     return (
@@ -100,7 +181,8 @@ export default function ShiftCell({
     // Nicht-Planer sehen den Plan nur (siehe core.permissions.IsTenantManager
     // im Backend, das schreibende Zugriffe ohnehin mit 403 ablehnen würde) --
     // deshalb bewusst kein <button>/keine Drag-Handler, nur das Angebot,
-    // die eigene Schicht zum Tausch anzubieten (siehe canOfferTrade unten).
+    // die eigene Schicht zum Tausch anzubieten (siehe canOfferTrade unten)
+    // sowie die eigene Ist-Zeit zu erfassen (siehe canRecordTime oben).
     return (
       <span className="cell-wrap">
         <span className="shift-chip-btn is-readonly">
@@ -124,6 +206,7 @@ export default function ShiftCell({
             ⇄<span className="visually-hidden"> Schicht zum Tausch anbieten</span>
           </button>
         )}
+        {renderTimeRecordBadge()}
       </span>
     );
   }
@@ -184,6 +267,7 @@ export default function ShiftCell({
           ⇄<span className="visually-hidden"> Schicht zum Tausch anbieten</span>
         </button>
       )}
+      {renderTimeRecordBadge()}
     </span>
   );
 }

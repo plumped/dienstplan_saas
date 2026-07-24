@@ -26,8 +26,11 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
   const [templates, setTemplates] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [absences, setAbsences] = useState([]);
+  const [timeRecords, setTimeRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const canManage = canManageSchedule(me);
+  const ownEmployeeId = me?.employee?.id ?? null;
+  const todayIso = new Date().toISOString().slice(0, 10);
 
   const days = useMemo(
     () => Array.from({ length: daysInMonth(year, month) }, (_, i) => i + 1),
@@ -43,8 +46,9 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
       api.getTimeTemplates(),
       api.getShiftAssignments(nodeId, dateFrom, dateTo),
       api.getAbsences(),
+      api.getTimeRecords(),
     ])
-      .then(([templatesRes, assignmentsRes, absencesRes]) => {
+      .then(([templatesRes, assignmentsRes, absencesRes, timeRecordsRes]) => {
         if (cancelled) return;
         setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === nodeId));
         setAssignments(assignmentsRes.results ?? assignmentsRes);
@@ -53,6 +57,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
         // Anträge sieht man im Tab "Abwesenheiten", nicht hier.
         const absenceList = absencesRes.results ?? absencesRes;
         setAbsences(absenceList.filter((a) => a.status === "approved"));
+        setTimeRecords(timeRecordsRes.results ?? timeRecordsRes);
       })
       .catch((e) => onError(e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -67,6 +72,36 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
     for (const a of assignments) map.set(`${a.employee}:${a.date}`, a);
     return map;
   }, [assignments]);
+
+  const timeRecordByAssignment = useMemo(() => {
+    const map = new Map();
+    for (const r of timeRecords) map.set(r.assignment, r);
+    return map;
+  }, [timeRecords]);
+
+  async function handleSaveTimeRecord(assignmentId, record, payload) {
+    try {
+      const saved = record
+        ? await api.updateTimeRecord(record.id, { assignment: assignmentId, ...payload })
+        : await api.createTimeRecord({ assignment: assignmentId, ...payload });
+      setTimeRecords((prev) => (record ? prev.map((r) => (r.id === saved.id ? saved : r)) : [...prev, saved]));
+      return true;
+    } catch (e) {
+      onError(e.message);
+      return false;
+    }
+  }
+
+  async function handleDeleteTimeRecord(record) {
+    try {
+      await api.deleteTimeRecord(record.id);
+      setTimeRecords((prev) => prev.filter((r) => r.id !== record.id));
+      return true;
+    } catch (e) {
+      onError(e.message);
+      return false;
+    }
+  }
 
   function findAbsence(employeeId, date) {
     // ISO-Datumsstrings (YYYY-MM-DD) lassen sich direkt lexikographisch vergleichen.
@@ -237,6 +272,12 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
                 const absence = findAbsence(emp.id, date);
                 const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
                 const canOfferTrade = canManage || me?.employee?.id === emp.id;
+                // Block 1.13: Ist-Zeit-Badge nur auf der eigenen, bereits
+                // stattgefundenen Schicht -- unabhängig von canManage, damit
+                // auch ein Admin/Planer mit eigenem Employee-Profil seine
+                // eigenen Schichten erfassen kann.
+                const canRecordTime = Boolean(assignment) && date <= todayIso && ownEmployeeId === emp.id;
+                const timeRecord = assignment ? timeRecordByAssignment.get(assignment.id) : undefined;
                 return (
                   <td key={d} className={weekend ? "is-weekend" : ""}>
                     <ShiftCell
@@ -254,6 +295,10 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
                       onOfferTrade={(targetEmployeeId) =>
                         handleOfferTrade(emp.id, date, targetEmployeeId)
                       }
+                      timeRecord={timeRecord}
+                      canRecordTime={canRecordTime}
+                      onSaveTimeRecord={(payload) => handleSaveTimeRecord(assignment.id, timeRecord, payload)}
+                      onDeleteTimeRecord={() => handleDeleteTimeRecord(timeRecord)}
                     />
                   </td>
                 );

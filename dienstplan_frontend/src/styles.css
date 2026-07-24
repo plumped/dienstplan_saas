@@ -729,30 +729,132 @@ thead .col-employee {
   color: #2e7d32;
 }
 
-.time-record-form {
+/* Block 1.12: Segment-Editor (Zeiterfassungs-Tab und Inline-Popover im Grid,
+   siehe ShiftCell.jsx). Die Blockanzahl ist durch das TimeTemplate fix
+   vorgegeben -- hier werden nur Uhrzeiten je Block angepasst. */
+.segment-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 230px;
+}
+
+.segment-editor-row {
+  display: flex;
   align-items: center;
+  gap: 6px;
 }
 
-.time-record-form input[type="time"],
-.time-record-form input[type="number"] {
-  width: 84px;
+.segment-editor-index {
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  width: 12px;
+}
+
+.segment-editor-row input[type="time"] {
+  width: 88px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.segment-editor-sep {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.segment-editor-gap {
+  padding: 2px 0 2px 18px;
+}
+
+.segment-editor-gap-chip {
+  display: inline-flex;
+  font-size: 11px;
+  color: var(--ink-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.segment-editor-gap-warn {
+  font-size: 11px;
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.segment-editor-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  margin: 2px 0;
+}
+
+.segment-editor-summary strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.segment-editor-note {
+  width: 100%;
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 12.5px;
 }
 
-.time-record-form input[type="number"] {
-  width: 64px;
+/* Block 1.13: Badge auf der eigenen vergangenen Schicht-Zelle im Planblatt
+   (statt nur separatem Tab) + Popover mit demselben Segment-Editor. */
+.btn-record-time {
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 9px;
+  line-height: 1;
+  padding: 0;
+  box-shadow: 0 0 0 1px var(--border);
 }
 
-.time-record-form input[type="text"] {
-  flex: 1;
-  min-width: 140px;
-  padding: 6px 8px;
+.btn-record-time.is-missing {
+  color: var(--warn);
+  box-shadow: 0 0 0 1px var(--warn);
+}
+
+.btn-record-time.is-submitted {
+  color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.btn-record-time.is-confirmed {
+  color: #2e7d32;
+  box-shadow: 0 0 0 1px #2e7d32;
+}
+
+.time-record-popover {
+  /* position/top/left kommen inline von FloatingPopover.jsx (Portal auf
+     document.body, an den Viewport geklemmt statt vom Grid-Scroll
+     abgeschnitten, siehe Block 1.13). */
+  z-index: 30;
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  font-size: 12.5px;
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: 0 6px 20px rgba(20, 30, 25, 0.16);
+}
+
+.time-record-popover .entry-actions {
+  margin-top: 8px;
 }
 
 @media (max-width: 640px) {

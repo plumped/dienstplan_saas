@@ -155,11 +155,15 @@ Klick + Dropdown auch:
   Diensttausch-Angeboten zusätzlich "Genehmigen"/"Freigeben" und "Ablehnen"-Buttons. Im Planblatt
   werden nur genehmigte Absenzen als Sperr-Chip angezeigt -- ein offener Antrag taucht nur im Tab
   "Abwesenheiten" auf, blockiert das Grid aber (noch) nicht.
-- **Zeiterfassung** (Block 1.8): eigener Tab listet alle vergangenen Schichten des laufenden
+- **Zeiterfassung** (Block 1.8/1.9): eigener Tab listet alle vergangenen Schichten des laufenden
   Monats -- Mitarbeitende sehen nur eigene, Admin/Planer alle. Die geplanten Zeiten sind zur
   Korrektur vorausgefüllt; nach dem Speichern zeigt die Zeile Ist-Zeiten, Abweichung in Minuten
   und ggf. einen Hinweis auf zu kurze Pause. Admin/Planer bestätigen erfasste Einträge
-  ("Bestätigen"), danach ist der Eintrag für die erfassende Person schreibgeschützt.
+  ("Bestätigen"), danach ist der Eintrag für die erfassende Person schreibgeschützt. Bei
+  Schichttypen mit Segmenten (Block 1.9) zeigt die Zeile jeden Block einzeln inkl. Start- und
+  Ende-Abweichung. Zusätzlich lässt sich die eigene Ist-Zeit direkt im Planblatt erfassen
+  (Block 1.10): ein Badge auf der eigenen, vergangenen Schicht-Zelle (fehlend/erfasst/geprüft)
+  öffnet denselben Segment-Editor als Popover, ohne in den Tab wechseln zu müssen.
 
 ## MVP-Fahrplan bis zur Marktreife
 
@@ -230,46 +234,51 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      mit Soll-Zeiten vorausgefüllt zur Korrektur; Mitarbeitende sehen nur eigene Einträge,
      Admin/Planer alle mit "Bestätigen"-Button.
 
+9. ✅ **Segment-basierte Ist-Zeiterfassung** (löst die frühere pauschale `actual_break_minutes`-Zahl
+   ab): der Tag lässt sich als mehrere Arbeitsblöcke abbilden (von–bis, von–bis), die Pause ergibt
+   sich aus der Lücke dazwischen und ist damit verortet und prüfbar statt nur als Zahl erfasst.
+   Wichtig dabei: **nicht** der Mitarbeiter definiert die Blockstruktur pro Schicht neu, sondern
+   das `TimeTemplate` gibt sie vor — der Mitarbeiter verschiebt nur die Uhrzeiten der vorgegebenen
+   Blöcke (z. B. "07:03 statt 07:00", "Mittagspause wegen Notfallpatient erst 12:23 statt 12:00"),
+   nicht deren Anzahl/Reihenfolge.
+   - **Datenmodell**: `TimeTemplateSegment` (FK auf `TimeTemplate`, `order`, `start_time`,
+     `end_time`) und `TimeRecordSegment` (FK auf `TimeRecord`, `order`, `actual_start`,
+     `actual_end`). Ein Template ohne Segmente verhält sich weiterhin wie zuvor (ein Zeitfenster +
+     `break_minutes` pauschal, `TimeTemplate.effective_segments()`/`TimeRecord.effective_segments()`
+     fallen automatisch darauf zurück) — Segmente sind pro Template opt-in, aktuell im
+     Django-Admin gepflegt (Inline an `TimeTemplate`), eine Frontend-Oberfläche folgt in Block 2.9.
+   - **Regel-Engine**: `ShiftAssignment._check_break_minutes`/`_shift_hours` rechnen bei
+     Segment-Templates mit der Summe der Blockdauern bzw. der Lücke dazwischen statt mit
+     `break_minutes`; `TimeRecord.clean()` verlangt exakt so viele Ist-Blöcke wie das Template
+     Segmente hat und lehnt unsortierte/überlappende Blöcke ab.
+   - **API**: `TimeTemplateSerializer`/`TimeRecordSerializer` schreiben `segments` als
+     verschachtelte Liste (bei jeder Änderung vollständig ersetzt); neue Felder
+     `end_deviation_minutes`/`break_minutes_total` neben den bestehenden
+     `deviation_minutes`/`actual_hours`/`break_below_minimum`.
+   - **Frontend**: gemeinsamer `TimeRecordSegmentEditor` (fixe Blockanzahl aus dem Template, kein
+     Hinzufügen/Entfernen, automatisch berechnete Pausenanzeige zwischen den Blöcken, live
+     Start-/Ende-Abweichung) wird sowohl im Tab "Zeiterfassung" als auch im Planblatt-Grid
+     verwendet (siehe Punkt 10).
+10. ✅ **Inline-Erfassung im Planblatt-Grid**: der Tab "Zeiterfassung" bleibt als Prüf-/
+    Review-Liste für Admin/Planer bestehen (viele Mitarbeitende auf einen Blick), Mitarbeitende
+    erfassen ihre Ist-Zeit aber direkt aus der eigenen, vergangenen Schicht-Zelle im Planblatt
+    heraus: ein Badge auf der Zelle (fehlend/erfasst/geprüft, farblich unterschieden) öffnet ein
+    Popover mit demselben Segment-Editor, vorausgefüllt mit den Soll-Zeiten. Das Popover wird via
+    `FloatingPopover` (React-Portal auf `document.body`, an den Viewport geklemmt) ausserhalb des
+    Tabellen-Scrollcontainers gerendert -- sonst würde es bei Zellen nahe dem rechten Rand vom
+    horizontalen Grid-Scrolling abgeschnitten.
+
 **Noch offen**:
 
-9. **Überzeitarbeit**: Soll/Ist-Vergleich pro Woche (Soll aus `Employee.employment_pct`) und
-   Zuschlag (i. d. R. 25%, Art. 13 ArG). Bewusst nicht Teil der Regel-Engine selbst, sondern der
-   geplanten Monatsauswertung (Block 2.6), weil Überzeit eine Auswertungs-/Lohnfrage ist, keine
-   Ablehnung einer Zuweisung.
-10. **Anschluss der Ist-Arbeitszeiterfassung an Block 2.6**: die geplante Monatsauswertung
+11. **Überzeitarbeit**: Soll/Ist-Vergleich pro Woche (Soll aus `Employee.employment_pct`) und
+    Zuschlag (i. d. R. 25%, Art. 13 ArG). Bewusst nicht Teil der Regel-Engine selbst, sondern der
+    geplanten Monatsauswertung (Block 2.6), weil Überzeit eine Auswertungs-/Lohnfrage ist, keine
+    Ablehnung einer Zuweisung.
+12. **Anschluss der Ist-Arbeitszeiterfassung an Block 2.6**: die geplante Monatsauswertung
     (Soll/Ist-Stunden, Überzeit, Nacht-/Sonntagszuschläge) sollte, sobald sie existiert, auf
     `TimeRecord` statt nur auf der Planung (`ShiftAssignment`) basieren.
-11. **Aufbewahrung**: Ist-Daten (`TimeRecord`) fallen unter dieselbe Aufbewahrungspflicht wie
+13. **Aufbewahrung**: Ist-Daten (`TimeRecord`) fallen unter dieselbe Aufbewahrungspflicht wie
     Lohnunterlagen (siehe Block 5.3) — beim Löschkonzept mitdenken.
-12. **Segment-basierte Ist-Zeiterfassung** (löst die heutige pauschale `actual_break_minutes`-Zahl
-    ab): reale Kliniken (z. B. Polypoint PEP) erfassen den Tag als mehrere Arbeitsblöcke
-    (von–bis, von–bis), die Pause ergibt sich aus der Lücke dazwischen und ist damit verortet und
-    prüfbar statt nur als Zahl erfasst. Wichtig dabei: **nicht** der Mitarbeiter definiert die
-    Blockstruktur pro Schicht neu, sondern das `TimeTemplate` gibt sie vor — der Mitarbeiter darf
-    nur die Uhrzeiten der vorgegebenen Blöcke leicht verschieben (z. B. "07:03 statt 07:00",
-    "Mittagspause wegen Notfallpatient erst 12:23 statt 12:00"), nicht die Anzahl/Reihenfolge der
-    Blöcke ändern. Teilschritte:
-    - **Datenmodell**: neues `TimeTemplateSegment` (FK auf `TimeTemplate`, `order`, `start_time`,
-      `end_time`) — ein Template ohne definierte Segmente verhält sich weiterhin wie heute (ein
-      Zeitfenster + `break_minutes` pauschal), Segmente sind pro Template opt-in.
-    - **`TimeRecord` bekommt passende Kindzeilen** (`TimeRecordSegment`: `order`, `actual_start`,
-      `actual_end`), beim Anlegen automatisch aus den Template-Segmenten mit den Soll-Zeiten
-      vorausgefüllt; Anzahl/Reihenfolge ist durch das Template fix vorgegeben, nur die Uhrzeiten
-      je Segment sind editierbar.
-    - **Regel-Engine-Bezug**: Pausenminimum (Art. 15 ArG) und Nettoarbeitszeit werden aus der
-      Summe der Segmentdauern berechnet statt aus einer einzelnen Differenz minus Minutenzahl.
-    - **Frontend**: Segment-Editor im TimeTemplate-Formular (siehe Block 2.9) zum Definieren der
-      Blockstruktur; im Mitarbeiter-Formular (`TimeRecordPanel`) je Segment nur zwei Zeit-Inputs,
-      kein Hinzufügen/Entfernen von Blöcken. Interaktiver Entwurf bereits als Mockup vorhanden
-      (Segment-Zeilen mit automatisch berechneter Pausenanzeige dazwischen).
-13. **Inline-Erfassung im Planblatt-Grid** (UX-Verbesserung, siehe Diskussion): der separate Tab
-    "Zeiterfassung" ist als Prüf-/Review-Liste für Admin/Planer sinnvoll (viele Mitarbeitende auf
-    einen Blick), für Mitarbeitende aber ein zusätzlicher Weg, den man erst finden muss. Für
-    Mitarbeitende soll die Ist-Zeit-Erfassung stattdessen direkt aus der eigenen, vergangenen
-    Schicht-Zelle im Planblatt heraus möglich sein: kleines Badge/Icon auf unerfassten eigenen
-    Zellen ("noch nicht erfasst") öffnet ein Popover mit den vorausgefüllten Soll-Zeiten
-    (bzw. Segmenten, siehe Punkt 12). Der Tab "Zeiterfassung" bleibt bestehen, wird aber zur
-    Planer-Übersicht (und ggf. "meine Historie" für Mitarbeitende) statt primärer Eingabe-Ort.
 
 ### 2. Fehlende Kernfunktionen für den Praxisalltag
 
@@ -308,7 +317,8 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    - Neuer Tab "Einstellungen" (nur sichtbar für Admin/Planer via `canManageSchedule`).
    - Erstes Modul: **Schichttypen-Verwaltung** — Liste bestehender `TimeTemplate`s (Name,
      Zeitfenster, Station) + Formular zum Anlegen/Bearbeiten inkl. Segment-Editor (siehe
-     Block 1.12) zum Definieren der Blockstruktur/Pausenfenster.
+     Block 1.9) zum Definieren der Blockstruktur/Pausenfenster -- aktuell nur im Django-Admin
+     möglich (`TimeTemplateSegmentInline`), diese Aufgabe ersetzt das durch eine Frontend-Ansicht.
    - Spätere Module im selben Tab: Stationen (Nodes) und Skills verwalten, sobald das
      Schichttypen-Modul steht — gleiches UI-Muster (Liste + Formular), kein neuer Tab nötig.
    - Überschneidet sich mit Block 3.1 (Setup-Wizard bei Self-Signup): der Setup-Wizard erzeugt die

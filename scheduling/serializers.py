@@ -8,7 +8,9 @@ from .models import (
     ShiftTradeRequest,
     Skill,
     TimeRecord,
+    TimeRecordSegment,
     TimeTemplate,
+    TimeTemplateSegment,
 )
 
 
@@ -53,7 +55,23 @@ class EmployeeSerializer(serializers.ModelSerializer):
         ]
 
 
+class TimeTemplateSegmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TimeTemplateSegment
+        fields = ["id", "order", "start_time", "end_time"]
+        read_only_fields = ["id"]
+        extra_kwargs = {"order": {"required": False}}
+
+
 class TimeTemplateSerializer(serializers.ModelSerializer):
+    # Block 1.12: optionale Blockstruktur (z. B. Vormittag/Nachmittag mit
+    # fixer Mittagspause dazwischen). Ein Template ohne Segmente verhält
+    # sich weiterhin wie bisher (ein Zeitfenster + break_minutes pauschal,
+    # siehe TimeTemplate.effective_segments()). Wird bei jedem Schreiben
+    # vollständig ersetzt (delete+recreate in create()/update()), da die
+    # Liste kurz ist und Umsortieren/Diffen keinen echten Nutzen bringt.
+    segments = TimeTemplateSegmentSerializer(many=True, required=False)
+
     class Meta:
         model = TimeTemplate
         fields = [
@@ -66,7 +84,48 @@ class TimeTemplateSerializer(serializers.ModelSerializer):
             "icon",
             "color",
             "required_skill",
+            "segments",
         ]
+
+    def validate_segments(self, value):
+        ordered = sorted(value, key=lambda s: s.get("order", 0))
+        for i in range(len(ordered) - 1):
+            if ordered[i]["end_time"] > ordered[i + 1]["start_time"]:
+                raise serializers.ValidationError(
+                    "Segmente dürfen sich nicht überlappen und müssen chronologisch geordnet sein "
+                    "(Segmente über Mitternacht werden aktuell nicht unterstützt)."
+                )
+        return value
+
+    def create(self, validated_data):
+        segments_data = validated_data.pop("segments", None)
+        instance = TimeTemplate.objects.create(**validated_data)
+        if segments_data:
+            self._sync_segments(instance, segments_data)
+        return instance
+
+    def update(self, instance, validated_data):
+        segments_data = validated_data.pop("segments", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        if segments_data is not None:
+            self._sync_segments(instance, segments_data)
+        return instance
+
+    @staticmethod
+    def _sync_segments(instance, segments_data):
+        instance.segments.all().delete()
+        TimeTemplateSegment.objects.bulk_create(
+            TimeTemplateSegment(
+                template=instance,
+                tenant=instance.tenant,
+                order=seg.get("order", i),
+                start_time=seg["start_time"],
+                end_time=seg["end_time"],
+            )
+            for i, seg in enumerate(sorted(segments_data, key=lambda s: s.get("order", 0)))
+        )
 
 
 class ShiftAssignmentSerializer(serializers.ModelSerializer):
@@ -114,11 +173,27 @@ class AbsenceSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class TimeRecordSegmentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TimeRecordSegment
+        fields = ["id", "order", "actual_start", "actual_end"]
+        read_only_fields = ["id"]
+        extra_kwargs = {"order": {"required": False}}
+
+
 class TimeRecordSerializer(serializers.ModelSerializer):
     # Informativ, berechnet aus assignment.template -- siehe TimeRecord-Docstring.
     deviation_minutes = serializers.IntegerField(read_only=True)
+    end_deviation_minutes = serializers.IntegerField(read_only=True)
     actual_hours = serializers.FloatField(read_only=True)
+    break_minutes_total = serializers.IntegerField(read_only=True)
     break_below_minimum = serializers.BooleanField(read_only=True)
+    # Block 1.12: bei Templates mit Segmenten (siehe TimeTemplate.segments)
+    # wird hierüber pro Block eine Ist-Zeit erfasst, statt der klassischen
+    # actual_start/actual_end/actual_break_minutes-Felder (die dann leer
+    # bleiben). Anzahl/Reihenfolge sind vom Template vorgegeben -- geprüft in
+    # TimeRecord.clean(), nicht hier im Serializer.
+    segments = TimeRecordSegmentSerializer(many=True, required=False)
 
     class Meta:
         model = TimeRecord
@@ -133,22 +208,66 @@ class TimeRecordSerializer(serializers.ModelSerializer):
             "recorded_by",
             "recorded_at",
             "deviation_minutes",
+            "end_deviation_minutes",
             "actual_hours",
+            "break_minutes_total",
             "break_below_minimum",
+            "segments",
         ]
         # status/recorded_by/recorded_at werden nicht direkt gesetzt, sondern
         # über TimeRecordViewSet.perform_create (recorded_by) bzw. die
         # confirm-Action (status) gesteuert (siehe Block 1.9 im README).
         read_only_fields = ["status", "recorded_by", "recorded_at"]
+        extra_kwargs = {
+            "actual_start": {"required": False},
+            "actual_end": {"required": False},
+        }
 
     def validate(self, attrs):
+        # segments wird separat behandelt (nested write, siehe create/update)
+        # -- nicht Teil der einfachen setattr-Schleife wie die Skalarfelder.
+        segments_data = attrs.get("segments")
         instance = self.instance or TimeRecord()
         for field in ["assignment", "actual_start", "actual_end", "actual_break_minutes", "note"]:
             if field in attrs:
                 setattr(instance, field, attrs[field])
         instance.tenant = self.context["request"].tenant
+        # "segments" fehlt im Payload (PATCH ohne Zeitänderung) -> None ->
+        # TimeRecord.effective_segments() greift auf bereits gespeicherte
+        # Segmente zurück statt auf einen leeren Pending-Zustand.
+        instance._pending_segments = segments_data
         instance.clean()
         return attrs
+
+    def create(self, validated_data):
+        segments_data = validated_data.pop("segments", None)
+        instance = TimeRecord.objects.create(**validated_data)
+        if segments_data:
+            self._sync_segments(instance, segments_data)
+        return instance
+
+    def update(self, instance, validated_data):
+        segments_data = validated_data.pop("segments", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        if segments_data is not None:
+            self._sync_segments(instance, segments_data)
+        return instance
+
+    @staticmethod
+    def _sync_segments(instance, segments_data):
+        instance.segments.all().delete()
+        TimeRecordSegment.objects.bulk_create(
+            TimeRecordSegment(
+                time_record=instance,
+                tenant=instance.tenant,
+                order=seg.get("order", i),
+                actual_start=seg["actual_start"],
+                actual_end=seg["actual_end"],
+            )
+            for i, seg in enumerate(sorted(segments_data, key=lambda s: s.get("order", 0)))
+        )
 
 
 class ShiftTradeRequestSerializer(serializers.ModelSerializer):

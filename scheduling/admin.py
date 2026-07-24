@@ -2,7 +2,18 @@ from django.contrib import admin
 from treebeard.admin import TreeAdmin
 from treebeard.forms import movenodeform_factory
 
-from .models import Absence, Employee, Node, ShiftAssignment, ShiftTradeRequest, Skill, TimeRecord, TimeTemplate
+from .models import (
+    Absence,
+    Employee,
+    Node,
+    ShiftAssignment,
+    ShiftTradeRequest,
+    Skill,
+    TimeRecord,
+    TimeRecordSegment,
+    TimeTemplate,
+    TimeTemplateSegment,
+)
 
 
 @admin.register(Node)
@@ -25,10 +36,34 @@ class EmployeeAdmin(admin.ModelAdmin):
     filter_horizontal = ["nodes", "skills"]
 
 
+class TimeTemplateSegmentInline(admin.TabularInline):
+    """
+    Block 1.12: optionale Blockstruktur (z. B. Vormittag/Nachmittag mit
+    fixer Mittagspause dazwischen) -- leer lassen für das bisherige
+    Verhalten (ein Zeitfenster + break_minutes pauschal). Bis Block 2.9
+    (Frontend-Oberfläche für Planer) ist dies der einzige Ort, um Segmente
+    zu pflegen.
+    """
+
+    model = TimeTemplateSegment
+    extra = 0
+    exclude = ["tenant"]  # wird beim Speichern vom Template übernommen, siehe save_formset unten
+
+
 @admin.register(TimeTemplate)
 class TimeTemplateAdmin(admin.ModelAdmin):
     list_display = ["name", "node", "start_time", "end_time", "tenant"]
     list_filter = ["tenant", "node"]
+    inlines = [TimeTemplateSegmentInline]
+
+    def save_formset(self, request, form, formset, change):
+        instances = formset.save(commit=False)
+        for instance in instances:
+            instance.tenant = form.instance.tenant
+            instance.save()
+        formset.save_m2m()
+        for obj in formset.deleted_objects:
+            obj.delete()
 
 
 @admin.register(ShiftAssignment)
@@ -51,7 +86,23 @@ class ShiftTradeRequestAdmin(admin.ModelAdmin):
     list_filter = ["tenant", "status"]
 
 
+class TimeRecordSegmentInline(admin.TabularInline):
+    model = TimeRecordSegment
+    extra = 0
+    exclude = ["tenant"]
+
+
 @admin.register(TimeRecord)
 class TimeRecordAdmin(admin.ModelAdmin):
     list_display = ["assignment", "actual_start", "actual_end", "status", "tenant"]
     list_filter = ["tenant", "status"]
+    inlines = [TimeRecordSegmentInline]
+
+    def save_formset(self, request, form, formset, change):
+        instances = formset.save(commit=False)
+        for instance in instances:
+            instance.tenant = form.instance.tenant
+            instance.save()
+        formset.save_m2m()
+        for obj in formset.deleted_objects:
+            obj.delete()

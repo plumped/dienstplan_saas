@@ -18,7 +18,9 @@ from .models import (
     ShiftTradeRequest,
     Skill,
     TimeRecord,
+    TimeRecordSegment,
     TimeTemplate,
+    TimeTemplateSegment,
 )
 
 User = get_user_model()
@@ -814,6 +816,304 @@ class TimeRecordTests(TestCase):
         record.confirm()
         with self.assertRaises(ValidationError):
             record.confirm()
+
+
+class SegmentedTimeTemplateTests(TestCase):
+    """
+    Block 1.12: TimeTemplate mit expliziter Blockstruktur (z. B. Vormittag/
+    Nachmittag mit fixer Mittagspause dazwischen) statt eines einzelnen
+    Zeitfensters + pauschaler break_minutes. Die Pause ergibt sich aus der
+    Lücke zwischen zwei Segmenten.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        # Frühdienst mit Segmenten: 07:00-12:00 / 12:45-16:00 -> Pause 45 Min.
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Fruehdienst", start_time=time(7, 0), end_time=time(16, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=self.template, order=0, start_time=time(7, 0), end_time=time(12, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=self.template, order=1, start_time=time(12, 45), end_time=time(16, 0)
+        )
+
+    def test_effective_segments_returns_defined_segments(self):
+        self.assertEqual(
+            self.template.effective_segments(), [(time(7, 0), time(12, 0)), (time(12, 45), time(16, 0))]
+        )
+
+    def test_effective_segments_falls_back_without_segments(self):
+        plain = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Spaetdienst", start_time=time(15, 0), end_time=time(23, 0)
+        )
+        self.assertEqual(plain.effective_segments(), [(time(15, 0), time(23, 0))])
+
+    def test_shift_hours_sums_segment_durations(self):
+        # 5h (07:00-12:00) + 3.25h (12:45-16:00) = 8.25h, Pause zählt nicht mit.
+        self.assertEqual(ShiftAssignment._shift_hours(date(2026, 8, 3), self.template), 8.25)
+
+    def test_break_check_passes_with_sufficient_gap(self):
+        # Netto 8.25h -> Art. 15 verlangt 30 Min., Lücke zwischen den Segmenten ist 45 Min.
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        assignment.clean()  # keine Exception
+
+    def test_break_check_rejects_insufficient_gap(self):
+        short_gap_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Knappe Pause", start_time=time(7, 0), end_time=time(16, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=short_gap_template, order=0, start_time=time(7, 0), end_time=time(12, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            # Nur 10 Min. Lücke -> unter den 30 Min., die Art. 15 ArG bei >7h Nettoarbeitszeit verlangt.
+            tenant=self.tenant,
+            template=short_gap_template,
+            order=1,
+            start_time=time(12, 10),
+            end_time=time(16, 0),
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=short_gap_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+
+class SegmentedTimeRecordTests(TestCase):
+    """
+    Block 1.12: Ist-Zeiterfassung für ein Template mit vorgegebener
+    Blockstruktur -- der Mitarbeiter verschiebt nur die Uhrzeiten je Block
+    (z. B. "07:03 statt 07:00", "Mittagspause wegen Notfallpatient erst um
+    12:23 statt 12:00"), nicht die Anzahl der Blöcke.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Fruehdienst", start_time=time(7, 0), end_time=time(16, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=self.template, order=0, start_time=time(7, 0), end_time=time(12, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=self.template, order=1, start_time=time(12, 45), end_time=time(16, 0)
+        )
+        self.yesterday = timezone.localdate() - timedelta(days=1)
+        self.assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=self.yesterday, template=self.template
+        )
+
+    def _record_with_pending_segments(self, segments, note=""):
+        record = TimeRecord(tenant=self.tenant, assignment=self.assignment, note=note)
+        record._pending_segments = segments
+        return record
+
+    def test_matching_segments_within_tolerance_pass_clean(self):
+        record = self._record_with_pending_segments(
+            [
+                {"order": 0, "actual_start": time(7, 3), "actual_end": time(12, 23)},
+                {"order": 1, "actual_start": time(13, 8), "actual_end": time(16, 5)},
+            ]
+        )
+        record.clean()  # 3/5 Min. Abweichung, unter der Default-Toleranz von 15 Min.
+
+    def test_segment_count_mismatch_is_rejected(self):
+        record = self._record_with_pending_segments(
+            [{"order": 0, "actual_start": time(7, 0), "actual_end": time(16, 0)}]
+        )
+        with self.assertRaises(ValidationError):
+            record.clean()
+
+    def test_overlapping_segments_are_rejected(self):
+        record = self._record_with_pending_segments(
+            [
+                {"order": 0, "actual_start": time(7, 0), "actual_end": time(13, 0)},
+                {"order": 1, "actual_start": time(12, 30), "actual_end": time(16, 0)},
+            ]
+        )
+        with self.assertRaises(ValidationError):
+            record.clean()
+
+    def test_deviation_and_hours_properties_from_segments(self):
+        record = self._record_with_pending_segments(
+            [
+                {"order": 0, "actual_start": time(7, 3), "actual_end": time(12, 23)},
+                {"order": 1, "actual_start": time(13, 8), "actual_end": time(16, 5)},
+            ]
+        )
+        self.assertEqual(record.deviation_minutes, 3)
+        self.assertEqual(record.end_deviation_minutes, 5)
+        self.assertEqual(record.actual_hours, 8.28)  # (5h20 + 2h57) = 8.2833h, gerundet
+        self.assertEqual(record.break_minutes_total, 45)  # 13:08 - 12:23
+        self.assertFalse(record.break_below_minimum)  # 45 Min. >= die geforderten 30 Min.
+
+
+class SegmentedTimeTemplateAndRecordAPITests(APITestCase):
+    """API-Ebene: verschachteltes Schreiben von Segmenten über die Serializer."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_planner_can_create_time_template_with_segments(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Fruehdienst",
+                "start_time": "07:00",
+                "end_time": "16:00",
+                "segments": [
+                    {"order": 0, "start_time": "07:00", "end_time": "12:00"},
+                    {"order": 1, "start_time": "12:45", "end_time": "16:00"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(response.data["segments"]), 2)
+        template = TimeTemplate.all_objects.get(pk=response.data["id"])
+        self.assertEqual(template.effective_segments(), [(time(7, 0), time(12, 0)), (time(12, 45), time(16, 0))])
+
+    def test_overlapping_segments_rejected_by_api(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Ungueltig",
+                "start_time": "07:00",
+                "end_time": "16:00",
+                "segments": [
+                    {"order": 0, "start_time": "07:00", "end_time": "13:00"},
+                    {"order": 1, "start_time": "12:00", "end_time": "16:00"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_updating_segments_replaces_previous_set(self):
+        self.auth_as(self.planner_user)
+        create_response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Fruehdienst",
+                "start_time": "07:00",
+                "end_time": "16:00",
+                "segments": [
+                    {"order": 0, "start_time": "07:00", "end_time": "12:00"},
+                    {"order": 1, "start_time": "12:45", "end_time": "16:00"},
+                ],
+            },
+            format="json",
+        )
+        template_id = create_response.data["id"]
+        update_response = self.client.patch(
+            f"/api/time-templates/{template_id}/",
+            {"segments": [{"order": 0, "start_time": "07:00", "end_time": "16:00"}]},
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(update_response.data["segments"]), 1)
+        template = TimeTemplate.all_objects.get(pk=template_id)
+        self.assertEqual(template.segments.count(), 1)
+
+    def test_employee_can_record_own_segmented_time(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Fruehdienst", start_time=time(7, 0), end_time=time(16, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=template, order=0, start_time=time(7, 0), end_time=time(12, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=template, order=1, start_time=time(12, 45), end_time=time(16, 0)
+        )
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node,
+            date=timezone.localdate() - timedelta(days=1),
+            template=template,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/time-records/",
+            {
+                "assignment": assignment.id,
+                "segments": [
+                    {"order": 0, "actual_start": "07:03", "actual_end": "12:23"},
+                    {"order": 1, "actual_start": "13:08", "actual_end": "16:05"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["deviation_minutes"], 3)
+        self.assertEqual(response.data["end_deviation_minutes"], 5)
+        self.assertEqual(response.data["break_minutes_total"], 45)
+        record = TimeRecord.all_objects.get(pk=response.data["id"])
+        self.assertEqual(record.segments.count(), 2)
+
+    def test_employee_segment_overlap_rejected_by_api(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Fruehdienst", start_time=time(7, 0), end_time=time(16, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=template, order=0, start_time=time(7, 0), end_time=time(12, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=template, order=1, start_time=time(12, 45), end_time=time(16, 0)
+        )
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node,
+            date=timezone.localdate() - timedelta(days=1),
+            template=template,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/time-records/",
+            {
+                "assignment": assignment.id,
+                "segments": [
+                    {"order": 0, "actual_start": "07:00", "actual_end": "13:00"},
+                    {"order": 1, "actual_start": "12:30", "actual_end": "16:00"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class ShiftTradeRequestTests(TestCase):

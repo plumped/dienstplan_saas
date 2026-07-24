@@ -31,6 +31,30 @@ BREAK_RULES_ART_15 = [
 YOUTH_MINIMUM_REST_HOURS = 12
 
 
+def _segment_datetimes(reference_date, segments):
+    """
+    Wandelt eine geordnete Liste von (start_time, end_time)-Paaren (Segmente
+    eines TimeTemplate oder TimeRecord, Block 1.12) in tatsächliche datetimes
+    um. Nur ein einzelnes Segment darf über Mitternacht hinausgehen
+    (Nachtschicht als ein Block, bisheriges Verhalten) -- ein Tagesüberlauf
+    *zwischen* zwei Blöcken ist für die MVP-Version nicht vorgesehen und wird
+    von den Aufrufern (TimeTemplateSerializer, TimeRecord.clean) bereits
+    zurückgewiesen, bevor diese Funktion mehrsegmentig aufgerufen wird.
+    """
+    result = []
+    cursor = None
+    for start_time, end_time in segments:
+        start_dt = datetime.combine(reference_date, start_time)
+        if cursor is not None and start_dt < cursor:
+            start_dt += timedelta(days=1)
+        end_dt = datetime.combine(start_dt.date(), end_time)
+        if end_dt <= start_dt:
+            end_dt += timedelta(days=1)
+        result.append((start_dt, end_dt))
+        cursor = end_dt
+    return result
+
+
 class Node(MP_Node, TenantScopedModel):
     """
     Organisationsknoten (Standort, Abteilung, Station, ...), beliebig
@@ -168,6 +192,48 @@ class TimeTemplate(TenantScopedModel):
     def __str__(self):
         return f"{self.name} ({self.start_time}\u2013{self.end_time})"
 
+    def effective_segments(self):
+        """
+        Liste von (start_time, end_time)-Paaren, geordnet: aus den expliziten
+        TimeTemplateSegment-Kindzeilen, falls vorhanden (Block 1.12 -- der
+        Planer definiert die Blockstruktur, z. B. Vormittag/Nachmittag mit
+        einer fixen Mittagspause dazwischen), sonst als einzelnes Segment aus
+        start_time/end_time (bisheriges Verhalten, pauschale Pause \u00fcber
+        break_minutes).
+        """
+        segments = list(self.segments.order_by("order").values_list("start_time", "end_time"))
+        return segments or [(self.start_time, self.end_time)]
+
+
+class TimeTemplateSegment(TenantScopedModel):
+    """
+    Einzelner Arbeitsblock innerhalb eines TimeTemplate (Block 1.12). Ein
+    Template ohne Segmente verh\u00e4lt sich weiterhin wie bisher (ein
+    durchgehendes Zeitfenster + `break_minutes` pauschal) -- Segmente sind
+    pro Template opt-in und werden vom Planer gepflegt (aktuell im
+    Django-Admin, eine eigene Frontend-Oberfl\u00e4che folgt in Block 2.9), nicht
+    von der einzelnen Schicht oder der Ist-Erfassung \u00fcberschrieben: die
+    Anzahl/Reihenfolge der Bl\u00f6cke ist am Template fix vorgegeben, die
+    Ist-Erfassung (TimeRecordSegment) darf pro Block nur die Uhrzeiten
+    anpassen. Die Pause ergibt sich automatisch aus der L\u00fccke zwischen zwei
+    aufeinanderfolgenden Segmenten.
+    """
+
+    template = models.ForeignKey(TimeTemplate, on_delete=models.CASCADE, related_name="segments")
+    order = models.PositiveSmallIntegerField()
+    start_time = models.TimeField()
+    end_time = models.TimeField(
+        help_text="Segmente, die \u00fcber Mitternacht gehen, werden aktuell nicht unterst\u00fctzt "
+        "(nur ein einzelnes Segment darf \u00fcber Mitternacht hinausgehen)."
+    )
+
+    class Meta:
+        ordering = ["order"]
+        unique_together = ("template", "order")
+
+    def __str__(self):
+        return f"{self.template.name} #{self.order} ({self.start_time}\u2013{self.end_time})"
+
 
 class ShiftAssignment(TenantScopedModel):
     """Die einzelne Zuweisung im Planblatt: ein Mitarbeiter, ein Tag, ein Time Template."""
@@ -191,16 +257,22 @@ class ShiftAssignment(TenantScopedModel):
 
     @staticmethod
     def _shift_datetimes(date, template):
-        start = datetime.combine(date, template.start_time)
-        end = datetime.combine(date, template.end_time)
-        if template.end_time <= template.start_time:
-            end += timedelta(days=1)  # Nachtschicht über Mitternacht
-        return start, end
+        """Gesamtspanne der Schicht (erster Segmentbeginn bis letztes Segmentende)."""
+        segments = _segment_datetimes(date, template.effective_segments())
+        return segments[0][0], segments[-1][1]
 
     @classmethod
     def _shift_hours(cls, date, template):
-        start, end = cls._shift_datetimes(date, template)
-        worked = (end - start) - timedelta(minutes=template.break_minutes)
+        """
+        Netto-Arbeitszeit: bei einem Template ohne explizite Segmente wie
+        bisher Gesamtspanne minus `break_minutes`; bei mehreren Segmenten die
+        Summe der einzelnen Blockdauern (die Lücken dazwischen sind dann
+        implizit die Pause, siehe _check_break_minutes).
+        """
+        segments = _segment_datetimes(date, template.effective_segments())
+        worked = sum((end - start for start, end in segments), timedelta())
+        if len(segments) == 1:
+            worked -= timedelta(minutes=template.break_minutes)
         return worked.total_seconds() / 3600
 
     @staticmethod
@@ -335,9 +407,22 @@ class ShiftAssignment(TenantScopedModel):
             )
 
     def _check_break_minutes(self):
-        net_work_minutes = self._shift_hours(self.date, self.template) * 60
+        segments = _segment_datetimes(self.date, self.template.effective_segments())
+        net_work_minutes = sum((end - start).total_seconds() / 60 for start, end in segments)
         required = self._required_break_minutes(net_work_minutes)
-        if self.template.break_minutes < required:
+
+        if len(segments) > 1:
+            actual_break = sum(
+                (segments[i + 1][0] - segments[i][1]).total_seconds() / 60
+                for i in range(len(segments) - 1)
+            )
+            if actual_break < required:
+                raise ValidationError(
+                    f"'{self.template.name}' hat zwischen den Blöcken nur {actual_break:.0f} Min. Pause, "
+                    f"bei {net_work_minutes / 60:.1f}h Arbeitszeit sind mindestens {required} Min. "
+                    f"vorgeschrieben (Art. 15 ArG)."
+                )
+        elif self.template.break_minutes < required:
             raise ValidationError(
                 f"'{self.template.name}' hat nur {self.template.break_minutes} Min. Pause hinterlegt, "
                 f"bei {net_work_minutes / 60:.1f}h Arbeitszeit sind mindestens {required} Min. "
@@ -556,9 +641,16 @@ class TimeRecord(TenantScopedModel):
     assignment = models.OneToOneField(
         ShiftAssignment, on_delete=models.CASCADE, related_name="time_record"
     )
-    actual_start = models.TimeField()
-    actual_end = models.TimeField(help_text="Bei Nachtschichten über Mitternacht: Endzeit < Startzeit ist erlaubt.")
-    actual_break_minutes = models.PositiveSmallIntegerField(default=0)
+    actual_start = models.TimeField(
+        null=True,
+        blank=True,
+        help_text="Nur relevant, wenn das Template keine Segmente hat (Block 1.12) -- sonst siehe "
+        "TimeRecordSegment. Bei Nachtschichten über Mitternacht: Endzeit < Startzeit ist erlaubt.",
+    )
+    actual_end = models.TimeField(null=True, blank=True)
+    actual_break_minutes = models.PositiveSmallIntegerField(
+        default=0, help_text="Nur relevant ohne Segmente -- bei Segmenten ergibt sich die Pause aus den Lücken."
+    )
     note = models.CharField(max_length=200, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.SUBMITTED)
     recorded_by = models.ForeignKey(
@@ -572,56 +664,112 @@ class TimeRecord(TenantScopedModel):
         ordering = ["-assignment__date"]
 
     def __str__(self):
-        return f"Ist-Zeit {self.assignment} ({self.actual_start}–{self.actual_end})"
+        return f"Ist-Zeit {self.assignment}"
 
-    def _actual_datetimes(self):
-        start = datetime.combine(self.assignment.date, self.actual_start)
-        end = datetime.combine(self.assignment.date, self.actual_end)
-        if self.actual_end <= self.actual_start:
-            end += timedelta(days=1)  # Nachtschicht über Mitternacht
-        return start, end
+    def effective_segments(self):
+        """
+        Liste von (actual_start, actual_end)-Paaren (Block 1.12): aus den
+        gespeicherten TimeRecordSegment-Kindzeilen, aus noch nicht
+        gespeicherten Segmenten während der Serializer-Validierung
+        (`_pending_segments`, siehe TimeRecordSerializer -- die Kindzeilen
+        existieren zu dem Zeitpunkt noch nicht, weil sie erst nach dem
+        Speichern des Elternobjekts angelegt werden können), oder sonst als
+        einzelnes Segment aus den klassischen actual_start/actual_end-Feldern
+        (bisheriges Verhalten für Templates ohne Segmente).
+        """
+        pending = getattr(self, "_pending_segments", None)
+        if pending is not None:
+            ordered = sorted(pending, key=lambda s: s.get("order", 0))
+            return [(s["actual_start"], s["actual_end"]) for s in ordered]
+        if self.pk:
+            stored = list(self.segments.order_by("order").values_list("actual_start", "actual_end"))
+            if stored:
+                return stored
+        return [(self.actual_start, self.actual_end)]
+
+    def _actual_datetimes_list(self):
+        return _segment_datetimes(self.assignment.date, self.effective_segments())
 
     @property
     def actual_hours(self):
-        """Netto-Arbeitszeit (Ist), abzüglich der tatsächlichen Pause."""
-        start, end = self._actual_datetimes()
-        worked = (end - start) - timedelta(minutes=self.actual_break_minutes)
+        """Netto-Arbeitszeit (Ist). Bei Segmenten die Summe der Blockdauern, sonst Spanne minus Pausenfeld."""
+        segments = self._actual_datetimes_list()
+        worked = sum((end - start for start, end in segments), timedelta())
+        if len(segments) == 1:
+            worked -= timedelta(minutes=self.actual_break_minutes)
         return round(worked.total_seconds() / 3600, 2)
 
     @property
+    def break_minutes_total(self):
+        """Gesamtpause: bei Segmenten die Summe der Lücken dazwischen, sonst das erfasste Pausenfeld."""
+        segments = self._actual_datetimes_list()
+        if len(segments) > 1:
+            return round(
+                sum(
+                    (segments[i + 1][0] - segments[i][1]).total_seconds() / 60
+                    for i in range(len(segments) - 1)
+                )
+            )
+        return self.actual_break_minutes
+
+    @property
     def deviation_minutes(self):
-        """Abweichung des tatsächlichen vom geplanten Arbeitsbeginn, in Minuten (positiv = später)."""
-        template = self.assignment.template
-        planned_start = datetime.combine(self.assignment.date, template.start_time)
-        actual_start_dt = datetime.combine(self.assignment.date, self.actual_start)
-        return round((actual_start_dt - planned_start).total_seconds() / 60)
+        """Abweichung des tatsächlichen vom geplanten Arbeitsbeginn (erstes Segment), in Minuten (positiv = später)."""
+        segments = self._actual_datetimes_list()
+        planned = _segment_datetimes(self.assignment.date, self.assignment.template.effective_segments())
+        return round((segments[0][0] - planned[0][0]).total_seconds() / 60)
+
+    @property
+    def end_deviation_minutes(self):
+        """Abweichung des tatsächlichen vom geplanten Arbeitsende (letztes Segment), in Minuten (positiv = später)."""
+        segments = self._actual_datetimes_list()
+        planned = _segment_datetimes(self.assignment.date, self.assignment.template.effective_segments())
+        return round((segments[-1][1] - planned[-1][1]).total_seconds() / 60)
 
     @property
     def break_below_minimum(self):
-        """Informativ (Art. 15 ArG): true, wenn die tatsächliche Pause unter der Mindestvorgabe liegt."""
-        start, end = self._actual_datetimes()
-        gross_minutes = (end - start).total_seconds() / 60
-        net_minutes = gross_minutes - self.actual_break_minutes
+        """Informativ (Art. 15 ArG): true, wenn die tatsächliche Gesamtpause unter der Mindestvorgabe liegt."""
+        segments = self._actual_datetimes_list()
+        if len(segments) > 1:
+            net_minutes = sum((end - start).total_seconds() / 60 for start, end in segments)
+        else:
+            gross_minutes = (segments[0][1] - segments[0][0]).total_seconds() / 60
+            net_minutes = gross_minutes - self.actual_break_minutes
         required = ShiftAssignment._required_break_minutes(net_minutes)
-        return self.actual_break_minutes < required
+        return self.break_minutes_total < required
 
     def clean(self):
-        if not (self.assignment_id and self.actual_start and self.actual_end):
+        if not self.assignment_id:
+            return
+
+        actual_segments = self.effective_segments()
+        if not actual_segments or any(s[0] is None or s[1] is None for s in actual_segments):
             return
 
         if self.assignment.date > timezone.localdate():
             raise ValidationError("Ist-Zeiten können erst nach der Schicht erfasst werden.")
 
         template = self.assignment.template
-        planned_start = datetime.combine(self.assignment.date, template.start_time)
-        planned_end_date = self.assignment.date
-        if template.end_time <= template.start_time:
-            planned_end_date += timedelta(days=1)
-        planned_end = datetime.combine(planned_end_date, template.end_time)
+        planned_segments = template.effective_segments()
 
-        actual_start_dt, actual_end_dt = self._actual_datetimes()
-        start_deviation = abs((actual_start_dt - planned_start).total_seconds() / 60)
-        end_deviation = abs((actual_end_dt - planned_end).total_seconds() / 60)
+        if len(actual_segments) != len(planned_segments):
+            raise ValidationError(
+                f"'{template.name}' hat {len(planned_segments)} vorgegebene Zeitblöcke -- "
+                "bitte für jeden Block eine Ist-Zeit erfassen."
+            )
+
+        if len(actual_segments) > 1:
+            for i in range(len(actual_segments) - 1):
+                if actual_segments[i][1] > actual_segments[i + 1][0]:
+                    raise ValidationError(
+                        "Die Zeitblöcke müssen chronologisch geordnet sein und dürfen sich nicht überlappen."
+                    )
+
+        planned_dt = _segment_datetimes(self.assignment.date, planned_segments)
+        actual_dt = _segment_datetimes(self.assignment.date, actual_segments)
+
+        start_deviation = abs((actual_dt[0][0] - planned_dt[0][0]).total_seconds() / 60)
+        end_deviation = abs((actual_dt[-1][1] - planned_dt[-1][1]).total_seconds() / 60)
 
         tolerance = self.tenant.time_record_deviation_tolerance_minutes
         if (start_deviation > tolerance or end_deviation > tolerance) and not self.note:
@@ -635,3 +783,28 @@ class TimeRecord(TenantScopedModel):
             raise ValidationError("Nur erfasste (noch nicht geprüfte) Einträge können bestätigt werden.")
         self.status = self.Status.CONFIRMED
         self.save(update_fields=["status"])
+
+
+class TimeRecordSegment(TenantScopedModel):
+    """
+    Ist-Zeit für einen einzelnen Block einer Schicht (Block 1.12). Nur
+    relevant, wenn assignment.template Segmente hat -- Anzahl und Reihenfolge
+    sind dadurch vorgegeben (siehe TimeRecord.clean), der Mitarbeiter
+    verschiebt hier ausschliesslich die Uhrzeiten je Block, nicht deren
+    Anzahl. Wird zusammen mit dem TimeRecord über TimeRecordSerializer
+    geschrieben (bei jeder Änderung vollständig ersetzt statt einzeln
+    aktualisiert -- die Blockliste ist kurz genug, dass das keine Rolle
+    spielt).
+    """
+
+    time_record = models.ForeignKey(TimeRecord, on_delete=models.CASCADE, related_name="segments")
+    order = models.PositiveSmallIntegerField()
+    actual_start = models.TimeField()
+    actual_end = models.TimeField()
+
+    class Meta:
+        ordering = ["order"]
+        unique_together = ("time_record", "order")
+
+    def __str__(self):
+        return f"{self.time_record} #{self.order} ({self.actual_start}–{self.actual_end})"

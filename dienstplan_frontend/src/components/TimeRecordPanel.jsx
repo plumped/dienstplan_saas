@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
+import { effectiveRecordSegments, effectiveTemplateSegments, formatDeviation } from "../timeRecordSegments.js";
+import TimeRecordSegmentEditor from "./TimeRecordSegmentEditor.jsx";
 
 const STATUS_LABELS = {
   submitted: "Erfasst",
@@ -19,15 +21,6 @@ function isoDate(year, month, day) {
   return `${year}-${pad(month)}-${pad(day)}`;
 }
 
-function emptyForm(start, end, breakMinutes) {
-  return {
-    actual_start: start ?? "",
-    actual_end: end ?? "",
-    actual_break_minutes: breakMinutes ?? 0,
-    note: "",
-  };
-}
-
 export default function TimeRecordPanel({ nodeId, year, month, employees, me, onError }) {
   const canManage = canManageSchedule(me);
   const ownEmployeeId = me?.employee?.id ?? null;
@@ -37,7 +30,6 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
-  const [form, setForm] = useState(() => emptyForm());
   const [saving, setSaving] = useState(false);
 
   const dateFrom = isoDate(year, month, 1);
@@ -85,36 +77,13 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
     return templates.find((t) => t.id === id);
   }
 
-  function startEditing(assignment, record) {
-    const template = templateFor(assignment.template);
-    setEditingId(assignment.id);
-    setForm(
-      record
-        ? {
-            actual_start: record.actual_start.slice(0, 5),
-            actual_end: record.actual_end.slice(0, 5),
-            actual_break_minutes: record.actual_break_minutes,
-            note: record.note,
-          }
-        : emptyForm(template?.start_time?.slice(0, 5), template?.end_time?.slice(0, 5), template?.break_minutes)
-    );
-  }
-
-  async function handleSave(assignment) {
-    const existing = recordByAssignment.get(assignment.id);
+  async function handleSave(assignment, record, payload) {
     setSaving(true);
     try {
-      const payload = {
-        assignment: assignment.id,
-        actual_start: form.actual_start,
-        actual_end: form.actual_end,
-        actual_break_minutes: Number(form.actual_break_minutes),
-        note: form.note,
-      };
-      const saved = existing
-        ? await api.updateTimeRecord(existing.id, payload)
-        : await api.createTimeRecord(payload);
-      setRecords((prev) => (existing ? prev.map((r) => (r.id === saved.id ? saved : r)) : [...prev, saved]));
+      const saved = record
+        ? await api.updateTimeRecord(record.id, { assignment: assignment.id, ...payload })
+        : await api.createTimeRecord({ assignment: assignment.id, ...payload });
+      setRecords((prev) => (record ? prev.map((r) => (r.id === saved.id ? saved : r)) : [...prev, saved]));
       setEditingId(null);
     } catch (e) {
       onError(e.message);
@@ -158,6 +127,8 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
           {visibleAssignments.map((a) => {
             const record = recordByAssignment.get(a.id);
             const template = templateFor(a.template);
+            const plannedSegments = effectiveTemplateSegments(template);
+            const recordSegments = effectiveRecordSegments(record);
             const canEditThis = canManage || a.employee === ownEmployeeId;
             const canEditRecord = canEditThis && (!record || record.status === "submitted");
             const isEditing = editingId === a.id;
@@ -170,13 +141,14 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
                 )}
                 <span className="entry-main">
                   <strong>{employeeName(a.employee)}</strong> · {a.date} · Geplant{" "}
-                  {template ? `${template.start_time.slice(0, 5)}–${template.end_time.slice(0, 5)}` : "…"}
+                  {plannedSegments.map((s) => `${s.start_time.slice(0, 5)}–${s.end_time.slice(0, 5)}`).join(", ")}
                   {record ? (
                     <>
                       {" "}
-                      · Ist {record.actual_start.slice(0, 5)}–{record.actual_end.slice(0, 5)} (
-                      {record.deviation_minutes > 0 ? "+" : ""}
-                      {record.deviation_minutes} Min.)
+                      · Ist{" "}
+                      {recordSegments.map((s) => `${s.actual_start.slice(0, 5)}–${s.actual_end.slice(0, 5)}`).join(", ")}{" "}
+                      ({formatDeviation(record.deviation_minutes)}
+                      {plannedSegments.length > 1 && ` / ${formatDeviation(record.end_deviation_minutes)}`})
                       {record.break_below_minimum && (
                         <span className="entry-note"> · Pause unter Art.-15-Minimum</span>
                       )}
@@ -187,52 +159,29 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
                   )}
                 </span>
                 {isEditing ? (
-                  <span className="entry-actions time-record-form">
-                    <input
-                      type="time"
-                      value={form.actual_start}
-                      onChange={(e) => setForm((prev) => ({ ...prev, actual_start: e.target.value }))}
-                    />
-                    <input
-                      type="time"
-                      value={form.actual_end}
-                      onChange={(e) => setForm((prev) => ({ ...prev, actual_end: e.target.value }))}
-                    />
-                    <input
-                      type="number"
-                      min="0"
-                      title="Pause in Minuten"
-                      value={form.actual_break_minutes}
-                      onChange={(e) => setForm((prev) => ({ ...prev, actual_break_minutes: e.target.value }))}
-                    />
-                    <input
-                      type="text"
-                      placeholder="Notiz / Begründung"
-                      value={form.note}
-                      onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
-                    />
-                    <button type="button" disabled={saving} onClick={() => handleSave(a)}>
-                      Speichern
-                    </button>
-                    <button type="button" className="btn-ghost" onClick={() => setEditingId(null)}>
-                      Abbrechen
-                    </button>
-                  </span>
+                  <TimeRecordSegmentEditor
+                    plannedSegments={plannedSegments}
+                    initialSegments={recordSegments}
+                    initialNote={record?.note ?? ""}
+                    saving={saving}
+                    canDelete={Boolean(record)}
+                    onSave={(payload) => handleSave(a, record, payload)}
+                    onCancel={() => setEditingId(null)}
+                    onDelete={() => {
+                      handleDelete(record);
+                      setEditingId(null);
+                    }}
+                  />
                 ) : (
                   <span className="entry-actions">
                     {canEditRecord && (
-                      <button type="button" className="btn-ghost" onClick={() => startEditing(a, record)}>
+                      <button type="button" className="btn-ghost" onClick={() => setEditingId(a.id)}>
                         {record ? "Korrigieren" : "Ist-Zeit erfassen"}
                       </button>
                     )}
                     {canManage && record && record.status === "submitted" && (
                       <button type="button" onClick={() => handleConfirm(record)}>
                         Bestätigen
-                      </button>
-                    )}
-                    {canEditRecord && record && (
-                      <button type="button" className="btn-ghost" onClick={() => handleDelete(record)}>
-                        Löschen
                       </button>
                     )}
                   </span>

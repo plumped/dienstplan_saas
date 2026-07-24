@@ -241,6 +241,35 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     `TimeRecord` statt nur auf der Planung (`ShiftAssignment`) basieren.
 11. **Aufbewahrung**: Ist-Daten (`TimeRecord`) fallen unter dieselbe Aufbewahrungspflicht wie
     Lohnunterlagen (siehe Block 5.3) — beim Löschkonzept mitdenken.
+12. **Segment-basierte Ist-Zeiterfassung** (löst die heutige pauschale `actual_break_minutes`-Zahl
+    ab): reale Kliniken (z. B. Polypoint PEP) erfassen den Tag als mehrere Arbeitsblöcke
+    (von–bis, von–bis), die Pause ergibt sich aus der Lücke dazwischen und ist damit verortet und
+    prüfbar statt nur als Zahl erfasst. Wichtig dabei: **nicht** der Mitarbeiter definiert die
+    Blockstruktur pro Schicht neu, sondern das `TimeTemplate` gibt sie vor — der Mitarbeiter darf
+    nur die Uhrzeiten der vorgegebenen Blöcke leicht verschieben (z. B. "07:03 statt 07:00",
+    "Mittagspause wegen Notfallpatient erst 12:23 statt 12:00"), nicht die Anzahl/Reihenfolge der
+    Blöcke ändern. Teilschritte:
+    - **Datenmodell**: neues `TimeTemplateSegment` (FK auf `TimeTemplate`, `order`, `start_time`,
+      `end_time`) — ein Template ohne definierte Segmente verhält sich weiterhin wie heute (ein
+      Zeitfenster + `break_minutes` pauschal), Segmente sind pro Template opt-in.
+    - **`TimeRecord` bekommt passende Kindzeilen** (`TimeRecordSegment`: `order`, `actual_start`,
+      `actual_end`), beim Anlegen automatisch aus den Template-Segmenten mit den Soll-Zeiten
+      vorausgefüllt; Anzahl/Reihenfolge ist durch das Template fix vorgegeben, nur die Uhrzeiten
+      je Segment sind editierbar.
+    - **Regel-Engine-Bezug**: Pausenminimum (Art. 15 ArG) und Nettoarbeitszeit werden aus der
+      Summe der Segmentdauern berechnet statt aus einer einzelnen Differenz minus Minutenzahl.
+    - **Frontend**: Segment-Editor im TimeTemplate-Formular (siehe Block 2.9) zum Definieren der
+      Blockstruktur; im Mitarbeiter-Formular (`TimeRecordPanel`) je Segment nur zwei Zeit-Inputs,
+      kein Hinzufügen/Entfernen von Blöcken. Interaktiver Entwurf bereits als Mockup vorhanden
+      (Segment-Zeilen mit automatisch berechneter Pausenanzeige dazwischen).
+13. **Inline-Erfassung im Planblatt-Grid** (UX-Verbesserung, siehe Diskussion): der separate Tab
+    "Zeiterfassung" ist als Prüf-/Review-Liste für Admin/Planer sinnvoll (viele Mitarbeitende auf
+    einen Blick), für Mitarbeitende aber ein zusätzlicher Weg, den man erst finden muss. Für
+    Mitarbeitende soll die Ist-Zeit-Erfassung stattdessen direkt aus der eigenen, vergangenen
+    Schicht-Zelle im Planblatt heraus möglich sein: kleines Badge/Icon auf unerfassten eigenen
+    Zellen ("noch nicht erfasst") öffnet ein Popover mit den vorausgefüllten Soll-Zeiten
+    (bzw. Segmenten, siehe Punkt 12). Der Tab "Zeiterfassung" bleibt bestehen, wird aber zur
+    Planer-Übersicht (und ggf. "meine Historie" für Mitarbeitende) statt primärer Eingabe-Ort.
 
 ### 2. Fehlende Kernfunktionen für den Praxisalltag
 
@@ -270,6 +299,22 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    eine belegte Zelle wird abgelehnt statt getauscht).
 8. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn
    sie unterschritten wird.
+9. **"Einstellungen"-Bereich im Frontend für Admin/Planer** (Stammdaten-Selfservice): heute lassen
+   sich Nodes/Skills/TimeTemplates nur über den Django-Admin pflegen — für den Verkauf an Kliniken
+   ohne eigene IT-Abteilung nicht praktikabel, die Klinik muss neue Schichttypen selbst anlegen
+   können, nicht der Hersteller. Serverseitig ist das bereits vorbereitet
+   (`NodeViewSet`/`SkillViewSet`/`TimeTemplateViewSet` nutzen alle `IsTenantManager`, Planer dürfen
+   also schon schreiben) — es fehlt nur die Oberfläche. Umsetzung:
+   - Neuer Tab "Einstellungen" (nur sichtbar für Admin/Planer via `canManageSchedule`).
+   - Erstes Modul: **Schichttypen-Verwaltung** — Liste bestehender `TimeTemplate`s (Name,
+     Zeitfenster, Station) + Formular zum Anlegen/Bearbeiten inkl. Segment-Editor (siehe
+     Block 1.12) zum Definieren der Blockstruktur/Pausenfenster.
+   - Spätere Module im selben Tab: Stationen (Nodes) und Skills verwalten, sobald das
+     Schichttypen-Modul steht — gleiches UI-Muster (Liste + Formular), kein neuer Tab nötig.
+   - Überschneidet sich mit Block 3.1 (Setup-Wizard bei Self-Signup): der Setup-Wizard erzeugt die
+     Erststruktur einmalig bei der Registrierung, der "Einstellungen"-Tab ist die dauerhafte
+     Verwaltung danach im laufenden Betrieb — beide sollten dieselben Formulare/Komponenten
+     wiederverwenden.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

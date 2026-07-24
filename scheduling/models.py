@@ -108,6 +108,27 @@ class Employee(TenantScopedModel):
     skills = models.ManyToManyField(Skill, related_name="employees", blank=True)
     is_active = models.BooleanField(default=True)
 
+    # Personalkategorie-Override (MVP-Fahrplan Block 1.14): innerhalb eines
+    # Spitals gelten je nach Funktion oft unterschiedliche Wochenstunden-Werte
+    # (z. B. Ärzteschaft 50h, Büropersonal 42h) -- ein einzelner Tenant-Wert
+    # reicht dafür nicht. Beide Felder sind optional und überschreiben den
+    # jeweiligen Tenant-Default nur für diesen Mitarbeiter, wenn gesetzt (None
+    # = Tenant-Wert gilt), siehe ShiftAssignment._check_maximum_weekly_hours
+    # und weekly_hours_summary weiter unten.
+    maximum_weekly_hours = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Überschreibt Tenant.maximum_weekly_hours (gesetzliche/GAV-Höchstgrenze, Art. 9 "
+        "ArG) für diesen Mitarbeiter. Leer lassen, um den Tenant-Wert zu übernehmen.",
+    )
+    standard_weekly_hours = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Überschreibt Tenant.standard_weekly_hours (Normalarbeitszeit/Soll für die "
+        "Überzeitberechnung, Art. 13 ArG) für diesen Mitarbeiter. Leer lassen, um den Tenant-Wert "
+        "zu übernehmen.",
+    )
+
     history = HistoricalRecords()
 
     class Meta:
@@ -150,7 +171,8 @@ class Employee(TenantScopedModel):
             else:
                 ist_hours += ShiftAssignment._shift_hours(assignment.date, assignment.template)
 
-        soll_hours = round(self.employment_pct / 100 * self.tenant.standard_weekly_hours, 2)
+        standard_weekly_hours = self.standard_weekly_hours or self.tenant.standard_weekly_hours
+        soll_hours = round(self.employment_pct / 100 * standard_weekly_hours, 2)
         ist_hours = round(ist_hours, 2)
         overtime_hours = round(max(0.0, ist_hours - soll_hours), 2)
         surcharge_hours = round(overtime_hours * self.tenant.overtime_surcharge_pct / 100, 2)
@@ -438,7 +460,7 @@ class ShiftAssignment(TenantScopedModel):
         total_hours = self._shift_hours(self.date, self.template)
         total_hours += sum(self._shift_hours(a.date, a.template) for a in week_assignments)
 
-        maximum_weekly_hours = self.tenant.maximum_weekly_hours
+        maximum_weekly_hours = self.employee.maximum_weekly_hours or self.tenant.maximum_weekly_hours
         if total_hours > maximum_weekly_hours:
             raise ValidationError(
                 f"Wochenarbeitszeit von {self.employee} wäre {total_hours:.1f}h "

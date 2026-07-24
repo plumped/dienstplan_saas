@@ -274,39 +274,31 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     Teil der Regel-Engine selbst (`ShiftAssignment.clean` lehnt nichts deswegen ab), sondern reine
     Auswertung -- `Employee.weekly_hours_summary(reference_date)` normalisiert auf die
     Kalenderwoche (Montag-Sonntag) des übergebenen Datums und liefert Soll (`employment_pct` ×
-    `Tenant.standard_weekly_hours`, Default 42h Normalarbeitszeit eines 100%-Pensums -- bewusst
+    Normalarbeitszeit, Default `Tenant.standard_weekly_hours` = 42h für ein 100%-Pensum -- bewusst
     getrennt von `maximum_weekly_hours`, der gesetzlichen Höchstgrenze), Ist (aus `TimeRecord`,
     sobald für eine Schicht erfasst, sonst aus der Planung), Überzeit- und Zuschlagsstunden
     (`Tenant.overtime_surcharge_pct`, Default 25%). API: `GET
     /api/employees/{id}/weekly-overtime/?week=YYYY-MM-DD`, Lesen für alle Rollen offen wie beim
     übrigen Planblatt. *Noch offen*: keine Frontend-Anzeige (folgt mit Block 2.6/2.7), keine
     Monats-/Jahres-Kumulierung (nur pro Kalenderwoche einzeln abrufbar).
+12. ✅ **Wochenstunden-Grenzwerte pro Personalkategorie statt nur pro Tenant**: ein einzelner
+    Tenant-Wert reicht nicht, wenn z. B. Ärzteschaft vertraglich 50h und Büropersonal 42h hat.
+    `Employee.maximum_weekly_hours`/`standard_weekly_hours` sind jetzt optionale
+    Override-Felder (`null` = Tenant-Default gilt) -- `ShiftAssignment._check_maximum_weekly_hours`
+    und `Employee.weekly_hours_summary` verwenden `self.employee.<feld> or self.tenant.<feld>`.
+    Bewusst als Override direkt auf `Employee` (nicht auf `Node`/als eigenes
+    "Personalkategorie"-Modell), da die Grenze eine Eigenschaft der einzelnen Anstellung ist.
+    *Noch offen*: keine Frontend-Oberfläche zum Setzen (aktuell nur im Django-Admin unter
+    Employee editierbar, siehe Block 2.10); gleiche Überlegung gilt potenziell auch für
+    `minimum_rest_hours`, hier aber erst nachziehen, falls in der Praxis tatsächlich gebraucht.
 
 **Noch offen**:
 
-12. **Anschluss der Ist-Arbeitszeiterfassung an Block 2.6**: die geplante Monatsauswertung
+13. **Anschluss der Ist-Arbeitszeiterfassung an Block 2.6**: die geplante Monatsauswertung
     (Soll/Ist-Stunden, Überzeit, Nacht-/Sonntagszuschläge) sollte, sobald sie existiert, auf
     `TimeRecord` statt nur auf der Planung (`ShiftAssignment`) basieren.
-13. **Aufbewahrung**: Ist-Daten (`TimeRecord`) fallen unter dieselbe Aufbewahrungspflicht wie
+14. **Aufbewahrung**: Ist-Daten (`TimeRecord`) fallen unter dieselbe Aufbewahrungspflicht wie
     Lohnunterlagen (siehe Block 5.3) — beim Löschkonzept mitdenken.
-14. **Wöchentliche Höchstarbeitszeit pro Personalkategorie statt nur pro Tenant**: Spitäler haben
-    typischerweise nicht eine einzige Wochenstunden-Grenze, sondern mehrere parallel gültige (z. B.
-    42h GAV-Normalarbeitszeit für Pflegepersonal, 50h ArG-Höchstgrenze Art. 9 Abs. 2 für andere
-    Personalgruppen) -- `Tenant.maximum_weekly_hours` bildet aktuell nur einen einzigen Wert für
-    den ganzen Betrieb ab, `ShiftAssignment._check_maximum_weekly_hours` prüft immer gegen diesen
-    einen Wert. Lösungsrichtung:
-    - Einfachste Variante: optionales Override-Feld direkt auf `Employee`
-      (`maximum_weekly_hours`, `null` = Tenant-Default gilt), da die effektive Grenze letztlich
-      eine Eigenschaft der einzelnen Anstellung ist (Funktion/GAV-Einstufung), nicht der Schicht
-      oder Station.
-    - Alternative, falls sich Grenzwerte eher über Stationen/Abteilungen als über Einzelpersonen
-      gruppieren: Override auf `Node` statt auf `Employee`.
-    - `ShiftAssignment._check_maximum_weekly_hours` müsste dann `self.employee.maximum_weekly_hours
-      or self.tenant.maximum_weekly_hours` (bzw. das Node-Äquivalent) statt direkt
-      `self.tenant.maximum_weekly_hours` verwenden.
-    - Gleiche Überlegung gilt potenziell auch für `minimum_rest_hours` (GAVs setzen teils
-      abweichende Ruhezeiten je Personalkategorie), hier aber erst nachziehen, falls in der Praxis
-      tatsächlich gebraucht -- nicht vorauseilend für alle Tenant-Grenzwerte overengineeren.
 
 ### 2. Fehlende Kernfunktionen für den Praxisalltag
 

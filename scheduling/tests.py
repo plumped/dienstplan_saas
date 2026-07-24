@@ -347,6 +347,45 @@ class RuleEngineTests(TestCase):
         with self.assertRaises(ValidationError):
             sunday_shift.clean()
 
+    def test_employee_override_raises_maximum_weekly_hours(self):
+        # Block 1.14: z. B. Ärzteschaft mit vertraglich 60h statt der
+        # 45h-Tenant-Vorgabe -- Employee.maximum_weekly_hours überschreibt
+        # den Tenant-Wert nur für diesen Mitarbeiter. 6 Schichten a 9h netto
+        # (Sonntag bleibt frei, damit nur der Wochenstunden-Check greift,
+        # nicht der wöchentliche Ruhetag).
+        doctor = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Doktor",
+            last_name="D",
+            employment_pct=100,
+            maximum_weekly_hours=60,
+        )
+        long_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Langer Dienst",
+            start_time=time(8, 0),
+            end_time=time(18, 0),
+            break_minutes=60,  # 10h Spanne - 1h Pause = 9h netto
+        )
+        monday = date(2026, 8, 3)
+        for offset in range(5):  # Mo-Fr, je 9h netto = 45h
+            ShiftAssignment.objects.create(
+                tenant=self.tenant,
+                employee=doctor,
+                node=self.node,
+                date=monday + timedelta(days=offset),
+                template=long_template,
+            )
+        saturday_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=doctor,
+            node=self.node,
+            date=monday + timedelta(days=5),
+            template=long_template,  # 54h gesamt -- über Tenant-45h, aber unter Override-60h
+        )
+        saturday_shift.clean()  # keine Exception
+
     def test_absence_conflict_is_rejected(self):
         Absence.objects.create(
             tenant=self.tenant,
@@ -1180,6 +1219,18 @@ class WeeklyOvertimeTests(APITestCase):
         )
         summary = part_time.weekly_hours_summary(self.monday)
         self.assertEqual(summary["soll_hours"], 21.0)  # 50% von 42h
+
+    def test_employee_override_replaces_tenant_standard_weekly_hours(self):
+        # Block 1.14: z. B. Ärzteschaft mit 50h statt der 42h-Tenant-Vorgabe.
+        doctor = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Doktor",
+            last_name="D",
+            employment_pct=100,
+            standard_weekly_hours=50,
+        )
+        summary = doctor.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["soll_hours"], 50.0)
 
     def test_time_record_overrides_planned_hours(self):
         assignment = self._assign(self.employee, 0)

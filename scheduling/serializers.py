@@ -52,6 +52,8 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "nodes",
             "skills",
             "is_active",
+            "maximum_weekly_hours",
+            "standard_weekly_hours",
         ]
 
 

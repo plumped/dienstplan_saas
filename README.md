@@ -359,6 +359,34 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      ohnehin schon volle Zelle (Name, Pensum, Kopier-Button) dadurch überladen wirkte. Die separate
      Spalte ist analog zur Mitarbeiter-Spalte links (`position: sticky; right: 0`) fixiert, damit
      der Saldo unabhängig von der horizontalen Scroll-Position sichtbar bleibt.
+   - *Noch offen* (UX-Lücke, aus Mitarbeitersicht): Der Saldo **wirkt** so, als würde er erst nach
+     Prüfung der Zeiterfassung aktualisiert -- ist er aber gar nicht: `weekly_hours_summary()`
+     nimmt für `ist_hours` sowieso schon die geplante Schichtdauer (`ShiftAssignment` +
+     `TimeTemplate`), solange kein `TimeRecord` existiert, und sobald der Mitarbeiter eine Ist-Zeit
+     erfasst, zählt die **sofort** mit -- unabhängig vom `TimeRecord.status`
+     (`submitted`/`confirmed`). Das eigentliche Problem ist rein im Frontend: `BalanceBadge.jsx`
+     lädt den Saldo per `useEffect` nur einmal beim Mounten (Abhängigkeit `[employeeId]`) und wird
+     nie neu abgefragt, wenn sich innerhalb derselben Session etwas ändert, das den Saldo
+     beeinflusst -- neue/geänderte Zuweisung, gespeicherte/gelöschte eigene Zeiterfassung, oder die
+     Planer-Bestätigung (`confirm()`). Der Mitarbeiter sieht die Änderung deshalb erst nach einem
+     Reload, was zufällig oft mit dem nächsten Login nach einer Planer-Prüfung zusammenfällt und
+     so den falschen Eindruck "Saldo aktualisiert erst nach Prüfung" erweckt. Intuitive
+     Verbesserungen aus Mitarbeitersicht:
+     - **Sofort reaktiv aktualisieren**: `BalanceBadge` (Topbar, Planblatt-Grid,
+       Mitarbeitenden-Verwaltung) nach jeder Mutation neu abfragen, die den Saldo beeinflussen kann
+       -- z. B. über einen einfachen `refreshKey`/Callback von `App.jsx`/`PlanGrid.jsx` nach oben
+       gereicht, statt nur `employeeId` als Abhängigkeit zu haben. Besonders wichtig direkt nach dem
+       Erfassen der eigenen Ist-Zeit im Zeiterfassung-Tab -- genau der Moment, in dem der
+       Mitarbeiter eine unmittelbare Rückmeldung erwartet ("meine Schicht heute hat den Saldo um
+       +0.3 h verändert").
+     - **Sofort sehen, sobald eine Schicht eingeplant ist**: bereits heute fliesst eine geplante
+       (noch nicht erfasste) Schicht als Schätzwert in den Saldo ein -- das sollte im UI auch so
+       kommuniziert werden, z. B. durch einen Hinweis/Icon am Saldo, ob er ganz, teilweise oder gar
+       nicht auf bestätigten Ist-Zeiten beruht (`voraussichtlich` vs. `bestätigt`), damit der
+       Mitarbeiter nicht denkt, ungeprüfte Erfassungen "zählten noch nicht".
+     - **Direktes Feedback pro Schicht**: nach dem Speichern einer Zeiterfassung im
+       Zeiterfassung-Tab kurz anzeigen, wie sich der Tages-/Wochensaldo dadurch verändert hat,
+       statt nur den kumulierten Gesamtsaldo irgendwo im Topbar zu zeigen.
 8. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
    eine belegte Zelle wird abgelehnt statt getauscht).
 9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn

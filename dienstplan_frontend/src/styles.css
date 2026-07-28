@@ -394,41 +394,66 @@ main {
   font-weight: 600;
   font-size: 13px;
   white-space: nowrap;
-  min-width: 190px;
+  min-width: 170px;
 }
 
-thead .col-employee {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-
+thead .col-employee,
 tbody .col-employee {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-}
-
-.col-employee-row {
-  display: flex;
   align-items: baseline;
   gap: 6px;
-  width: 100%;
-}
-
-/* Block 2.7: Saldo-Badge in der Mitarbeiterzeile, nur für Admin/Planer
-   (siehe canManage in PlanGrid.jsx) -- kompakter und umbruchfähig, damit die
-   sticky Spalte nicht durch lange Saldo-Texte aufgerissen wird. */
-.col-employee .balance-badge {
-  font-size: 10.5px;
-  padding: 2px 7px;
-  white-space: normal;
 }
 
 .employee-name {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Block 2.7: eigene, am rechten Rand fixierte Spalte für den Saldo (nur
+   Admin/Planer) -- spiegelbildlich zu .col-employee links, damit sie
+   unabhängig von der horizontalen Scroll-Position sichtbar bleibt statt
+   nur nach Scrollen ans Monatsende. */
+.col-balance {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+thead .col-balance {
+  z-index: 3;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.balance-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+
+.balance-cell-sep {
+  color: var(--border);
+}
+
+.balance-cell .is-positive {
+  color: #2e7d32;
+  font-weight: 700;
+}
+
+.balance-cell .is-negative {
+  color: var(--warn);
+  font-weight: 700;
 }
 
 .btn-copy-week {

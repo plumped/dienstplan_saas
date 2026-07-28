@@ -349,9 +349,12 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    - **API**: `GET /api/employees/{id}/balance/` (`?as_of=`/`?year=`), Lesen für alle Rollen
      offen wie beim übrigen Planblatt.
    - **Frontend**: `BalanceBadge.jsx` -- im Topbar für den eigenen Account (nur wenn `me.
-     employee` gesetzt ist), zusätzlich pro Zeile in der Mitarbeitenden-Verwaltung (Block 2.10)
-     für Admin/Planer. Der Topbar musste dafür umgebaut werden (`flex-wrap` statt fixer Zeile),
-     sonst wäre er bei normaler Fensterbreite abgeschnitten worden.
+     employee` gesetzt ist), pro Zeile in der Mitarbeitenden-Verwaltung (Block 2.10) sowie direkt
+     in der Mitarbeiter-Spalte des Planblatt-Grids (nur für Admin/Planer via `canManage`), damit
+     der Planer den Saldo aller Mitarbeitenden auf einen Blick sieht, ohne in die Einstellungen
+     wechseln zu müssen. Der Topbar musste dafür umgebaut werden (`flex-wrap` statt fixer Zeile),
+     sonst wäre er bei normaler Fensterbreite abgeschnitten worden; die Mitarbeiter-Spalte im Grid
+     zeigt Name/Pensum und Saldo jetzt zweizeilig statt einzeilig.
 8. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
    eine belegte Zelle wird abgelehnt statt getauscht).
 9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn

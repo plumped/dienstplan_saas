@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
+import BalanceBadge from "./BalanceBadge.jsx";
 import ShiftCell from "./ShiftCell.jsx";
 
 const WEEKDAYS_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
@@ -250,20 +251,26 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
           {employees.map((emp) => (
             <tr key={emp.id}>
               <th scope="row" className="col-employee">
-                <span className="employee-name">
-                  {emp.first_name} {emp.last_name}
+                <span className="col-employee-row">
+                  <span className="employee-name">
+                    {emp.first_name} {emp.last_name}
+                  </span>
+                  <span className="pct">{emp.employment_pct}%</span>
+                  {canManage && (
+                    <button
+                      type="button"
+                      className="btn-copy-week"
+                      title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
+                      onClick={() => handleCopyWeekPattern(emp.id)}
+                    >
+                      ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
+                    </button>
+                  )}
                 </span>
-                <span className="pct">{emp.employment_pct}%</span>
-                {canManage && (
-                  <button
-                    type="button"
-                    className="btn-copy-week"
-                    title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
-                    onClick={() => handleCopyWeekPattern(emp.id)}
-                  >
-                    ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
-                  </button>
-                )}
+                {/* Block 2.7: nur für Admin/Planer -- gibt Übersicht über alle
+                    Mitarbeitenden direkt im Planblatt, ohne in die
+                    Einstellungen wechseln zu müssen. */}
+                {canManage && <BalanceBadge employeeId={emp.id} />}
               </th>
               {days.map((d) => {
                 const date = isoDate(year, month, d);

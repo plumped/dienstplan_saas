@@ -394,14 +394,36 @@ main {
   font-weight: 600;
   font-size: 13px;
   white-space: nowrap;
-  min-width: 170px;
+  min-width: 190px;
 }
 
-thead .col-employee,
-tbody .col-employee {
+thead .col-employee {
   display: flex;
   align-items: baseline;
   gap: 6px;
+}
+
+tbody .col-employee {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.col-employee-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+}
+
+/* Block 2.7: Saldo-Badge in der Mitarbeiterzeile, nur für Admin/Planer
+   (siehe canManage in PlanGrid.jsx) -- kompakter und umbruchfähig, damit die
+   sticky Spalte nicht durch lange Saldo-Texte aufgerissen wird. */
+.col-employee .balance-badge {
+  font-size: 10.5px;
+  padding: 2px 7px;
+  white-space: normal;
 }
 
 .employee-name {

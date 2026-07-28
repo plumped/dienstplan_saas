@@ -64,6 +64,10 @@ class EmployeeBalanceSerializer(serializers.Serializer):
 
     as_of = serializers.DateField()
     overtime_balance_hours = serializers.FloatField()
+    # Block 2.7 UX-Nachbesserung: True, solange der Saldo mindestens eine
+    # Schicht ohne geprüfte (CONFIRMED) Zeiterfassung enthält -- siehe
+    # Employee.overtime_summary(). Der Saldo ist trotzdem schon aktuell.
+    overtime_is_provisional = serializers.BooleanField()
     vacation_year = serializers.IntegerField()
     vacation_entitlement_days = serializers.IntegerField()
     vacation_used_days = serializers.IntegerField()
@@ -79,6 +83,7 @@ class WeeklyOvertimeSerializer(serializers.Serializer):
     ist_hours = serializers.FloatField()
     overtime_hours = serializers.FloatField()
     surcharge_hours = serializers.FloatField()
+    is_provisional = serializers.BooleanField()
 
 
 class TimeTemplateSegmentSerializer(serializers.ModelSerializer):

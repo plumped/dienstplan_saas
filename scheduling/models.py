@@ -194,12 +194,16 @@ class Employee(TenantScopedModel):
         ).select_related("template", "time_record")
 
         ist_hours = 0.0
+        is_provisional = False
         for assignment in assignments:
             time_record = getattr(assignment, "time_record", None)
             if time_record is not None:
                 ist_hours += time_record.actual_hours
+                if time_record.status != TimeRecord.Status.CONFIRMED:
+                    is_provisional = True
             else:
                 ist_hours += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                is_provisional = True
 
         standard_weekly_hours = self.standard_weekly_hours or self.tenant.standard_weekly_hours
         soll_hours = round(self.employment_pct / 100 * standard_weekly_hours, 2)
@@ -214,9 +218,23 @@ class Employee(TenantScopedModel):
             "ist_hours": ist_hours,
             "overtime_hours": overtime_hours,
             "surcharge_hours": surcharge_hours,
+            # True, sobald mindestens eine Schicht der Woche nicht auf einer
+            # geprüften (CONFIRMED) Zeiterfassung beruht -- entweder, weil noch
+            # keine Ist-Zeit erfasst wurde (Schätzung aus der Planung), oder
+            # weil die Erfassung erst SUBMITTED ist. Rechnerisch zählt sie
+            # trotzdem schon mit, siehe overtime_summary().
+            "is_provisional": is_provisional,
         }
 
     def overtime_balance(self, as_of_date=None):
+        """
+        Kumulierter Überstunden-Saldo als Zahl -- Kurzform von
+        overtime_summary()["balance_hours"] für Aufrufer, die das
+        is_provisional-Flag nicht brauchen (siehe dort für Details/Tests).
+        """
+        return self.overtime_summary(as_of_date)["balance_hours"]
+
+    def overtime_summary(self, as_of_date=None):
         """
         Kumulierter Überstunden-Saldo (MVP-Fahrplan Block 2.7) -- im
         Gegensatz zu weekly_hours_summary()["overtime_hours"] (auf 0 nach
@@ -227,6 +245,14 @@ class Employee(TenantScopedModel):
         Zuweisung tragen bewusst nichts bei -- sie würden sonst so behandelt,
         als hätte der Mitarbeiter in einer Woche vor Anstellungsbeginn oder
         in einer Lücke die volle Sollzeit verpasst.
+
+        `is_provisional` (Block 2.7 UX-Nachbesserung): True, wenn der Saldo
+        mindestens eine ungeprüfte Schicht enthält (siehe
+        weekly_hours_summary). Der Saldo selbst ist trotzdem schon jetzt
+        korrekt und aktuell -- er wartet nicht auf die Prüfung --, das Flag
+        dient nur dazu, das im Frontend transparent zu machen, statt den
+        falschen Eindruck zu erwecken, ungeprüfte Erfassungen zählten noch
+        nicht mit.
         """
         as_of_date = as_of_date or timezone.localdate()
         assignment_dates = ShiftAssignment.all_objects.filter(
@@ -235,10 +261,12 @@ class Employee(TenantScopedModel):
         week_starts = {d - timedelta(days=d.weekday()) for d in assignment_dates}
 
         balance = self.overtime_balance_carryover_hours
+        is_provisional = False
         for week_start in week_starts:
             summary = self.weekly_hours_summary(week_start)
             balance += summary["ist_hours"] - summary["soll_hours"]
-        return round(balance, 2)
+            is_provisional = is_provisional or summary["is_provisional"]
+        return {"balance_hours": round(balance, 2), "is_provisional": is_provisional}
 
     def vacation_balance(self, year=None):
         """

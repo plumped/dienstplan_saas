@@ -214,6 +214,16 @@ button {
   font-weight: 700;
 }
 
+/* UX-Nachbesserung Block 2.7: Tilde vor dem Überstunden-Wert, solange der
+   Saldo geplante/ungeprüfte Schichten enthält -- Zahl ist schon korrekt,
+   aber noch nicht auf allen Schichten durch eine geprüfte Zeiterfassung
+   bestätigt (siehe Employee.overtime_summary()["is_provisional"]). */
+.balance-provisional-marker {
+  opacity: 0.65;
+  font-weight: 400;
+  margin-right: 1px;
+}
+
 .btn-ghost:hover {
   background: var(--primary-soft);
   color: var(--primary);
@@ -798,6 +808,31 @@ thead .col-employee {
 .entry-actions button:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* UX-Nachbesserung Block 2.7: direktes Feedback im Zeiterfassung-Tab, wie
+   sich die gerade gespeicherte Erfassung auf den Wochensaldo auswirkt
+   (siehe TimeRecordPanel.jsx) -- eigene Zeile unterhalb von Text/Aktionen,
+   neutral gehalten (nicht per se "gut"/"schlecht"), nur der Saldowert
+   selbst ist wie überall sonst eingefärbt. */
+.entry-feedback {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--ink-muted);
+  background: var(--primary-soft);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.entry-feedback .is-positive {
+  color: #2e7d32;
+  font-weight: 700;
+}
+
+.entry-feedback .is-negative {
+  color: var(--warn);
+  font-weight: 700;
 }
 
 .type-badge,

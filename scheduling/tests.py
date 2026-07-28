@@ -1333,6 +1333,43 @@ class EmployeeBalanceTests(APITestCase):
         balance = self.employee.overtime_balance(date(2026, 8, 10))
         self.assertEqual(balance, -34.0)
 
+    # --- is_provisional (UX-Nachbesserung: Saldo ist rechnerisch sofort aktuell, auch vor
+    # der Prüfung -- das Flag macht das im Frontend nur transparent) ---
+
+    def test_overtime_summary_is_provisional_when_based_on_planned_hours_only(self):
+        self._assign(self.employee, date(2026, 8, 3))  # keine Zeiterfassung -> Schätzung aus Planung
+        summary = self.employee.overtime_summary(date(2026, 8, 3))
+        self.assertTrue(summary["is_provisional"])
+
+    def test_overtime_summary_is_provisional_when_time_record_not_confirmed(self):
+        assignment = self._assign(self.employee, date(2026, 8, 3))
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=assignment,
+            actual_start=time(8, 0),
+            actual_end=time(17, 0),
+            actual_break_minutes=60,
+        )  # Status bleibt SUBMITTED
+        summary = self.employee.overtime_summary(date(2026, 8, 3))
+        self.assertTrue(summary["is_provisional"])
+
+    def test_overtime_summary_not_provisional_once_all_shifts_confirmed(self):
+        assignment = self._assign(self.employee, date(2026, 8, 3))
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=assignment,
+            actual_start=time(8, 0),
+            actual_end=time(17, 0),
+            actual_break_minutes=60,
+        )
+        record.confirm()
+        summary = self.employee.overtime_summary(date(2026, 8, 3))
+        self.assertFalse(summary["is_provisional"])
+
+    def test_overtime_summary_without_any_assignment_is_not_provisional(self):
+        summary = self.employee.overtime_summary(date(2026, 8, 3))
+        self.assertFalse(summary["is_provisional"])
+
     # --- Feriensaldo ---
 
     def test_vacation_balance_defaults_to_tenant_entitlement_without_absences(self):
@@ -1409,6 +1446,7 @@ class EmployeeBalanceTests(APITestCase):
         response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=2026-08-10")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["overtime_balance_hours"], 6.0)
+        self.assertTrue(response.data["overtime_is_provisional"])  # keine Zeiterfassung erfasst
         self.assertEqual(response.data["vacation_year"], 2026)
         self.assertEqual(response.data["vacation_entitlement_days"], 20)
         self.assertEqual(response.data["vacation_used_days"], 5)

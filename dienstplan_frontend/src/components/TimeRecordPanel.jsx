@@ -21,6 +21,10 @@ function isoDate(year, month, day) {
   return `${year}-${pad(month)}-${pad(day)}`;
 }
 
+function round1(n) {
+  return Math.round(n * 10) / 10;
+}
+
 export default function TimeRecordPanel({ nodeId, year, month, employees, me, onError }) {
   const canManage = canManageSchedule(me);
   const ownEmployeeId = me?.employee?.id ?? null;
@@ -31,6 +35,11 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
+  // UX-Nachbesserung Block 2.7: direktes Feedback, wie sich die gerade
+  // gespeicherte Zeiterfassung auf den Wochensaldo auswirkt -- statt den
+  // Effekt nur indirekt über den (jetzt zwar reaktiven, aber woanders
+  // sitzenden) Saldo im Topbar erahnen zu müssen. { assignmentId, summary }.
+  const [savedFeedback, setSavedFeedback] = useState(null);
 
   const dateFrom = isoDate(year, month, 1);
   const dateTo = isoDate(year, month, daysInMonth(year, month));
@@ -89,6 +98,14 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
         : await api.createTimeRecord({ assignment: assignment.id, ...payload });
       setRecords((prev) => (record ? prev.map((r) => (r.id === saved.id ? saved : r)) : [...prev, saved]));
       setEditingId(null);
+      setSavedFeedback(null);
+      // Sofortiges Feedback: wie wirkt sich diese Erfassung auf den Saldo
+      // der betroffenen Kalenderwoche aus? Fehlschlagen darf das nicht die
+      // eigentliche Speicherung stören -- reine Zusatzinfo.
+      api
+        .getEmployeeWeeklyOvertime(assignment.employee, assignment.date)
+        .then((summary) => setSavedFeedback({ assignmentId: assignment.id, summary }))
+        .catch(() => {});
     } catch (e) {
       onError(e.message);
     } finally {
@@ -100,6 +117,7 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
     try {
       await api.deleteTimeRecord(record.id);
       setRecords((prev) => prev.filter((r) => r.id !== record.id));
+      setSavedFeedback((prev) => (prev?.assignmentId === record.assignment ? null : prev));
     } catch (e) {
       onError(e.message);
     }
@@ -188,6 +206,25 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
                         Bestätigen
                       </button>
                     )}
+                  </span>
+                )}
+                {!isEditing && savedFeedback?.assignmentId === a.id && (
+                  <span className="entry-feedback">
+                    Gespeichert. Woche {savedFeedback.summary.week_start}–{savedFeedback.summary.week_end}: Ist{" "}
+                    {savedFeedback.summary.ist_hours} h / Soll {savedFeedback.summary.soll_hours} h → Saldo{" "}
+                    <span
+                      className={
+                        savedFeedback.summary.ist_hours > savedFeedback.summary.soll_hours
+                          ? "is-positive"
+                          : savedFeedback.summary.ist_hours < savedFeedback.summary.soll_hours
+                            ? "is-negative"
+                            : ""
+                      }
+                    >
+                      {savedFeedback.summary.ist_hours >= savedFeedback.summary.soll_hours ? "+" : ""}
+                      {round1(savedFeedback.summary.ist_hours - savedFeedback.summary.soll_hours)} h
+                    </span>{" "}
+                    diese Woche{savedFeedback.summary.is_provisional && " (vorläufig)"}
                   </span>
                 )}
               </li>

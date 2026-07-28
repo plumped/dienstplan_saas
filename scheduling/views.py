@@ -156,8 +156,9 @@ class EmployeeViewSet(TenantScopedViewSet):
     def balance(self, request, pk=None):
         """
         Saldo-Übersicht (MVP-Fahrplan Block 2.7): kumulierter Überstunden-
-        Saldo (Employee.overtime_balance) + Feriensaldo für ein Kalenderjahr
-        (Employee.vacation_balance). ?as_of=YYYY-MM-DD (Default heute)
+        Saldo inkl. overtime_is_provisional-Flag (Employee.overtime_summary)
+        + Feriensaldo für ein Kalenderjahr (Employee.vacation_balance).
+        ?as_of=YYYY-MM-DD (Default heute)
         bestimmt sowohl den Stichtag für den Überstunden-Saldo als auch,
         falls ?year nicht gesetzt ist, das Ferienjahr. Lesen wie bei
         weekly_overtime für alle Rollen offen, nicht nur für den betroffenen
@@ -183,11 +184,12 @@ class EmployeeViewSet(TenantScopedViewSet):
         else:
             year = as_of_date.year
 
-        overtime_balance_hours = employee.overtime_balance(as_of_date)
+        overtime = employee.overtime_summary(as_of_date)
         vacation = employee.vacation_balance(year)
         data = {
             "as_of": as_of_date,
-            "overtime_balance_hours": overtime_balance_hours,
+            "overtime_balance_hours": overtime["balance_hours"],
+            "overtime_is_provisional": overtime["is_provisional"],
             "vacation_year": vacation["year"],
             "vacation_entitlement_days": vacation["entitlement_days"],
             "vacation_used_days": vacation["used_days"],

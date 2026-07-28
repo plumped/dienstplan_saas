@@ -359,34 +359,28 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      ohnehin schon volle Zelle (Name, Pensum, Kopier-Button) dadurch überladen wirkte. Die separate
      Spalte ist analog zur Mitarbeiter-Spalte links (`position: sticky; right: 0`) fixiert, damit
      der Saldo unabhängig von der horizontalen Scroll-Position sichtbar bleibt.
-   - *Noch offen* (UX-Lücke, aus Mitarbeitersicht): Der Saldo **wirkt** so, als würde er erst nach
-     Prüfung der Zeiterfassung aktualisiert -- ist er aber gar nicht: `weekly_hours_summary()`
-     nimmt für `ist_hours` sowieso schon die geplante Schichtdauer (`ShiftAssignment` +
-     `TimeTemplate`), solange kein `TimeRecord` existiert, und sobald der Mitarbeiter eine Ist-Zeit
-     erfasst, zählt die **sofort** mit -- unabhängig vom `TimeRecord.status`
-     (`submitted`/`confirmed`). Das eigentliche Problem ist rein im Frontend: `BalanceBadge.jsx`
-     lädt den Saldo per `useEffect` nur einmal beim Mounten (Abhängigkeit `[employeeId]`) und wird
-     nie neu abgefragt, wenn sich innerhalb derselben Session etwas ändert, das den Saldo
-     beeinflusst -- neue/geänderte Zuweisung, gespeicherte/gelöschte eigene Zeiterfassung, oder die
-     Planer-Bestätigung (`confirm()`). Der Mitarbeiter sieht die Änderung deshalb erst nach einem
-     Reload, was zufällig oft mit dem nächsten Login nach einer Planer-Prüfung zusammenfällt und
-     so den falschen Eindruck "Saldo aktualisiert erst nach Prüfung" erweckt. Intuitive
-     Verbesserungen aus Mitarbeitersicht:
-     - **Sofort reaktiv aktualisieren**: `BalanceBadge` (Topbar, Planblatt-Grid,
-       Mitarbeitenden-Verwaltung) nach jeder Mutation neu abfragen, die den Saldo beeinflussen kann
-       -- z. B. über einen einfachen `refreshKey`/Callback von `App.jsx`/`PlanGrid.jsx` nach oben
-       gereicht, statt nur `employeeId` als Abhängigkeit zu haben. Besonders wichtig direkt nach dem
-       Erfassen der eigenen Ist-Zeit im Zeiterfassung-Tab -- genau der Moment, in dem der
-       Mitarbeiter eine unmittelbare Rückmeldung erwartet ("meine Schicht heute hat den Saldo um
-       +0.3 h verändert").
-     - **Sofort sehen, sobald eine Schicht eingeplant ist**: bereits heute fliesst eine geplante
-       (noch nicht erfasste) Schicht als Schätzwert in den Saldo ein -- das sollte im UI auch so
-       kommuniziert werden, z. B. durch einen Hinweis/Icon am Saldo, ob er ganz, teilweise oder gar
-       nicht auf bestätigten Ist-Zeiten beruht (`voraussichtlich` vs. `bestätigt`), damit der
-       Mitarbeiter nicht denkt, ungeprüfte Erfassungen "zählten noch nicht".
-     - **Direktes Feedback pro Schicht**: nach dem Speichern einer Zeiterfassung im
-       Zeiterfassung-Tab kurz anzeigen, wie sich der Tages-/Wochensaldo dadurch verändert hat,
-       statt nur den kumulierten Gesamtsaldo irgendwo im Topbar zu zeigen.
+   - ✅ **UX-Nachbesserung: sofortiges, transparentes Feedback statt scheinbarer Wartezeit auf die
+     Prüfung.** Der Saldo war rechnerisch schon immer sofort aktuell (`weekly_hours_summary()`
+     nimmt die geplante Schichtdauer, solange keine Zeiterfassung existiert, und jede erfasste
+     Ist-Zeit zählt unabhängig vom `TimeRecord.status` sofort mit) -- er **wirkte** nur so, als
+     würde er erst nach der Prüfung aktualisiert, weil `BalanceBadge.jsx` den Saldo lediglich einmal
+     beim Mounten geladen hat. Drei Verbesserungen dagegen, aus Mitarbeitersicht gedacht:
+     - **Reaktives Neuladen**: `api.js` feuert nach jeder saldorelevanten Mutation (Zuweisung,
+       Zeiterfassung, Absenz-Genehmigung, Diensttausch-Freigabe, Employee-Update) ein einfaches
+       Pub/Sub-Event (`onBalanceChanged`), das `BalanceBadge` abonniert und daraufhin neu lädt --
+       Topbar, Mitarbeitenden-Verwaltung und Planblatt-Grid-Spalte aktualisieren sich jetzt alle
+       innerhalb derselben Session, ohne Reload.
+     - **"Voraussichtlich" vs. "bestätigt" sichtbar machen**: `Employee.overtime_summary()` liefert
+       zusätzlich `is_provisional` (True, sobald mindestens eine eingerechnete Schicht nicht auf
+       einer geprüften Zeiterfassung beruht) über den `balance`-Endpoint
+       (`overtime_is_provisional`) sowie `weekly_hours_summary()`/`weekly-overtime`-Endpoint
+       (`is_provisional`). `BalanceBadge` zeigt in diesem Fall ein dezentes `~` vor dem
+       Überstunden-Wert (Tooltip erklärt den Unterschied), statt stillschweigend so zu tun, als sei
+       alles bereits geprüft.
+     - **Direktes Feedback pro Schicht**: `TimeRecordPanel.jsx` (Zeiterfassung-Tab) zeigt nach dem
+       Speichern einer Ist-Zeit sofort eine kurze, farblich neutrale Zeile mit der Wochenbilanz der
+       betroffenen Kalenderwoche (Ist/Soll/Delta, via `GET /api/employees/{id}/weekly-overtime/`),
+       statt den Effekt nur indirekt über den Topbar erahnen zu lassen.
 8. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
    eine belegte Zelle wird abgelehnt statt getauscht).
 9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn

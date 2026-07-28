@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.js";
 import AbsencePanel from "./components/AbsencePanel.jsx";
+import BalanceBadge from "./components/BalanceBadge.jsx";
 import LoginForm from "./components/LoginForm.jsx";
 import MonthNav from "./components/MonthNav.jsx";
 import NodeSelector from "./components/NodeSelector.jsx";
@@ -115,6 +116,7 @@ export default function App() {
           />
         )}
 
+        {me?.employee && <BalanceBadge employeeId={me.employee.id} />}
         {me?.role && <span className="role-badge">{ROLE_LABELS[me.role] ?? me.role}</span>}
 
         <button

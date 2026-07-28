@@ -1,4 +1,4 @@
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -53,6 +53,22 @@ def _segment_datetimes(reference_date, segments):
         result.append((start_dt, end_dt))
         cursor = end_dt
     return result
+
+
+def _count_workdays(start_date, end_date):
+    """
+    Anzahl Mo-Fr-Tage zwischen start_date und end_date (inklusive). Für den
+    Feriensaldo (Block 2.7) -- Feiertage werden bewusst nicht berücksichtigt
+    (kein kantonaler Feiertagskalender hinterlegt), das ist eine bekannte
+    Vereinfachung.
+    """
+    total_days = (end_date - start_date).days + 1
+    full_weeks, remainder = divmod(total_days, 7)
+    count = full_weeks * 5
+    for i in range(remainder):
+        if (start_date + timedelta(days=full_weeks * 7 + i)).weekday() < 5:
+            count += 1
+    return count
 
 
 class Node(MP_Node, TenantScopedModel):
@@ -129,6 +145,20 @@ class Employee(TenantScopedModel):
         "zu übernehmen.",
     )
 
+    # Saldo-Übersicht (MVP-Fahrplan Block 2.7), siehe overtime_balance()/
+    # vacation_balance() weiter unten.
+    overtime_balance_carryover_hours = models.FloatField(
+        default=0,
+        help_text="Überstunden-Saldo beim Systemstart (z. B. aus der vorherigen Zeiterfassung "
+        "übernommen). Wird zum seit der ersten erfassten Schicht berechneten Saldo addiert.",
+    )
+    vacation_days_per_year = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Überschreibt Tenant.default_vacation_days_per_year (Ferienanspruch in "
+        "Arbeitstagen) für diesen Mitarbeiter. Leer lassen, um den Tenant-Wert zu übernehmen.",
+    )
+
     history = HistoricalRecords()
 
     class Meta:
@@ -186,6 +216,61 @@ class Employee(TenantScopedModel):
             "surcharge_hours": surcharge_hours,
         }
 
+    def overtime_balance(self, as_of_date=None):
+        """
+        Kumulierter Überstunden-Saldo (MVP-Fahrplan Block 2.7) -- im
+        Gegensatz zu weekly_hours_summary()["overtime_hours"] (auf 0 nach
+        unten begrenzt, Basis für den Zuschlag) hier die **vorzeichenbehaftete**
+        Differenz Ist-Soll je Woche, aufsummiert über alle Wochen, in denen
+        der Mitarbeiter mindestens eine Zuweisung hatte (plus
+        overtime_balance_carryover_hours als Startwert). Wochen ohne jede
+        Zuweisung tragen bewusst nichts bei -- sie würden sonst so behandelt,
+        als hätte der Mitarbeiter in einer Woche vor Anstellungsbeginn oder
+        in einer Lücke die volle Sollzeit verpasst.
+        """
+        as_of_date = as_of_date or timezone.localdate()
+        assignment_dates = ShiftAssignment.all_objects.filter(
+            employee=self, date__lte=as_of_date
+        ).values_list("date", flat=True)
+        week_starts = {d - timedelta(days=d.weekday()) for d in assignment_dates}
+
+        balance = self.overtime_balance_carryover_hours
+        for week_start in week_starts:
+            summary = self.weekly_hours_summary(week_start)
+            balance += summary["ist_hours"] - summary["soll_hours"]
+        return round(balance, 2)
+
+    def vacation_balance(self, year=None):
+        """
+        Feriensaldo für ein Kalenderjahr (MVP-Fahrplan Block 2.7): Anspruch
+        (Tenant-Default oder Employee-Override) minus genehmigte
+        Ferien-Absenzen, die in dieses Jahr fallen (an den Jahresgrenzen
+        gekappt). Verbrauchte Tage werden als Mo-Fr-Werktage gezählt (siehe
+        _count_workdays) -- ohne Feiertagskalender und ohne Übertrag
+        zwischen Kalenderjahren (beides bewusst noch offen, siehe README).
+        """
+        year = year or timezone.localdate().year
+        entitlement_days = self.vacation_days_per_year or self.tenant.default_vacation_days_per_year
+        year_start = date(year, 1, 1)
+        year_end = date(year, 12, 31)
+
+        absences = Absence.all_objects.filter(
+            employee=self,
+            type=Absence.Type.VACATION,
+            status=Absence.Status.APPROVED,
+            start_date__lte=year_end,
+            end_date__gte=year_start,
+        )
+        used_days = sum(
+            _count_workdays(max(a.start_date, year_start), min(a.end_date, year_end)) for a in absences
+        )
+
+        return {
+            "year": year,
+            "entitlement_days": entitlement_days,
+            "used_days": used_days,
+            "remaining_days": entitlement_days - used_days,
+        }
 
 class Absence(TenantScopedModel):
     """

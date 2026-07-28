@@ -76,7 +76,9 @@ button {
 .topbar {
   display: flex;
   align-items: center;
-  gap: 20px;
+  flex-wrap: wrap;
+  row-gap: 8px;
+  column-gap: 20px;
   padding: 14px 24px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -182,6 +184,34 @@ button {
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 4px 10px;
+}
+
+/* Block 2.7: Saldo-Anzeige (Topbar + Mitarbeiterliste, siehe BalanceBadge.jsx) */
+.balance-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.balance-badge-sep {
+  color: var(--border);
+}
+
+.balance-badge .is-positive {
+  color: #2e7d32;
+  font-weight: 700;
+}
+
+.balance-badge .is-negative {
+  color: var(--warn);
+  font-weight: 700;
 }
 
 .btn-ghost:hover {

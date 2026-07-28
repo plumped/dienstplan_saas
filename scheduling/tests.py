@@ -1279,6 +1279,147 @@ class WeeklyOvertimeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class EmployeeBalanceTests(APITestCase):
+    """Saldo-Übersicht (MVP-Fahrplan Block 2.7): Überstunden-Saldo + Feriensaldo."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(17, 0),
+            break_minutes=60,  # 9h Spanne - 1h Pause = 8h netto pro Schicht
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _assign(self, employee, day, template=None):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=employee, node=self.node, date=day, template=template or self.template
+        )
+
+    # --- Überstunden-Saldo ---
+
+    def test_overtime_balance_defaults_to_carryover_without_assignments(self):
+        self.assertEqual(self.employee.overtime_balance(date(2026, 8, 10)), 0)
+        self.employee.overtime_balance_carryover_hours = 15.5
+        self.employee.save(update_fields=["overtime_balance_carryover_hours"])
+        self.assertEqual(self.employee.overtime_balance(date(2026, 8, 10)), 15.5)
+
+    def test_overtime_balance_sums_signed_difference_across_weeks(self):
+        # Woche 1 (ab Mo 2026-08-03): 6 Schichten a 8h = 48h ist, 42h soll -> +6h.
+        for offset in range(6):
+            self._assign(self.employee, date(2026, 8, 3) + timedelta(days=offset))
+        # Woche 2 (ab Mo 2026-08-10): nur 3 Schichten a 8h = 24h ist, 42h soll -> -18h.
+        for offset in range(3):
+            self._assign(self.employee, date(2026, 8, 10) + timedelta(days=offset))
+        # Woche dazwischen/danach ohne jede Zuweisung darf NICHT als -42h zählen.
+        balance = self.employee.overtime_balance(date(2026, 8, 20))
+        self.assertEqual(balance, -12.0)  # +6 - 18
+
+    def test_overtime_balance_ignores_assignments_after_as_of_date(self):
+        self._assign(self.employee, date(2026, 8, 3))  # 8h in einer 42h-Soll-Woche -> -34h
+        self._assign(self.employee, date(2026, 8, 24))  # spätere Woche, soll nicht mitzählen
+        balance = self.employee.overtime_balance(date(2026, 8, 10))
+        self.assertEqual(balance, -34.0)
+
+    # --- Feriensaldo ---
+
+    def test_vacation_balance_defaults_to_tenant_entitlement_without_absences(self):
+        summary = self.employee.vacation_balance(2026)
+        self.assertEqual(summary["entitlement_days"], 20)  # Tenant-Default
+        self.assertEqual(summary["used_days"], 0)
+        self.assertEqual(summary["remaining_days"], 20)
+
+    def test_vacation_balance_employee_override_replaces_tenant_default(self):
+        self.employee.vacation_days_per_year = 25
+        self.employee.save(update_fields=["vacation_days_per_year"])
+        summary = self.employee.vacation_balance(2026)
+        self.assertEqual(summary["entitlement_days"], 25)
+
+    def test_vacation_balance_counts_only_workdays(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),  # Montag
+            end_date=date(2026, 8, 9),  # Sonntag -- volle Woche, aber nur 5 Werktage
+            type=Absence.Type.VACATION,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.vacation_balance(2026)
+        self.assertEqual(summary["used_days"], 5)
+        self.assertEqual(summary["remaining_days"], 15)
+
+    def test_vacation_balance_ignores_pending_and_non_vacation_absences(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 7),
+            type=Absence.Type.VACATION,
+            status=Absence.Status.PENDING,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 10),
+            end_date=date(2026, 8, 14),
+            type=Absence.Type.SICK,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.vacation_balance(2026)
+        self.assertEqual(summary["used_days"], 0)
+
+    def test_vacation_balance_clips_absence_spanning_year_boundary(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 12, 28),  # Montag
+            end_date=date(2027, 1, 2),  # Samstag -- 4 Werktage 2026, 1 Werktag 2027
+            type=Absence.Type.VACATION,
+            status=Absence.Status.APPROVED,
+        )
+        self.assertEqual(self.employee.vacation_balance(2026)["used_days"], 4)
+        self.assertEqual(self.employee.vacation_balance(2027)["used_days"], 1)
+
+    # --- API ---
+
+    def test_api_returns_combined_balance(self):
+        for offset in range(6):
+            self._assign(self.employee, date(2026, 8, 3) + timedelta(days=offset))
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 7),
+            type=Absence.Type.VACATION,
+            status=Absence.Status.APPROVED,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=2026-08-10")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["overtime_balance_hours"], 6.0)
+        self.assertEqual(response.data["vacation_year"], 2026)
+        self.assertEqual(response.data["vacation_entitlement_days"], 20)
+        self.assertEqual(response.data["vacation_used_days"], 5)
+        self.assertEqual(response.data["vacation_remaining_days"], 15)
+
+    def test_api_rejects_invalid_as_of_param(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=not-a-date")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
 class ShiftTradeRequestTests(TestCase):
     """Diensttausch: sowohl einfache Übernahme als auch echter Tausch, jeweils inkl. Regel-Engine."""
 

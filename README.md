@@ -329,29 +329,29 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Lohnbuchhaltung, die selten direkt an die API angebunden ist.
 6. **Monatsauswertung Soll/Ist-Stunden pro Mitarbeiter** (inkl. Nacht-/Sonntagszuschläge,
    Überzeit) als Basis für den Lohnlauf.
-7. **Saldo-Übersicht für Mitarbeitende** (Überstunden + Ferien): Mitarbeitende wollen auf einen
-   Blick wissen, ob sie gesamthaft im Plus oder im Minus sind und wie viele Ferienstunden noch
-   übrig sind -- aktuell zeigt das Frontend nirgends einen kumulierten Saldo, nur einzelne
-   Absenzanträge und (ab Block 1.11) eine wöchentliche Über-/Unterzeit. Baut auf Block 1.11
-   (Überzeitarbeit-Berechnung) und Block 2.6 (Monatsauswertung) auf, ist aber eine eigene
-   Aufgabe, weil es hier um die **Mitarbeiter-Selbstauskunft** geht, nicht um die
-   Lohnbuchhaltungs-Auswertung:
-   - **Überstunden-Saldo**: nicht nur pro Woche/Monat, sondern **kumuliert über die Zeit**
-     (Soll aus `Employee.employment_pct`, Ist aus `TimeRecord`, sobald erfasst -- sonst aus der
-     Planung). Braucht vermutlich ein Startsaldo-Feld pro `Employee` (z. B.
-     `overtime_balance_carryover_hours`), da ein Betrieb beim Einstieg ins System nicht bei null
-     Überstunden beginnt, sondern einen bestehenden Saldo mitbringt.
-   - **Feriensaldo**: fehlt heute als Konzept komplett -- `Employee` hat keinen
-     Ferienanspruch/`vacation_days_per_year` (ggf. anteilig nach `employment_pct` und
-     Eintrittsdatum zu berechnen), `Absence` verknüpft genehmigte Ferien-Absenzen nicht mit einem
-     Anspruch/Saldo. Braucht Klärung, ob Resturlaub ins Folgejahr übertragen werden kann/muss
-     (üblich in CH, teils mit Verfallsfrist) -- das betrifft direkt das Löschkonzept/die
-     Datenhaltung, nicht nur die Anzeige.
-   - **Frontend**: kompakte Saldo-Anzeige für Mitarbeitende (z. B. im Topbar-Bereich oder als
-     eigene kleine Kachel/Tab "Mein Saldo") mit den zwei Kernzahlen (Überstunden ± X h,
-     Ferienguthaben X Tage/Std.); Admin/Planer sollten dieselbe Ansicht auch für andere
-     Mitarbeitende einsehen können (z. B. in der Mitarbeiterliste), nicht nur die betroffene
-     Person selbst.
+7. ✅ **Saldo-Übersicht für Mitarbeitende** (Überstunden + Ferien): Mitarbeitende sehen jetzt auf
+   einen Blick, ob sie gesamthaft im Plus oder im Minus sind und wie viele Ferientage noch übrig
+   sind. Bewusst getrennt von Block 1.11 (wöchentliche Über-/Unterzeit für den Zuschlag) und
+   Block 2.6 (Monatsauswertung/Lohnbuchhaltung), weil es hier um die **Mitarbeiter-
+   Selbstauskunft** geht:
+   - **Überstunden-Saldo** (`Employee.overtime_balance()`): vorzeichenbehaftete Summe aus
+     Ist minus Soll über **alle Kalenderwochen, in denen der Mitarbeiter mindestens eine
+     Zuweisung hatte** (Wochen ganz ohne Zuweisung zählen bewusst nicht als "-Soll", das würde
+     Zeit vor Anstellungsbeginn/Lücken fälschlich als Minusstunden werten), plus
+     `Employee.overtime_balance_carryover_hours` als Startsaldo beim Systemeinstieg.
+   - **Feriensaldo** (`Employee.vacation_balance()`): Anspruch (`Tenant.
+     default_vacation_days_per_year`, Default 20 Tage nach Art. 329a Abs. 1 OR, oder
+     `Employee.vacation_days_per_year` als Override) minus genehmigte Ferien-Absenzen im
+     jeweiligen Kalenderjahr, gezählt in Mo-Fr-Werktagen (`_count_workdays`). *Noch offen*: kein
+     Feiertagskalender (Feiertage zählen fälschlich als Arbeitstag) und kein Übertrag von
+     Resturlaub zwischen Kalenderjahren -- beides bewusst nicht gelöst, siehe Block 5.3 fürs
+     Löschkonzept, sobald ein Übertragsmechanismus feststeht.
+   - **API**: `GET /api/employees/{id}/balance/` (`?as_of=`/`?year=`), Lesen für alle Rollen
+     offen wie beim übrigen Planblatt.
+   - **Frontend**: `BalanceBadge.jsx` -- im Topbar für den eigenen Account (nur wenn `me.
+     employee` gesetzt ist), zusätzlich pro Zeile in der Mitarbeitenden-Verwaltung (Block 2.10)
+     für Admin/Planer. Der Topbar musste dafür umgebaut werden (`flex-wrap` statt fixer Zeile),
+     sonst wäre er bei normaler Fensterbreite abgeschnitten worden.
 8. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
    eine belegte Zelle wird abgelehnt statt getauscht).
 9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn

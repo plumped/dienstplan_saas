@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import BalanceBadge from "./BalanceBadge.jsx";
 
 function emptyForm() {
   return {
@@ -12,6 +13,8 @@ function emptyForm() {
     is_active: true,
     maximum_weekly_hours: "",
     standard_weekly_hours: "",
+    overtime_balance_carryover_hours: 0,
+    vacation_days_per_year: "",
   };
 }
 
@@ -26,6 +29,8 @@ function toFormValues(employee) {
     is_active: employee.is_active,
     maximum_weekly_hours: employee.maximum_weekly_hours ?? "",
     standard_weekly_hours: employee.standard_weekly_hours ?? "",
+    overtime_balance_carryover_hours: employee.overtime_balance_carryover_hours ?? 0,
+    vacation_days_per_year: employee.vacation_days_per_year ?? "",
   };
 }
 
@@ -84,6 +89,8 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
       is_active: form.is_active,
       maximum_weekly_hours: form.maximum_weekly_hours === "" ? null : Number(form.maximum_weekly_hours),
       standard_weekly_hours: form.standard_weekly_hours === "" ? null : Number(form.standard_weekly_hours),
+      overtime_balance_carryover_hours: Number(form.overtime_balance_carryover_hours) || 0,
+      vacation_days_per_year: form.vacation_days_per_year === "" ? null : Number(form.vacation_days_per_year),
     };
     setSaving(true);
     try {
@@ -205,6 +212,30 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
             />
           </label>
         </div>
+        <div className="panel-form-row">
+          <label>
+            Ferienanspruch/Jahr, Tage (Block 2.7 -- leer = Tenant-Standard)
+            <input
+              type="number"
+              min="0"
+              max="60"
+              placeholder="z. B. 25"
+              value={form.vacation_days_per_year}
+              onChange={(e) => setForm((prev) => ({ ...prev, vacation_days_per_year: e.target.value }))}
+            />
+          </label>
+          <label>
+            Überstunden-Startsaldo, Std. (Block 2.7 -- beim Systemstart übernommen)
+            <input
+              type="number"
+              step="0.5"
+              value={form.overtime_balance_carryover_hours}
+              onChange={(e) =>
+                setForm((prev) => ({ ...prev, overtime_balance_carryover_hours: e.target.value }))
+              }
+            />
+          </label>
+        </div>
         <label className="checkbox-row">
           <input
             type="checkbox"
@@ -250,6 +281,7 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
                   )}
                 </span>
                 <span className="entry-actions">
+                  <BalanceBadge employeeId={emp.id} />
                   <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
                     Bearbeiten
                   </button>

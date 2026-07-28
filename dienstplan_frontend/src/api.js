@@ -70,6 +70,7 @@ export const api = {
   getEmployees: () => request("/employees/"),
   createEmployee: (payload) => request("/employees/", { method: "POST", body: payload }),
   updateEmployee: (id, payload) => request(`/employees/${id}/`, { method: "PATCH", body: payload }),
+  getEmployeeBalance: (id) => request(`/employees/${id}/balance/`),
 
   getTimeTemplates: () => request("/time-templates/"),
   createTimeTemplate: (payload) => request("/time-templates/", { method: "POST", body: payload }),

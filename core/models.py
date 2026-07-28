@@ -73,6 +73,17 @@ class Tenant(models.Model):
         "GAV-abhängig anpassbar).",
     )
 
+    # Feriensaldo (MVP-Fahrplan Block 2.7): Default pro Tenant, einzelne
+    # Mitarbeitende können das über Employee.vacation_days_per_year
+    # überschreiben (gleiches Override-Muster wie bei den Wochenstunden,
+    # siehe Block 1.14).
+    default_vacation_days_per_year = models.PositiveSmallIntegerField(
+        default=20,
+        help_text="Gesetzlicher Mindestanspruch: 20 Arbeitstage (4 Wochen, Art. 329a Abs. 1 OR) für "
+        "Erwachsene, 25 Tage (5 Wochen) für unter 20-Jährige (Art. 329a Abs. 3 OR) -- als "
+        "Tenant-Default hinterlegt, pro Mitarbeiter überschreibbar für abweichende Verträge.",
+    )
+
     class Meta:
         ordering = ["name"]
 

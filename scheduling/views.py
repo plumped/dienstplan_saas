@@ -20,6 +20,7 @@ from core.tenancy import resolve_membership_for_user
 from .models import Absence, Employee, Node, ShiftAssignment, ShiftTradeRequest, Skill, TimeRecord, TimeTemplate
 from .serializers import (
     AbsenceSerializer,
+    EmployeeBalanceSerializer,
     EmployeeSerializer,
     NodeSerializer,
     ShiftAssignmentSerializer,
@@ -150,6 +151,49 @@ class EmployeeViewSet(TenantScopedViewSet):
             reference_date = timezone.localdate()
         summary = employee.weekly_hours_summary(reference_date)
         return Response(WeeklyOvertimeSerializer(summary).data)
+
+    @action(detail=True, methods=["get"])
+    def balance(self, request, pk=None):
+        """
+        Saldo-Übersicht (MVP-Fahrplan Block 2.7): kumulierter Überstunden-
+        Saldo (Employee.overtime_balance) + Feriensaldo für ein Kalenderjahr
+        (Employee.vacation_balance). ?as_of=YYYY-MM-DD (Default heute)
+        bestimmt sowohl den Stichtag für den Überstunden-Saldo als auch,
+        falls ?year nicht gesetzt ist, das Ferienjahr. Lesen wie bei
+        weekly_overtime für alle Rollen offen, nicht nur für den betroffenen
+        Mitarbeiter selbst -- Admin/Planer sollen dieselbe Ansicht auch für
+        andere Mitarbeitende sehen können.
+        """
+        employee = self.get_object()
+        as_of_param = request.query_params.get("as_of")
+        if as_of_param:
+            try:
+                as_of_date = date.fromisoformat(as_of_param)
+            except ValueError:
+                raise ValidationError({"as_of": "Ungültiges Datum, erwartet YYYY-MM-DD."})
+        else:
+            as_of_date = timezone.localdate()
+
+        year_param = request.query_params.get("year")
+        if year_param:
+            try:
+                year = int(year_param)
+            except ValueError:
+                raise ValidationError({"year": "Ungültiges Jahr."})
+        else:
+            year = as_of_date.year
+
+        overtime_balance_hours = employee.overtime_balance(as_of_date)
+        vacation = employee.vacation_balance(year)
+        data = {
+            "as_of": as_of_date,
+            "overtime_balance_hours": overtime_balance_hours,
+            "vacation_year": vacation["year"],
+            "vacation_entitlement_days": vacation["entitlement_days"],
+            "vacation_used_days": vacation["used_days"],
+            "vacation_remaining_days": vacation["remaining_days"],
+        }
+        return Response(EmployeeBalanceSerializer(data).data)
 
 
 class TimeTemplateViewSet(TenantScopedViewSet):

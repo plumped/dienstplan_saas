@@ -43,6 +43,10 @@ class TenantAdmin(admin.ModelAdmin):
                 "(Soll), nicht die gesetzliche Höchstgrenze (maximum_weekly_hours oben).",
             },
         ),
+        (
+            "Ferien (Art. 329a OR)",
+            {"fields": ("default_vacation_days_per_year",)},
+        ),
     )
 
 

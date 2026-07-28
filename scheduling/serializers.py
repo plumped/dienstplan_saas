@@ -54,7 +54,20 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "is_active",
             "maximum_weekly_hours",
             "standard_weekly_hours",
+            "overtime_balance_carryover_hours",
+            "vacation_days_per_year",
         ]
+
+
+class EmployeeBalanceSerializer(serializers.Serializer):
+    """Read-only: kombiniert Employee.overtime_balance()/vacation_balance() (Block 2.7)."""
+
+    as_of = serializers.DateField()
+    overtime_balance_hours = serializers.FloatField()
+    vacation_year = serializers.IntegerField()
+    vacation_entitlement_days = serializers.IntegerField()
+    vacation_used_days = serializers.IntegerField()
+    vacation_remaining_days = serializers.IntegerField()
 
 
 class WeeklyOvertimeSerializer(serializers.Serializer):

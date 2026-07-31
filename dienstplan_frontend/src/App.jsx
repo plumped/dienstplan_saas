@@ -151,7 +151,12 @@ export default function App() {
           <SettingsPanel onError={setError} />
         ) : !nodeId ? (
           <p className="empty-state">
-            Keine Stationen vorhanden. Unter „Einstellungen“ zuerst eine Station anlegen.
+            {canManageSchedule(me)
+              ? "Keine Stationen vorhanden. Unter „Einstellungen“ zuerst eine Station anlegen."
+              : // Ein Mitarbeiter sieht nur die eigene(n) Station(en) -- ist er
+                // an keine gebunden, liefert GET /api/nodes/ eine leere Liste
+                // (nicht, weil es tenant-weit keine Stationen gäbe).
+                "Keiner Station zugeordnet. Bitte an Admin/Planer wenden."}
           </p>
         ) : (
           <>

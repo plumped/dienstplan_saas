@@ -89,6 +89,28 @@ class TenantScopedViewSet(viewsets.ModelViewSet):
         serializer.save(tenant=self.request.tenant)
 
 
+def _employee_scoped_node_ids(request):
+    """
+    Ein Mitarbeiter darf nur seine eigene(n) Station(en) sehen -- anders als
+    beim übrigen Planblatt (siehe ShiftAssignmentViewSet: "Mitarbeitende
+    sehen den ganzen Plan (Transparenz)") gilt diese Transparenz nur
+    INNERHALB der eigenen Station(en), nicht tenant-weit über alle Stationen
+    hinweg. Gibt None zurück, wenn keine Einschränkung gilt (Admin/Planer/HR
+    sehen weiterhin alle Stationen des Tenants), sonst die Liste der
+    Node-IDs, auf die die Mitarbeiter-Rolle beschränkt ist (leere Liste, falls
+    kein Employee-Profil existiert). Von NodeViewSet, TimeTemplateViewSet und
+    ShiftAssignmentViewSet gleich ausgewertet, damit alle drei
+    node-bezogenen Ressourcen konsistent eingeschränkt sind.
+    """
+    membership = request.membership
+    if not membership or membership.role != Membership.Role.EMPLOYEE:
+        return None
+    employee_profile = request.employee_profile
+    if not employee_profile:
+        return []
+    return list(employee_profile.nodes.values_list("id", flat=True))
+
+
 class NodeViewSet(TenantScopedViewSet):
     """
     Achtung: Node erbt von treebeard's MP_Node, das Baumfelder (path, depth,
@@ -101,6 +123,13 @@ class NodeViewSet(TenantScopedViewSet):
     permission_classes = [permissions.IsAuthenticated, IsTenantManager]
     queryset = Node.all_objects.all()
     serializer_class = NodeSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        node_ids = _employee_scoped_node_ids(self.request)
+        if node_ids is not None:
+            qs = qs.filter(id__in=node_ids)
+        return qs
 
     def perform_create(self, serializer):
         tenant = self.request.tenant
@@ -203,6 +232,13 @@ class TimeTemplateViewSet(TenantScopedViewSet):
     queryset = TimeTemplate.all_objects.all()
     serializer_class = TimeTemplateSerializer
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        node_ids = _employee_scoped_node_ids(self.request)
+        if node_ids is not None:
+            qs = qs.filter(node_id__in=node_ids)
+        return qs
+
 
 class ShiftAssignmentViewSet(TenantScopedViewSet):
     """
@@ -210,8 +246,10 @@ class ShiftAssignmentViewSet(TenantScopedViewSet):
     das Planblatt-Grid (ein Knoten, ein Monat) effizient zu laden.
 
     Schreiben ist Admin/Planer vorbehalten -- Mitarbeitende sehen den ganzen
-    Plan (Transparenz), ändern ihn aber nicht direkt, sondern nur über einen
-    genehmigten Diensttausch (ShiftTradeRequestViewSet).
+    Plan ihrer eigenen Station(en) (Transparenz, aber begrenzt auf die
+    eigene(n) Station(en) -- siehe _employee_scoped_node_ids), ändern ihn
+    aber nicht direkt, sondern nur über einen genehmigten Diensttausch
+    (ShiftTradeRequestViewSet).
     """
 
     permission_classes = [permissions.IsAuthenticated, IsTenantManager]
@@ -220,6 +258,9 @@ class ShiftAssignmentViewSet(TenantScopedViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset().select_related("employee", "template", "node")
+        node_ids = _employee_scoped_node_ids(self.request)
+        if node_ids is not None:
+            qs = qs.filter(node_id__in=node_ids)
         node = self.request.query_params.get("node")
         date_from = self.request.query_params.get("date_from")
         date_to = self.request.query_params.get("date_to")

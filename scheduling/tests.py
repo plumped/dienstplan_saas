@@ -2144,3 +2144,73 @@ class RoleBasedPermissionTests(APITestCase):
         self.auth_as(self.alice_user)
         response = self.client.delete(f"/api/time-records/{record.id}/")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    # --- Ein Mitarbeiter darf nur seine eigene(n) Station(en) sehen ---
+
+    def test_employee_sees_only_own_station_in_node_list(self):
+        other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        self.alice.nodes.add(self.node)
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/nodes/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {n["id"] for n in response.data["results"]}
+        self.assertEqual(ids, {self.node.id})
+        self.assertNotIn(other_node.id, ids)
+
+    def test_employee_without_any_station_sees_no_nodes(self):
+        # self.alice ist in dieser Testklasse standardmässig an keine
+        # Station gebunden (kein .nodes.add()) -- muss dann konsequenterweise
+        # eine leere Liste sehen statt versehentlich den ganzen Tenant.
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/nodes/")
+        self.assertEqual(response.data["results"], [])
+
+    def test_admin_planner_and_hr_still_see_all_stations(self):
+        other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        for user in (self.planner_user, self.hr_user):
+            self.auth_as(user)
+            response = self.client.get("/api/nodes/")
+            ids = {n["id"] for n in response.data["results"]}
+            self.assertIn(self.node.id, ids)
+            self.assertIn(other_node.id, ids)
+
+    def test_employee_only_sees_shift_assignments_of_own_station(self):
+        other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        other_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=other_node,
+            name="Nachtdienst",
+            start_time=time(20, 0),
+            end_time=time(6, 0),
+            break_minutes=30,
+        )
+        other_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.bob, node=other_node, date=date(2026, 8, 5), template=other_template
+        )
+        self.alice.nodes.add(self.node)
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/shift-assignments/")
+        ids = {a["id"] for a in response.data["results"]}
+        # Innerhalb der eigenen Station bleibt es bei voller Transparenz
+        # (auch Bobs Zuweisung auf derselben Station ist sichtbar) -- nur die
+        # fremde Station ist ausgeblendet.
+        self.assertIn(self.alice_assignment.id, ids)
+        self.assertIn(self.bob_assignment.id, ids)
+        self.assertNotIn(other_assignment.id, ids)
+
+    def test_employee_only_sees_time_templates_of_own_station(self):
+        other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        other_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=other_node,
+            name="Nachtdienst",
+            start_time=time(20, 0),
+            end_time=time(6, 0),
+            break_minutes=30,
+        )
+        self.alice.nodes.add(self.node)
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/time-templates/")
+        ids = {t["id"] for t in response.data["results"]}
+        self.assertIn(self.template.id, ids)
+        self.assertNotIn(other_template.id, ids)

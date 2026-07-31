@@ -256,20 +256,22 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
           {employees.map((emp) => (
             <tr key={emp.id}>
               <th scope="row" className="col-employee">
-                <span className="employee-name">
-                  {emp.first_name} {emp.last_name}
+                <span className="employee-row-inner">
+                  <span className="employee-name">
+                    {emp.first_name} {emp.last_name}
+                  </span>
+                  <span className="pct">{emp.employment_pct}%</span>
+                  {canManage && (
+                    <button
+                      type="button"
+                      className="btn-copy-week"
+                      title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
+                      onClick={() => handleCopyWeekPattern(emp.id)}
+                    >
+                      ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
+                    </button>
+                  )}
                 </span>
-                <span className="pct">{emp.employment_pct}%</span>
-                {canManage && (
-                  <button
-                    type="button"
-                    className="btn-copy-week"
-                    title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
-                    onClick={() => handleCopyWeekPattern(emp.id)}
-                  >
-                    ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
-                  </button>
-                )}
               </th>
               {days.map((d) => {
                 const date = isoDate(year, month, d);

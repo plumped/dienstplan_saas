@@ -394,21 +394,30 @@ main {
   letter-spacing: 0.04em;
 }
 
-.col-employee {
+/* th.col-employee (statt nur .col-employee): ".plan-grid th, .plan-grid td"
+   hat als Klasse+Typ-Selektor dieselbe Spezifität wie ein reiner
+   Klassen-Selektor plus schwächer -- ohne den Typ hier mit anzugeben, hätte
+   "padding: 0" aus der generischen Regel immer gewonnen und die Zeile wäre
+   dadurch nicht mehr so hoch gewesen wie die Dienst-Zellen daneben. */
+th.col-employee {
   position: sticky;
   left: 0;
   z-index: 1;
   background: var(--surface);
   text-align: left;
-  padding: 10px 14px;
+  padding: 0 14px;
   font-weight: 600;
   font-size: 13px;
   white-space: nowrap;
   min-width: 170px;
+  /* Höhe exakt an .shift-chip-btn (40px) + Zeilenrahmen angleichen, statt
+     sich allein aus dem Zelleninhalt zu ergeben -- sonst weicht die Höhe je
+     nach Namenslänge/Pensum minim von den Dienst-Zellen ab. */
+  height: 41px;
+  vertical-align: middle;
 }
 
-thead .col-employee,
-tbody .col-employee {
+.employee-row-inner {
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -422,17 +431,24 @@ tbody .col-employee {
 /* Block 2.7: eigene, am rechten Rand fixierte Spalte für den Saldo (nur
    Admin/Planer) -- spiegelbildlich zu .col-employee links, damit sie
    unabhängig von der horizontalen Scroll-Position sichtbar bleibt statt
-   nur nach Scrollen ans Monatsende. */
-.col-balance {
+   nur nach Scrollen ans Monatsende. Typ+Klasse (th.col-balance/td.col-balance)
+   aus demselben Spezifitäts-Grund wie bei th.col-employee oben. */
+th.col-balance,
+td.col-balance {
   position: sticky;
   right: 0;
   z-index: 1;
   background: var(--surface);
   border-left: 1px solid var(--border);
   text-align: left;
-  padding: 10px 14px;
+  padding: 0 14px;
   font-size: 12px;
   white-space: nowrap;
+}
+
+td.col-balance {
+  height: 41px;
+  vertical-align: middle;
 }
 
 thead .col-balance {

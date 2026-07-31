@@ -436,22 +436,29 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     Ferien und Wunschfrei-Tage auf einmal eintragen, statt zwölfmal ins Monatsblatt zu wechseln oder
     im Tab "Abwesenheiten" viele einzelne Anträge (je ein Datumsbereich pro Formular-Submit) von
     Hand anzulegen. Geplantes Design:
-    - Neuer Tab/Umschalter "Jahresplan" mit **Mitarbeiter-Auswahl** (Dropdown, analog zur
-      Stations-Auswahl) statt Stations-Auswahl -- die Ansicht ist pro Person gedacht, nicht pro
-      Station. Admin/Planer können jede Person wählen, Mitarbeitende nur sich selbst (analog zur
-      Sperrung im Abwesenheiten-Formular, siehe `OwnEmployeeRecordPermission`).
+    - Neuer Tab/Umschalter "Jahresplan" mit **Mitarbeiter-Auswahl** (Dropdown) **zusätzlich zur**
+      bestehenden Stations-Auswahl (nicht anstelle davon) -- die Stations-Auswahl bleibt nötig,
+      weil `TimeTemplate` und `ShiftAssignment.node` pro Station gelten und `Employee.nodes`
+      (ManyToMany) einen Mitarbeiter an mehreren Stationen zulässt: ohne Stations-Kontext wüsste
+      die Stempel-Leiste nicht, welche Schichttyp-Palette sie zeigen soll. Admin/Planer können
+      jede Person wählen, Mitarbeitende nur sich selbst (analog zur Sperrung im
+      Abwesenheiten-Formular, siehe `OwnEmployeeRecordPermission`).
     - Für die gewählte Person alle 12 Monate des Jahres (Mini-Kalender oder eine lange scrollbare
-      Liste), mit den bestehenden Schicht-Zuweisungen als Kontext (read-only Chips wie im
-      Monatsblatt) sowie den Absenzen farblich hervorgehoben.
-    - **Bearbeitbar direkt in dieser Ansicht**: dasselbe "Markieren, dann stempeln"-Muster wie beim
-      neuen Schicht-Stempel im Monatsblatt (Punkt 11 oben, `ShiftCell.jsx: selectionMode`/
-      `PlanGrid.jsx: handleStampAssign`) -- Tage markieren, dann per Klick auf "Ferien"/"Krankheit"/
-      "Sonstiges" (oder "leeren") alle markierten Tage auf einmal als Absenz anlegen/entfernen.
-      Zusammenhängende markierte Tage sollten dabei zu **einer** Absenz mit Start-/Enddatum
-      zusammengefasst werden (nicht ein `Absence`-Datensatz pro Tag), damit z. B. zwei
-      Ferienwochen als zwei Einträge entstehen statt vierzehn Einzeltagen. Bestehender
-      Genehmigungs-Workflow (Block 2.3) gilt unverändert: von Admin/Planer angelegte Absenzen sind
-      sofort `approved`, von Mitarbeitenden selbst angelegte starten `pending`.
+      Liste), mit den bestehenden Schicht-Zuweisungen und Absenzen farblich dargestellt.
+    - **Bearbeitbar direkt in dieser Ansicht, für beides**: dasselbe "Markieren, dann
+      stempeln"-Muster wie beim Schicht-Stempel im Monatsblatt (Punkt 11 oben,
+      `ShiftCell.jsx: selectionMode`/`PlanGrid.jsx: handleStampAssign`), aber mit einer
+      **kombinierten Stempel-Leiste**: Schichttyp-Chips der gewählten Station (identisch zum
+      Monatsblatt) **und** Absenz-Typ-Chips ("Ferien"/"Krankheit"/"Sonstiges", plus "leeren")
+      nebeneinander -- Tage markieren, dann per Klick entweder eine Schicht zuweisen oder als
+      Absenz eintragen. Zusammenhängende markierte Tage, die als Absenz gestempelt werden, sollten
+      dabei zu **einer** Absenz mit Start-/Enddatum zusammengefasst werden (nicht ein
+      `Absence`-Datensatz pro Tag), damit z. B. zwei Ferienwochen als zwei Einträge entstehen statt
+      vierzehn Einzeltagen. Bestehender Genehmigungs-Workflow (Block 2.3) gilt unverändert: von
+      Admin/Planer angelegte Absenzen sind sofort `approved`, von Mitarbeitenden selbst angelegte
+      starten `pending`. Regel-Engine-Konflikte beim Schicht-Stempeln (z. B. Ruhezeit) werden wie
+      im Monatsblatt pro Tag übersprungen und summarisch gemeldet -- bei 365 Tagen potenziell mehr
+      sequenzielle Requests als im Monatsblatt, ggf. Ladezeit im Auge behalten.
     - *Noch offen*: "Wunschfrei" ist aktuell kein eigener `Absence.Type` (nur `vacation`/`sick`/
       `other`) -- klären, ob dafür ein neuer Typ sinnvoll ist oder ob es sich als weicher Wunsch
       (ohne harte Sperrwirkung wie eine genehmigte Ferienabsenz) grundsätzlich anders verhalten

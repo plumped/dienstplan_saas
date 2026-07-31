@@ -15,6 +15,7 @@ from .models import (
     Employee,
     Node,
     ShiftAssignment,
+    ShiftPreference,
     ShiftTradeRequest,
     Skill,
     TimeRecord,
@@ -2214,3 +2215,138 @@ class RoleBasedPermissionTests(APITestCase):
         ids = {t["id"] for t in response.data["results"]}
         self.assertIn(self.template.id, ids)
         self.assertNotIn(other_template.id, ids)
+
+
+class ShiftPreferenceTests(APITestCase):
+    """Wunschfrei/Wunschdienst (MVP-Fahrplan Block 2.13): höchstpersönliche Selbstauskunft."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Fruehdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            break_minutes=30,
+        )
+
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+        self.hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
+        Membership.objects.create(user=self.hr_user, tenant=self.tenant, role=Membership.Role.HR)
+
+        self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+        self.bob_user = User.objects.create_user(username="bob", password="pw-not-real-123!")
+        Membership.objects.create(user=self.bob_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.bob = Employee.objects.create(
+            tenant=self.tenant, user=self.bob_user, first_name="Bob", last_name="B", employment_pct=100
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_employee_can_create_own_wunschfrei(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/", {"date": "2026-08-10", "type": "wunschfrei"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["employee"], self.alice.id)
+        self.assertIsNone(response.data["template"])
+
+    def test_employee_can_create_own_wunschdienst(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/",
+            {"date": "2026-08-10", "type": "wunschdienst", "template": self.template.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["template"], self.template.id)
+
+    def test_wunschdienst_without_template_is_rejected(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/", {"date": "2026-08-10", "type": "wunschdienst"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_wunschfrei_with_template_is_rejected(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/",
+            {"date": "2026-08-10", "type": "wunschfrei", "template": self.template.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_duplicate_preference_same_day_returns_400_not_500(self):
+        self.auth_as(self.alice_user)
+        first = self.client.post("/api/shift-preferences/", {"date": "2026-08-10", "type": "wunschfrei"})
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        second = self.client.post("/api/shift-preferences/", {"date": "2026-08-10", "type": "wunschfrei"})
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_ignores_submitted_employee_and_forces_own(self):
+        # Höchstpersönlich (Block 2.13): selbst wenn ein fremdes employee im
+        # Payload mitgeschickt wird, entsteht der Eintrag trotzdem für die
+        # eingeloggte Person -- niemand kann für jemand anderen "wünschen".
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/", {"employee": self.bob.id, "date": "2026-08-10", "type": "wunschfrei"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["employee"], self.alice.id)
+
+    def test_planner_without_own_employee_profile_cannot_create(self):
+        # planner_user hat kein Employee-Profil (nur Membership) -- selbst
+        # Admin/Planer dürfen hier nicht für andere anlegen, und ohne eigenes
+        # Profil bleibt ihnen das Feature schlicht verwehrt.
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            "/api/shift-preferences/", {"employee": self.alice.id, "date": "2026-08-10", "type": "wunschfrei"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_can_delete_own_preference(self):
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.delete(f"/api/shift-preferences/{pref.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_employee_cannot_delete_others_preference(self):
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.bob, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.delete(f"/api/shift-preferences/{pref.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_planner_cannot_delete_employees_preference(self):
+        # Kein Manager-Override wie bei Absence -- auch Admin/Planer dürfen
+        # fremde Wünsche nicht löschen.
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.delete(f"/api/shift-preferences/{pref.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_all_roles_can_read(self):
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        for user in (self.planner_user, self.hr_user, self.alice_user, self.bob_user):
+            self.auth_as(user)
+            response = self.client.get("/api/shift-preferences/")
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertEqual(len(response.data["results"]), 1)

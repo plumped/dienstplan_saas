@@ -7,6 +7,7 @@ from .models import (
     Employee,
     Node,
     ShiftAssignment,
+    ShiftPreference,
     ShiftTradeRequest,
     Skill,
     TimeRecord,
@@ -78,6 +79,13 @@ class AbsenceAdmin(admin.ModelAdmin):
     list_display = ["employee", "type", "start_date", "end_date", "tenant"]
     list_filter = ["tenant", "type"]
     date_hierarchy = "start_date"
+
+
+@admin.register(ShiftPreference)
+class ShiftPreferenceAdmin(admin.ModelAdmin):
+    list_display = ["employee", "type", "date", "template", "tenant"]
+    list_filter = ["tenant", "type"]
+    date_hierarchy = "date"
 
 
 @admin.register(ShiftTradeRequest)

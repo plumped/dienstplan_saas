@@ -12,18 +12,30 @@ from core.models import Membership
 from core.permissions import (
     IsTenantManager,
     OwnEmployeeRecordPermission,
+    ShiftPreferencePermission,
     ShiftTradeRequestPermission,
     TimeRecordPermission,
 )
 from core.tenancy import resolve_membership_for_user
 
-from .models import Absence, Employee, Node, ShiftAssignment, ShiftTradeRequest, Skill, TimeRecord, TimeTemplate
+from .models import (
+    Absence,
+    Employee,
+    Node,
+    ShiftAssignment,
+    ShiftPreference,
+    ShiftTradeRequest,
+    Skill,
+    TimeRecord,
+    TimeTemplate,
+)
 from .serializers import (
     AbsenceSerializer,
     EmployeeBalanceSerializer,
     EmployeeSerializer,
     NodeSerializer,
     ShiftAssignmentSerializer,
+    ShiftPreferenceSerializer,
     ShiftTradeRequestSerializer,
     SkillSerializer,
     TimeRecordSerializer,
@@ -329,6 +341,38 @@ class AbsenceViewSet(TenantScopedViewSet):
         absence.status = Absence.Status.REJECTED
         absence.save(update_fields=["status"])
         return Response(self.get_serializer(absence).data)
+
+
+class ShiftPreferenceViewSet(TenantScopedViewSet):
+    """
+    Wunschfrei/Wunschdienst (MVP-Fahrplan Block 2.13). Unterstützt
+    ?employee=<id>, um die Wünsche eines Mitarbeiters zu laden -- Lesen ist
+    für alle Rollen offen (der Planer sieht die Wünsche aller Mitarbeitenden
+    der aktuell betrachteten Station, um sie bei der Zuweisung im
+    Planblatt/Jahresplan berücksichtigen zu können).
+
+    Anders als bei Absence gibt es hier KEINEN Manager-Override: jede Rolle
+    (auch Admin/Planer) darf nur für die eigene Person schreiben, siehe
+    ShiftPreferencePermission. employee wird deshalb serverseitig immer aus
+    request.employee_profile gesetzt statt aus dem Payload übernommen.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, ShiftPreferencePermission]
+    queryset = ShiftPreference.all_objects.all()
+    serializer_class = ShiftPreferenceSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset().select_related("employee", "template")
+        employee = self.request.query_params.get("employee")
+        if employee:
+            qs = qs.filter(employee_id=employee)
+        return qs
+
+    def perform_create(self, serializer):
+        employee_profile = self.request.employee_profile
+        if not employee_profile:
+            raise PermissionDenied("Nur mit eigenem Mitarbeiterprofil möglich.")
+        serializer.save(tenant=self.request.tenant, employee=employee_profile)
 
 
 class ShiftTradeRequestViewSet(TenantScopedViewSet):

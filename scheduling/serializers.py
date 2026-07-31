@@ -5,6 +5,7 @@ from .models import (
     Employee,
     Node,
     ShiftAssignment,
+    ShiftPreference,
     ShiftTradeRequest,
     Skill,
     TimeRecord,
@@ -201,6 +202,45 @@ class AbsenceSerializer(serializers.ModelSerializer):
             if field in attrs:
                 setattr(instance, field, attrs[field])
         instance.clean()
+        return attrs
+
+
+class ShiftPreferenceSerializer(serializers.ModelSerializer):
+    # employee wird serverseitig immer auf das eigene Employee-Profil
+    # gezwungen (siehe ShiftPreferenceViewSet.perform_create) -- read_only
+    # hier, damit ein im Payload mitgeschicktes fremdes employee gar nicht
+    # erst als "gültiger, aber ignorierter" Wert durchgeht, sondern die
+    # Absicht des Feldes im Schema klar ist.
+    employee = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = ShiftPreference
+        fields = ["id", "employee", "date", "type", "template", "note"]
+
+    def validate(self, attrs):
+        instance = self.instance or ShiftPreference()
+        for field in ["date", "type", "template"]:
+            if field in attrs:
+                setattr(instance, field, attrs[field])
+        instance.clean()
+
+        # unique_together (employee, date) greift hier nicht automatisch als
+        # DRF-Validator, weil employee read_only ist (DRF generiert
+        # UniqueTogetherValidator nur für Felder, die es selbst aus dem
+        # Payload entgegennimmt) -- ohne diesen Check würde ein Duplikat erst
+        # als roher IntegrityError (HTTP 500) statt als saubere
+        # Validierungsmeldung auffliegen.
+        request = self.context.get("request")
+        employee_profile = getattr(request, "employee_profile", None) if request else None
+        date = attrs.get("date", self.instance.date if self.instance else None)
+        if employee_profile and date:
+            conflict = ShiftPreference.all_objects.filter(employee=employee_profile, date=date)
+            if self.instance:
+                conflict = conflict.exclude(pk=self.instance.pk)
+            if conflict.exists():
+                raise serializers.ValidationError(
+                    {"date": "Für diesen Tag besteht bereits ein Wunsch -- zuerst löschen oder direkt ändern."}
+                )
         return attrs
 
 

@@ -674,6 +674,53 @@ class ShiftAssignment(TenantScopedModel):
             )
 
 
+class ShiftPreference(TenantScopedModel):
+    """
+    Wunschfrei/Wunschdienst (MVP-Fahrplan Block 2.13): ein Hinweis der
+    Mitarbeitenden an den Planer, KEIN Anspruch und KEINE Sperre -- anders
+    als Absence blockiert das hier nichts in der Regel-Engine
+    (ShiftAssignment.clean() prüft ShiftPreference bewusst nicht) und
+    braucht keinen Genehmigungs-Workflow. Höchstpersönlich: nur die
+    betroffene Person selbst darf ihre eigenen Wünsche anlegen/ändern/
+    löschen, nicht einmal Admin/Planer dürfen das stellvertretend tun
+    (siehe ShiftPreferencePermission) -- anders als bei Absence, wo
+    Admin/Planer für andere anlegen dürfen.
+
+    Ein Eintrag pro Mitarbeiter und Tag (unique_together), damit sich
+    Wunschfrei und Wunschdienst am selben Tag nicht widersprechen können.
+    """
+
+    class Type(models.TextChoices):
+        FREE = "wunschfrei", "Wunschfrei"
+        SHIFT = "wunschdienst", "Wunschdienst"
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="shift_preferences")
+    date = models.DateField()
+    type = models.CharField(max_length=20, choices=Type.choices)
+    template = models.ForeignKey(
+        TimeTemplate,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text="Nur bei Wunschdienst gesetzt -- der gewünschte Schichttyp.",
+    )
+    note = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        unique_together = ("employee", "date")
+        ordering = ["date"]
+
+    def __str__(self):
+        return f"{self.employee} – {self.get_type_display()} ({self.date})"
+
+    def clean(self):
+        if self.type == self.Type.SHIFT and not self.template_id:
+            raise ValidationError("Wunschdienst braucht einen gewünschten Schichttyp.")
+        if self.type == self.Type.FREE and self.template_id:
+            raise ValidationError("Wunschfrei darf keinen Schichttyp haben.")
+
+
 class ShiftTradeRequest(TenantScopedModel):
     """
     Diensttausch (Abschnitt 7): ein Mitarbeiter bietet eine eigene Schicht an,

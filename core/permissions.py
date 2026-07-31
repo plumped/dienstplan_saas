@@ -147,3 +147,28 @@ class TimeRecordPermission(BasePermission):
         if not employee_profile or obj.assignment.employee_id != employee_profile.id:
             return False
         return obj.status == "submitted"  # TimeRecord.Status.SUBMITTED
+
+
+class ShiftPreferencePermission(BasePermission):
+    """
+    Wunschfrei/Wunschdienst (Block 2.13): reine Selbstauskunft ohne
+    Fremdbestimmung -- anders als bei Absence/TimeRecord dürfen hier auch
+    Admin/Planer KEINE Wünsche für andere Personen anlegen/ändern/löschen,
+    weil ein Wunsch per Definition höchstpersönlich ist (kein "im Auftrag
+    von"-Fall wie bei Absenzen). ShiftPreferenceViewSet.perform_create
+    erzwingt zusätzlich employee=request.employee_profile, unabhängig
+    davon, was im Payload mitgeschickt wurde. Lesen ist wie beim übrigen
+    Planblatt für jede Rolle offen (der Planer muss die Wünsche aller
+    Mitarbeitenden sehen können, um sie bei der Planung zu berücksichtigen).
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        return bool(getattr(request, "employee_profile", None))
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        employee_profile = getattr(request, "employee_profile", None)
+        return bool(employee_profile) and obj.employee_id == employee_profile.id

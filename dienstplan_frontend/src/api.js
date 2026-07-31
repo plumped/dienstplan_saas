@@ -133,6 +133,15 @@ export const api = {
   rejectShiftTradeRequest: (id) =>
     request(`/shift-trade-requests/${id}/reject/`, { method: "POST" }),
 
+  // Wunschfrei/Wunschdienst (Block 2.13): reine Selbstauskunft, kein Effekt
+  // auf den Saldo -- deshalb kein affectsBalance.
+  getShiftPreferences: (employeeId) =>
+    request(employeeId ? `/shift-preferences/?employee=${employeeId}` : "/shift-preferences/"),
+  createShiftPreference: (payload) => request("/shift-preferences/", { method: "POST", body: payload }),
+  updateShiftPreference: (id, payload) =>
+    request(`/shift-preferences/${id}/`, { method: "PATCH", body: payload }),
+  deleteShiftPreference: (id) => request(`/shift-preferences/${id}/`, { method: "DELETE" }),
+
   getTimeRecords: (dateFrom, dateTo) =>
     request(
       dateFrom && dateTo ? `/time-records/?date_from=${dateFrom}&date_to=${dateTo}` : "/time-records/"

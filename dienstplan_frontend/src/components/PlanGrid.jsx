@@ -28,6 +28,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
   const [assignments, setAssignments] = useState([]);
   const [absences, setAbsences] = useState([]);
   const [timeRecords, setTimeRecords] = useState([]);
+  const [preferences, setPreferences] = useState([]);
   const [loading, setLoading] = useState(true);
   // Mehrfachauswahl + Schicht-Stempel (README-Task, inspiriert von Polypoint):
   // Zellen markieren, dann per Klick auf einen Schichttyp alle markierten
@@ -55,13 +56,24 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    // Wunschfrei/Wunschdienst (Block 2.13): der Planer (canManage) sieht die
+    // Wünsche aller Mitarbeitenden, um sie beim Ausfüllen zu berücksichtigen;
+    // eine einfache Mitarbeiter-Rolle sieht nur die eigenen (Privatsphäre --
+    // ein Wunsch ist höchstpersönlich, siehe ShiftPreferencePermission).
+    // Ohne eigenes Employee-Profil (z. B. HR) gibt es nichts zu laden.
+    const preferencesRequest = canManage
+      ? api.getShiftPreferences()
+      : ownEmployeeId
+        ? api.getShiftPreferences(ownEmployeeId)
+        : Promise.resolve([]);
     Promise.all([
       api.getTimeTemplates(),
       api.getShiftAssignments(nodeId, dateFrom, dateTo),
       api.getAbsences(),
       api.getTimeRecords(dateFrom, dateTo),
+      preferencesRequest,
     ])
-      .then(([templatesRes, assignmentsRes, absencesRes, timeRecordsRes]) => {
+      .then(([templatesRes, assignmentsRes, absencesRes, timeRecordsRes, preferencesRes]) => {
         if (cancelled) return;
         setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === nodeId));
         setAssignments(assignmentsRes.results ?? assignmentsRes);
@@ -71,6 +83,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
         const absenceList = absencesRes.results ?? absencesRes;
         setAbsences(absenceList.filter((a) => a.status === "approved"));
         setTimeRecords(timeRecordsRes.results ?? timeRecordsRes);
+        setPreferences(preferencesRes.results ?? preferencesRes);
       })
       .catch((e) => onError(e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -78,7 +91,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeId, dateFrom, dateTo]);
+  }, [nodeId, dateFrom, dateTo, canManage, ownEmployeeId]);
 
   // Beendet einen laufenden Ziehvorgang auch dann, wenn die Maustaste
   // ausserhalb einer Zelle losgelassen wird (z. B. nach dem Verlassen des
@@ -102,6 +115,36 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
     for (const r of timeRecords) map.set(r.assignment, r);
     return map;
   }, [timeRecords]);
+
+  const preferenceMap = useMemo(() => {
+    const map = new Map();
+    for (const p of preferences) map.set(`${p.employee}:${p.date}`, p);
+    return map;
+  }, [preferences]);
+
+  async function handleSaveWish(date, existing, payload) {
+    try {
+      const saved = existing
+        ? await api.updateShiftPreference(existing.id, payload)
+        : await api.createShiftPreference({ date, ...payload });
+      setPreferences((prev) => (existing ? prev.map((p) => (p.id === saved.id ? saved : p)) : [...prev, saved]));
+      return true;
+    } catch (e) {
+      onError(e.message);
+      return false;
+    }
+  }
+
+  async function handleDeleteWish(preference) {
+    try {
+      await api.deleteShiftPreference(preference.id);
+      setPreferences((prev) => prev.filter((p) => p.id !== preference.id));
+      return true;
+    } catch (e) {
+      onError(e.message);
+      return false;
+    }
+  }
 
   async function handleSaveTimeRecord(assignmentId, record, payload) {
     try {
@@ -444,6 +487,10 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
                   // eigenen Schichten erfassen kann.
                   const canRecordTime = Boolean(assignment) && date <= todayIso && ownEmployeeId === emp.id;
                   const timeRecord = assignment ? timeRecordByAssignment.get(assignment.id) : undefined;
+                  // Block 2.13: höchstpersönlich -- nur die eigene Person darf
+                  // für einen heutigen/zukünftigen Tag einen Wunsch äussern.
+                  const preference = preferenceMap.get(`${emp.id}:${date}`);
+                  const canEditOwnWish = ownEmployeeId === emp.id && date >= todayIso;
                   return (
                     <td key={d} className={weekend ? "is-weekend" : ""}>
                       <ShiftCell
@@ -465,6 +512,10 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
                         canRecordTime={canRecordTime}
                         onSaveTimeRecord={(payload) => handleSaveTimeRecord(assignment.id, timeRecord, payload)}
                         onDeleteTimeRecord={() => handleDeleteTimeRecord(timeRecord)}
+                        preference={preference}
+                        canEditOwnWish={canEditOwnWish}
+                        onSaveWish={(payload) => handleSaveWish(date, preference, payload)}
+                        onDeleteWish={() => handleDeleteWish(preference)}
                         selectionMode={multiSelectMode}
                         marked={markedCells.has(`${emp.id}:${date}`)}
                         onMarkStart={() => startMark(emp.id, date)}

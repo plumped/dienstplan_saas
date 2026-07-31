@@ -71,7 +71,13 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
   const [templates, setTemplates] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [absences, setAbsences] = useState([]);
+  const [preferences, setPreferences] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Wunschfrei/Wunschdienst (Block 2.13): höchstpersönlich -- auch im
+  // Jahresplan nur stempelbar, solange die ausgewählte Person die eigene
+  // ist, unabhängig von der Rolle (Admin/Planer dürfen für andere Personen
+  // zwar den Jahresplan ansehen/Schichten stempeln, aber keine Wünsche).
+  const isOwnEmployeeSelected = employeeId !== null && employeeId === ownEmployeeId;
   const [markedDates, setMarkedDates] = useState(() => new Set());
   // Ziehen mit gedrückter Maustaste markiert mehrere Tage am Stück (analog
   // zu PlanGrid.jsx): "mark"/"unmark" je nach Zustand des zuerst angeklickten
@@ -120,13 +126,15 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
       api.getTimeTemplates(),
       api.getShiftAssignments(nodeId, dateFrom, dateTo),
       api.getAbsences(employeeId),
+      api.getShiftPreferences(employeeId),
     ])
-      .then(([templatesRes, assignmentsRes, absencesRes]) => {
+      .then(([templatesRes, assignmentsRes, absencesRes, preferencesRes]) => {
         if (cancelled) return;
         setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === nodeId));
         const allAssignments = assignmentsRes.results ?? assignmentsRes;
         setAssignments(allAssignments.filter((a) => a.employee === employeeId));
         setAbsences(absencesRes.results ?? absencesRes);
+        setPreferences(preferencesRes.results ?? preferencesRes);
       })
       .catch((e) => onError(e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -156,6 +164,12 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
     }
     return map;
   }, [absences]);
+
+  const preferenceByDate = useMemo(() => {
+    const map = new Map();
+    for (const p of preferences) map.set(p.date, p);
+    return map;
+  }, [preferences]);
 
   function applyMark(date, shouldMark) {
     setMarkedDates((prev) => {
@@ -300,6 +314,55 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
     }
   }
 
+  // Wunschfrei/Wunschdienst (Block 2.13): anders als Absenz-Stempeln wird ein
+  // bereits bestehender Wunsch am selben Tag überschrieben (upsert) statt
+  // übersprungen -- ein Wunsch ist keine rechtlich bedeutsame Absenz,
+  // "Meinung ändern" soll ohne Umweg über "erst entfernen" möglich sein.
+  async function handleStampWish(type, templateId) {
+    const dates = Array.from(markedDates);
+    const upserted = [];
+    let failed = 0;
+    for (const date of dates) {
+      const existing = preferenceByDate.get(date);
+      const payload = { type, template: type === "wunschdienst" ? templateId : null };
+      try {
+        upserted.push(
+          existing ? await api.updateShiftPreference(existing.id, payload) : await api.createShiftPreference({ date, ...payload })
+        );
+      } catch {
+        failed += 1;
+      }
+    }
+    if (upserted.length) {
+      setPreferences((prev) => {
+        const byId = new Map(prev.map((p) => [p.id, p]));
+        for (const p of upserted) byId.set(p.id, p);
+        return Array.from(byId.values());
+      });
+    }
+    setMarkedDates(new Set());
+    if (failed > 0) onError(`${failed} von ${dates.length} Wünschen konnten nicht gespeichert werden.`);
+  }
+
+  async function handleRemoveWishes() {
+    const toDelete = Array.from(markedDates)
+      .map((d) => preferenceByDate.get(d))
+      .filter(Boolean);
+    const deletedIds = [];
+    let failed = 0;
+    for (const p of toDelete) {
+      try {
+        await api.deleteShiftPreference(p.id);
+        deletedIds.push(p.id);
+      } catch {
+        failed += 1;
+      }
+    }
+    if (deletedIds.length) setPreferences((prev) => prev.filter((p) => !deletedIds.includes(p.id)));
+    setMarkedDates(new Set());
+    if (failed > 0) onError(`${failed} Wunsch/Wünsche konnten nicht entfernt werden.`);
+  }
+
   if (!employees.length) {
     return (
       <p className="empty-state">
@@ -379,6 +442,38 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
             >
               Absenz entfernen
             </button>
+            {isOwnEmployeeSelected && (
+              <>
+                <button
+                  type="button"
+                  className="stamp-chip stamp-chip--wish"
+                  title="Wunschfrei für alle markierten Tage eintragen (ein Hinweis für den Planer, keine Absenz)"
+                  onClick={() => handleStampWish("wunschfrei", null)}
+                >
+                  Wunschfrei
+                </button>
+                {templates.map((t) => (
+                  <button
+                    key={`wish-${t.id}`}
+                    type="button"
+                    className="stamp-chip stamp-chip--wish"
+                    style={{ "--chip-color": t.color }}
+                    title={`Wunschdienst ${t.name} für alle markierten Tage eintragen`}
+                    onClick={() => handleStampWish("wunschdienst", t.id)}
+                  >
+                    Wunsch: {t.name.slice(0, 3)}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="stamp-chip stamp-chip--empty"
+                  title="Wunschfrei/Wunschdienst der markierten Tage entfernen"
+                  onClick={handleRemoveWishes}
+                >
+                  Wunsch entfernen
+                </button>
+              </>
+            )}
             <button type="button" className="btn-ghost" onClick={() => setMarkedDates(new Set())}>
               Auswahl aufheben
             </button>
@@ -413,14 +508,23 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
                     const assignment = assignmentByDate.get(date);
                     const template = assignment ? templates.find((t) => t.id === assignment.template) : null;
                     const absence = absenceByDate.get(date);
+                    const preference = preferenceByDate.get(date);
+                    const wishedTemplate =
+                      preference?.type === "wunschdienst" ? templates.find((t) => t.id === preference.template) : null;
                     const marked = markedDates.has(date);
                     const kind = absence ? "absence" : assignment ? "shift" : "empty";
                     const color = absence ? "var(--ink-muted)" : template?.color;
-                    const title = absence
+                    let title = absence
                       ? `${date}: ${ABSENCE_TYPE_LABELS[absence.type] ?? absence.type} (${STATUS_LABELS[absence.status] ?? absence.status})`
                       : assignment && template
                         ? `${date}: ${template.name} (${template.start_time.slice(0, 5)}–${template.end_time.slice(0, 5)})`
                         : `${date}: frei`;
+                    if (preference) {
+                      title +=
+                        preference.type === "wunschfrei"
+                          ? " -- Wunschfrei geäussert"
+                          : ` -- Wunschdienst geäussert: ${wishedTemplate?.name ?? "?"}`;
+                    }
                     return (
                       <button
                         key={date}
@@ -446,6 +550,7 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
                         <span className={`year-day-fill year-day-fill--${kind}`} style={color ? { "--chip-color": color } : undefined}>
                           {day}
                         </span>
+                        {preference && <span className={`year-day-wish-dot is-${preference.type}`} aria-hidden="true" />}
                         {marked && (
                           <span className="select-check" aria-hidden="true">
                             ✓

@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { effectiveRecordSegments, effectiveTemplateSegments } from "../timeRecordSegments.js";
 import FloatingPopover from "./FloatingPopover.jsx";
 import TimeRecordSegmentEditor from "./TimeRecordSegmentEditor.jsx";
+import WishEditor from "./WishEditor.jsx";
+
+const WISH_GLYPHS = { wunschfrei: "F", wunschdienst: "D" };
+const WISH_LABELS = { wunschfrei: "Wunschfrei", wunschdienst: "Wunschdienst" };
 
 const DRAG_MIME = "application/x-dienstplan-shift";
 
@@ -34,6 +38,14 @@ export default function ShiftCell({
   canRecordTime = false,
   onSaveTimeRecord,
   onDeleteTimeRecord,
+  // Wunschfrei/Wunschdienst (Block 2.13): preference ist der ShiftPreference-
+  // Eintrag dieser Zelle, falls vorhanden. canEditOwnWish gilt nur für die
+  // eigene Person an einem heutigen/zukünftigen Tag -- höchstpersönlich,
+  // auch Admin/Planer dürfen keine Wünsche für andere anlegen/bearbeiten.
+  preference,
+  canEditOwnWish = false,
+  onSaveWish,
+  onDeleteWish,
   // Mehrfachauswahl + Schicht-Stempel (siehe README, inspiriert von Polypoint):
   // solange aktiv, markiert ein Klick/Ziehen die Zelle statt die übliche
   // Dropdown-Zuweisung zu öffnen -- die eigentliche Zuweisung passiert
@@ -50,9 +62,12 @@ export default function ShiftCell({
   const [offering, setOffering] = useState(false);
   const [recordingTime, setRecordingTime] = useState(false);
   const [savingTime, setSavingTime] = useState(false);
+  const [wishing, setWishing] = useState(false);
+  const [savingWish, setSavingWish] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const selectRef = useRef(null);
   const recordBadgeRef = useRef(null);
+  const wishBadgeRef = useRef(null);
   const suppressClickRef = useRef(false);
 
   useEffect(() => {
@@ -69,6 +84,76 @@ export default function ShiftCell({
   async function handleDeleteTimeRecord() {
     const ok = await onDeleteTimeRecord();
     if (ok) setRecordingTime(false);
+  }
+
+  async function handleSaveWish(payload) {
+    setSavingWish(true);
+    const ok = await onSaveWish(payload);
+    setSavingWish(false);
+    if (ok) setWishing(false);
+  }
+
+  async function handleDeleteWish() {
+    const ok = await onDeleteWish();
+    if (ok) setWishing(false);
+  }
+
+  // Block 2.13: Badge oben links auf der eigenen, heutigen/zukünftigen
+  // Zelle -- Wunschfrei/Wunschdienst direkt im Planblatt eintragen, analog
+  // zum Ist-Zeit-Badge (Block 1.10) unten rechts. Für alle anderen Zellen,
+  // in denen bereits ein Wunsch besteht, zeigt der Planer (canManage) einen
+  // rein informativen, nicht klickbaren Hinweis, damit er die Wünsche beim
+  // Ausfüllen des Plans vor Augen hat -- Bearbeiten bleibt höchstpersönlich.
+  function renderWishBadge() {
+    if (canEditOwnWish) {
+      const hasWish = Boolean(preference);
+      const glyph = hasWish ? WISH_GLYPHS[preference.type] : "?";
+      const wishedTemplate = hasWish && preference.template ? templates.find((t) => t.id === preference.template) : null;
+      const title = !hasWish
+        ? "Wunschfrei/Wunschdienst äussern"
+        : preference.type === "wunschfrei"
+          ? "Wunschfrei -- bearbeiten"
+          : `Wunschdienst: ${wishedTemplate?.name ?? "?"} -- bearbeiten`;
+      return (
+        <>
+          <button
+            ref={wishBadgeRef}
+            type="button"
+            className={`btn-wish${hasWish ? ` is-set is-${preference.type}` : ""}`}
+            title={title}
+            onClick={() => setWishing((v) => !v)}
+          >
+            {glyph}
+            <span className="visually-hidden"> {title}</span>
+          </button>
+          {wishing && (
+            <FloatingPopover anchorRef={wishBadgeRef} onClose={() => setWishing(false)} className="wish-popover">
+              <WishEditor
+                templates={templates}
+                existing={preference}
+                saving={savingWish}
+                onSave={handleSaveWish}
+                onCancel={() => setWishing(false)}
+                onDelete={preference ? handleDeleteWish : undefined}
+              />
+            </FloatingPopover>
+          )}
+        </>
+      );
+    }
+    if (canEdit && preference) {
+      const wishedTemplate = preference.template ? templates.find((t) => t.id === preference.template) : null;
+      const title =
+        preference.type === "wunschfrei"
+          ? "Wunschfrei geäussert"
+          : `Wunschdienst geäussert: ${wishedTemplate?.name ?? "?"}`;
+      return (
+        <span className={`btn-wish is-set is-${preference.type} is-readonly`} title={title} aria-hidden="true">
+          {WISH_GLYPHS[preference.type]}
+        </span>
+      );
+    }
+    return null;
   }
 
   // Block 1.13: Badge auf der eigenen vergangenen Schicht-Zelle, damit die
@@ -275,6 +360,7 @@ export default function ShiftCell({
           </button>
         )}
         {renderTimeRecordBadge()}
+        {renderWishBadge()}
       </span>
     );
   }
@@ -336,6 +422,7 @@ export default function ShiftCell({
         </button>
       )}
       {renderTimeRecordBadge()}
+      {renderWishBadge()}
     </span>
   );
 }

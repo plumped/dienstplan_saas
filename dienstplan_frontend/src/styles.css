@@ -418,6 +418,14 @@ main {
   --chip-color: var(--ink-muted);
 }
 
+/* Block 2.13: Wunschfrei/Wunschdienst-Chips -- eigener grüner Rahmen statt
+   der schichttyp-eigenen Farbe (Wunschdienst-Chips nutzen zwar --chip-color
+   des Schichttyps für den Text, aber den Rahmen-Akzent von .stamp-chip--wish
+   selbst), damit klar bleibt: das ist ein Wunsch, keine echte Zuweisung. */
+.stamp-chip--wish {
+  border-style: dashed;
+}
+
 .shift-chip-btn.is-selectable {
   cursor: pointer;
   position: relative;
@@ -1174,6 +1182,98 @@ thead .col-employee {
   margin-top: 8px;
 }
 
+/* Block 2.13: Wunschfrei/Wunschdienst -- Badge oben links (spiegelbildlich
+   zu .btn-record-time unten rechts), damit sich beide Selbstauskünfte in
+   derselben Zelle nicht überlappen. */
+.btn-wish {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.btn-wish.is-set.is-wunschfrei {
+  color: #2e7d32;
+  box-shadow: 0 0 0 1px #2e7d32;
+}
+
+.btn-wish.is-set.is-wunschdienst {
+  color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.btn-wish.is-readonly {
+  cursor: default;
+}
+
+.wish-popover {
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: 0 6px 20px rgba(20, 30, 25, 0.16);
+  min-width: 220px;
+}
+
+.wish-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wish-editor-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+
+.wish-editor-type {
+  display: flex;
+  gap: 6px;
+}
+
+.wish-type-option {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.wish-type-option.is-active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.wish-editor select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+.wish-editor .entry-actions {
+  margin-top: 2px;
+}
+
 /* ---------- Jahresplan (README Block 2.12) ---------- */
 
 .year-plan-toolbar {
@@ -1309,6 +1409,28 @@ thead .col-employee {
 .year-day-cell.is-marked .select-check {
   top: -3px;
   right: -2px;
+}
+
+/* Block 2.13: kleiner Punkt unten rechts an der Tages-Zelle, sobald ein
+   Wunsch besteht -- unabhängig von Schicht-/Absenz-Farbe der Zelle selbst,
+   damit ein Wunsch auch auf einer bereits zugewiesenen Schicht sichtbar
+   bleibt (z. B. "hat FRU, wünscht sich aber SPL"). */
+.year-day-wish-dot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--surface);
+}
+
+.year-day-wish-dot.is-wunschfrei {
+  background: #2e7d32;
+}
+
+.year-day-wish-dot.is-wunschdienst {
+  background: var(--primary);
 }
 
 @media (max-width: 640px) {

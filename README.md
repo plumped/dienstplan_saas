@@ -469,31 +469,40 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       `other`) -- im Jahresplan aktuell nicht separat abgebildet, siehe Diskussion oben. Eine
       read-only Mehr-Personen-Jahres-Heatmap pro Station (ursprünglich als Alternative skizziert)
       bleibt eine mögliche spätere Ergänzung, aber nachrangig.
-13. **Wunschfrei + Wunschdienst -- Mitarbeitende tragen eigene Wünsche selbst ein**: löst die in
+13. ✅ **Wunschfrei + Wunschdienst -- Mitarbeitende tragen eigene Wünsche selbst ein**: löst die in
     Punkt 12 offen gelassene Frage nach "Wunschfrei" auf. Bewusst **kein** neuer `Absence.Type`,
-    sondern ein eigenständiges, leichtgewichtiges Konzept, weil sich Wünsche fundamental von
-    Absenzen unterscheiden:
-    - Eine Absenz (Ferien/Krankheit/Sonstiges) ist -- einmal `approved` -- eine harte Sperre
-      (`_check_no_absence_conflict` lehnt Zuweisungen im Zeitraum ab) mit Genehmigungs-Workflow.
-      Ein Wunsch ("Wunschfrei" = bevorzugt frei an diesem Tag, "Wunschdienst" = bevorzugter
-      Schichttyp an diesem Tag) ist dagegen nur ein **Hinweis für den Planer**, kein Anspruch und
-      keine Sperre -- die Regel-Engine muss ihn nicht kennen, er blockiert keine Zuweisung.
-    - Neues, schlankes Modell (z. B. `ShiftPreference`: `employee`, `date`, `type`
-      ("wunschfrei"/"wunschdienst"), `template` optional bei Wunschdienst, `note`) statt den
-      Genehmigungs-Workflow von `Absence` zu missbrauchen -- ein Wunsch braucht kein
-      `approve`/`reject`, er wird einfach bei der Planung berücksichtigt oder eben nicht.
-    - **Selbsteingabe durch die Mitarbeitenden** direkt im Planblatt (`ShiftCell.jsx`, analog zum
-      bestehenden Ist-Zeit-Badge aus Block 1.10 -- ein Icon auf der eigenen, noch nicht
-      zugewiesenen Zelle statt nur passiv lesend) und im Jahresplan (`YearPlan.jsx`): dieselbe
-      "Markieren, dann stempeln"-Interaktion aus Punkt 11/12, aber mit zwei neuen Chips
-      "Wunschfrei" und "Wunschdienst: <Schichttyp>" -- anders als die Schicht-/Absenz-Chips dort
-      nur für die **eigene** Person nutzbar (kein Fremd-Eintragen, auch nicht durch Admin/Planer,
-      da es ein persönlicher Wunsch ist).
-    - **Sichtbarkeit für den Planer**: dezenter Hinweis/Icon auf der betroffenen Zelle im
-      Planblatt-Grid (z. B. kleines Symbol analog zum Ist-Zeit-Badge), damit der Planer die Wünsche
-      beim Ausfüllen des Monatsplans mit dem bestehenden Dropdown/Schicht-Stempel direkt vor Augen
-      hat, statt sie separat nachschlagen zu müssen. Kein Effekt auf die Regel-Engine oder auf
-      `ShiftAssignment.clean()`.
+    sondern ein eigenständiges, leichtgewichtiges Modell `ShiftPreference` (`employee`, `date`,
+    `type` "wunschfrei"/"wunschdienst", `template` nur bei Wunschdienst, `note`,
+    `unique_together` auf `employee`+`date`), weil sich Wünsche fundamental von Absenzen
+    unterscheiden:
+    - Eine Absenz ist -- einmal `approved` -- eine harte Sperre (`_check_no_absence_conflict`)
+      mit Genehmigungs-Workflow. Ein Wunsch ist dagegen nur ein **Hinweis für den Planer**, kein
+      Anspruch und keine Sperre -- die Regel-Engine kennt `ShiftPreference` gar nicht, kein
+      `approve`/`reject` nötig.
+    - **Höchstpersönlich, strenger als bei Absenzen**: `ShiftPreferencePermission` erlaubt
+      Schreiben ausschliesslich für die eigene Person (`request.employee_profile`) -- anders als
+      bei `Absence` gibt es hier **keinen** Manager-Override, auch Admin/Planer dürfen keine
+      Wünsche für andere anlegen/ändern/löschen. `ShiftPreferenceViewSet.perform_create` erzwingt
+      `employee=request.employee_profile` serverseitig, unabhängig vom Payload. Lesen ist wie
+      beim übrigen Planblatt für alle Rollen offen.
+    - **Selbsteingabe im Planblatt** (`ShiftCell.jsx`): neues Badge oben links (spiegelbildlich
+      zum Ist-Zeit-Badge aus Block 1.10 unten rechts) auf der eigenen, heutigen/zukünftigen Zelle
+      -- "?" wenn noch kein Wunsch besteht, "F"/"D" (grün/blau) sobald einer gesetzt ist, Klick
+      öffnet ein `WishEditor`-Popover (Typ + bei Wunschdienst Schichttyp-Auswahl) über
+      `FloatingPopover`. Für alle anderen Zellen mit bestehendem Wunsch zeigt der Planer
+      (`canManage`) denselben Buchstaben nur als nicht klickbaren Hinweis.
+    - **Selbsteingabe im Jahresplan** (`YearPlan.jsx`): dieselbe "Markieren, dann
+      stempeln"-Interaktion wie Schicht-/Absenz-Stempeln (Punkt 11/12), aber die
+      "Wunschfrei"/"Wunschdienst: <Typ>"-Chips (gestrichelter Rahmen, `.stamp-chip--wish`) und
+      "Wunsch entfernen" erscheinen nur, wenn die ausgewählte Person die eigene ist
+      (`isOwnEmployeeSelected`) -- ein Planer, der den Jahresplan einer anderen Person betrachtet,
+      sieht deren Wünsche zwar als kleinen farbigen Punkt an der Tages-Zelle (unten rechts,
+      unabhängig von einer bereits zugewiesenen Schicht sichtbar), kann sie aber nicht bearbeiten.
+      Anders als beim Absenz-Stempeln wird ein bestehender Wunsch beim erneuten Stempeln
+      überschrieben (kein Überspringen) -- "Meinung ändern" ist bei einem Wunsch jederzeit
+      erwartbar, anders als bei einer bereits genehmigten Absenz.
+    - Kein Effekt auf die Regel-Engine, auf `ShiftAssignment.clean()` oder auf den Saldo
+      (Block 2.7).
     - *Noch offen*: ob ein Wunsch nach der Planung (sobald eine Schicht tatsächlich zugewiesen
       wurde) automatisch verschwinden/als "erfüllt"/"nicht erfüllt" markiert werden soll, oder ob
       er unabhängig davon stehen bleibt.

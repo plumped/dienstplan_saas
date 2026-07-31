@@ -9,10 +9,12 @@ import PlanGrid from "./components/PlanGrid.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import TimeRecordPanel from "./components/TimeRecordPanel.jsx";
 import TradeRequestPanel from "./components/TradeRequestPanel.jsx";
+import YearPlan from "./components/YearPlan.jsx";
 import { canManageSchedule, ROLE_LABELS } from "./roles.js";
 
 const TABS = [
   { id: "grid", label: "Planblatt" },
+  { id: "yearplan", label: "Jahresplan" },
   { id: "absences", label: "Abwesenheiten" },
   { id: "trades", label: "Diensttausch" },
   { id: "timerecords", label: "Zeiterfassung" },
@@ -162,6 +164,9 @@ export default function App() {
                 me={me}
                 onError={setError}
               />
+            )}
+            {tab === "yearplan" && (
+              <YearPlan nodeId={nodeId} employees={employees} me={me} onError={setError} />
             )}
             {tab === "absences" && <AbsencePanel employees={employees} me={me} onError={setError} />}
             {tab === "trades" && <TradeRequestPanel me={me} onError={setError} />}

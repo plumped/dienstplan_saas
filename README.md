@@ -429,47 +429,37 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     gar nicht erst markieren (Regel-Engine würde die Zuweisung ohnehin ablehnen). Der bestehende
     Einzel-Dropdown bleibt für gezielte Korrekturen einer einzelnen Zelle erhalten -- Ergänzung,
     kein Ersatz.
-12. **Jahresplan pro Mitarbeiter -- anzeigbar und bearbeitbar**: das Planblatt (`PlanGrid.jsx`)
-    zeigt aktuell immer nur einen Monat (`MonthNav.jsx` blättert Monat für Monat). Der Hauptnutzen
-    einer Jahressicht ist dabei weniger "alle Mitarbeitenden auf einen Blick" als vielmehr **eine
-    Person übers ganze Jahr bearbeiten können** -- typischer Fall: Anfang Jahr für eine Person alle
-    Ferien und Wunschfrei-Tage auf einmal eintragen, statt zwölfmal ins Monatsblatt zu wechseln oder
-    im Tab "Abwesenheiten" viele einzelne Anträge (je ein Datumsbereich pro Formular-Submit) von
-    Hand anzulegen. Geplantes Design:
-    - Neuer Tab/Umschalter "Jahresplan" mit **Mitarbeiter-Auswahl** (Dropdown) **zusätzlich zur**
-      bestehenden Stations-Auswahl (nicht anstelle davon) -- die Stations-Auswahl bleibt nötig,
-      weil `TimeTemplate` und `ShiftAssignment.node` pro Station gelten und `Employee.nodes`
-      (ManyToMany) einen Mitarbeiter an mehreren Stationen zulässt: ohne Stations-Kontext wüsste
-      die Stempel-Leiste nicht, welche Schichttyp-Palette sie zeigen soll. Admin/Planer können
-      jede Person wählen, Mitarbeitende nur sich selbst (analog zur Sperrung im
-      Abwesenheiten-Formular, siehe `OwnEmployeeRecordPermission`).
-    - Für die gewählte Person alle 12 Monate des Jahres (Mini-Kalender oder eine lange scrollbare
-      Liste), mit den bestehenden Schicht-Zuweisungen und Absenzen farblich dargestellt.
-    - **Bearbeitbar direkt in dieser Ansicht, für beides**: dasselbe "Markieren, dann
-      stempeln"-Muster wie beim Schicht-Stempel im Monatsblatt (Punkt 11 oben,
-      `ShiftCell.jsx: selectionMode`/`PlanGrid.jsx: handleStampAssign`), aber mit einer
-      **kombinierten Stempel-Leiste**: Schichttyp-Chips der gewählten Station (identisch zum
-      Monatsblatt) **und** Absenz-Typ-Chips ("Ferien"/"Krankheit"/"Sonstiges", plus "leeren")
-      nebeneinander -- Tage markieren, dann per Klick entweder eine Schicht zuweisen oder als
-      Absenz eintragen. Zusammenhängende markierte Tage, die als Absenz gestempelt werden, sollten
-      dabei zu **einer** Absenz mit Start-/Enddatum zusammengefasst werden (nicht ein
-      `Absence`-Datensatz pro Tag), damit z. B. zwei Ferienwochen als zwei Einträge entstehen statt
-      vierzehn Einzeltagen. Bestehender Genehmigungs-Workflow (Block 2.3) gilt unverändert: von
-      Admin/Planer angelegte Absenzen sind sofort `approved`, von Mitarbeitenden selbst angelegte
-      starten `pending`. Regel-Engine-Konflikte beim Schicht-Stempeln (z. B. Ruhezeit) werden wie
-      im Monatsblatt pro Tag übersprungen und summarisch gemeldet -- bei 365 Tagen potenziell mehr
-      sequenzielle Requests als im Monatsblatt, ggf. Ladezeit im Auge behalten.
-    - *Noch offen*: "Wunschfrei" ist aktuell kein eigener `Absence.Type` (nur `vacation`/`sick`/
-      `other`) -- klären, ob dafür ein neuer Typ sinnvoll ist oder ob es sich als weicher Wunsch
-      (ohne harte Sperrwirkung wie eine genehmigte Ferienabsenz) grundsätzlich anders verhalten
-      soll als eine echte Absenz, bevor das umgesetzt wird.
-    - Ergänzend weiterhin denkbar, aber nachrangig: eine kompakte, read-only
-      Mehr-Personen-Heatmap für einen schnellen Stations-Überblick übers Jahr (die ursprünglich
-      hier skizzierte Variante) -- das löst aber nicht den oben beschriebenen Haupt-Anwendungsfall
-      und wird deshalb nicht vor der Einzelperson-Ansicht priorisiert.
-    - Datengrundlage: `api.getShiftAssignments`/`api.getAbsences` unterstützen bereits beliebige
-      Zeiträume (`dateFrom=YYYY-01-01`/`dateTo=YYYY-12-31`), keine neuen Lese-Endpoints nötig --
-      nur das bestehende Absence-Anlegen/-Löschen muss aus der neuen Ansicht heraus aufrufbar sein.
+12. ✅ **Jahresplan pro Mitarbeiter -- anzeigbar und bearbeitbar**: das Planblatt (`PlanGrid.jsx`)
+    zeigt weiterhin nur einen Monat (`MonthNav.jsx`). Der Jahresplan (`YearPlan.jsx`, neuer Tab
+    "Jahresplan") deckt den Hauptfall ab, eine einzelne Person übers ganze Jahr zu bearbeiten --
+    z. B. Anfang Jahr alle Ferien auf einmal eintragen, statt zwölfmal ins Monatsblatt zu wechseln
+    oder viele einzelne Absenz-Formulare auszufüllen:
+    - **Mitarbeiter-Auswahl** (Dropdown) zusätzlich zur bestehenden, globalen Stations-Auswahl aus
+      dem Topbar (`App.jsx: nodeId`) -- nötig, weil `TimeTemplate`/`ShiftAssignment.node` pro
+      Station gelten und `Employee.nodes` (ManyToMany) einen Mitarbeiter an mehreren Stationen
+      zulässt. Admin/Planer wählen frei aus der (bereits stations-gefilterten) Mitarbeiterliste,
+      Mitarbeitende sehen nur die eigene Person fest (kein Dropdown).
+    - Alle 12 Monate als Mini-Kalender (Mo-So-Wochenraster), mit bestehenden Schicht-Zuweisungen
+      (Farbe/Kürzel wie im Monatsblatt) und Absenzen (grau gestreift wie `shift-chip--absence`)
+      dargestellt.
+    - **Bearbeitbar über dieselbe "Markieren, dann stempeln"-Interaktion** wie der Schicht-Stempel
+      im Monatsblatt (Punkt 11), aber mit einer **kombinierten Stempel-Leiste**: Schichttyp-Chips
+      der gewählten Station (nur Admin/Planer, `handleStampShift`/"Schicht leeren") **und**
+      Absenz-Typ-Chips "Ferien"/"Krankheit"/"Sonstiges" plus "Absenz entfernen" (für alle,
+      analog zu `AbsencePanel`s Schreibrechten). Zusammenhängende markierte Tage werden beim
+      Absenz-Stempeln zu **einer** `Absence` mit Start-/Enddatum zusammengefasst
+      (`groupConsecutiveDates`), nicht ein Datensatz pro Tag. Tage mit bereits bestehender Absenz
+      werden beim Stempeln übersprungen (nicht überlappt) und summarisch gemeldet, analog zum
+      Wochenmuster-Kopieren. "Absenz entfernen" löscht die **ganze** Absenz eines markierten Tages
+      (kein Aufsplitten von Zeiträumen). Bestehender Genehmigungs-Workflow (Block 2.3) und
+      Regel-Engine (bei Schicht-Konflikten, z. B. Ruhezeit) gelten unverändert -- beides läuft über
+      dieselben API-Endpoints wie Monatsblatt/Abwesenheiten-Tab.
+    - Reine Frontend-Änderung: `api.getShiftAssignments`/`api.getAbsences` unterstützen bereits
+      beliebige Zeiträume, keine neuen Endpoints nötig.
+    - *Noch offen*: "Wunschfrei" ist weiterhin kein eigener `Absence.Type` (nur `vacation`/`sick`/
+      `other`) -- im Jahresplan aktuell nicht separat abgebildet, siehe Diskussion oben. Eine
+      read-only Mehr-Personen-Jahres-Heatmap pro Station (ursprünglich als Alternative skizziert)
+      bleibt eine mögliche spätere Ergänzung, aber nachrangig.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

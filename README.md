@@ -429,34 +429,40 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     gar nicht erst markieren (Regel-Engine würde die Zuweisung ohnehin ablehnen). Der bestehende
     Einzel-Dropdown bleibt für gezielte Korrekturen einer einzelnen Zelle erhalten -- Ergänzung,
     kein Ersatz.
-12. **Jahresübersicht**: das Planblatt (`PlanGrid.jsx`) zeigt aktuell immer nur einen Monat
-    (`MonthNav.jsx` blättert Monat für Monat). Für einen Planer, der z. B. Ferienwünsche über das
-    Jahr verteilen, Personalengpässe im Voraus erkennen oder einfach nachschauen will, wie eine
-    Person übers Jahr eingesetzt war, ist das mühsam -- dafür müsste man sich zwölfmal durchklicken
-    und im Kopf zusammensetzen. Ein voll editierbares 365-Tage-Grid wie im Monatsblatt wäre
-    allerdings unbrauchbar breit; sinnvoller ist eine kompakte, read-only **Jahresübersicht** pro
-    Station:
-    - Ein neuer Tab oder Umschalter "Jahr" neben dem bestehenden Planblatt (Admin/Planer, evtl.
-      auch Mitarbeitende für die eigene Person), mit Jahres- statt Monatsnavigation.
-    - Pro Mitarbeiter eine Zeile mit 365/366 kompakten Tages-Zellen (ähnlich einem
-      Kalender-Heatmap/Contribution-Graph), eingefärbt nach Schichttyp (`TimeTemplate.color`,
-      dieselbe Farbe wie im Monatsblatt) bzw. als Absenz-Muster (Ferien/Krankheit/Sonstiges,
-      analog zu `shift-chip--absence`), damit Muster und Lücken auf einen Blick sichtbar sind.
-      Hover/Klick auf eine Tages-Zelle zeigt Details (Datum, Schichttyp, Zeiten) als Tooltip/Popover
-      -- Bearbeiten bleibt bewusst dem Monatsblatt vorbehalten (kein zweiter Bearbeitungsweg mit
-      eigener Regel-Engine-Anbindung nötig).
-    - Datengrundlage: `api.getShiftAssignments(nodeId, dateFrom, dateTo)` und
-      `api.getAbsences()` unterstützen bereits beliebige Zeiträume -- für die Jahresübersicht
-      genügt ein Aufruf mit `dateFrom=YYYY-01-01`/`dateTo=YYYY-12-31` statt der bisherigen
-      Monatsgrenzen, keine neuen Backend-Endpoints nötig. Bei grösseren Stationen (viele
-      Mitarbeitende × 365 Tage) Ladezeit/Rendering im Auge behalten -- ggf. Virtualisierung der
-      Zeilen, falls das in der Praxis zum Problem wird.
-    - Zusätzlich eine kompakte Monats- oder Quartalssumme pro Mitarbeiter (Anzahl Dienste,
-      Ferientage) am Zeilenende, ähnlich der Saldo-Spalte im Monatsblatt (Block 2.7), damit die
-      Jahresübersicht nicht nur Muster, sondern auch Zahlen liefert.
-    - *Noch offen*: ob/wie sich das mit der geplanten Monatsauswertung (Block 2.6,
-      Soll/Ist-Stunden für den Lohnlauf) und dem Export (Punkt 5 oben) überschneidet, sobald beide
-      existieren.
+12. **Jahresplan pro Mitarbeiter -- anzeigbar und bearbeitbar**: das Planblatt (`PlanGrid.jsx`)
+    zeigt aktuell immer nur einen Monat (`MonthNav.jsx` blättert Monat für Monat). Der Hauptnutzen
+    einer Jahressicht ist dabei weniger "alle Mitarbeitenden auf einen Blick" als vielmehr **eine
+    Person übers ganze Jahr bearbeiten können** -- typischer Fall: Anfang Jahr für eine Person alle
+    Ferien und Wunschfrei-Tage auf einmal eintragen, statt zwölfmal ins Monatsblatt zu wechseln oder
+    im Tab "Abwesenheiten" viele einzelne Anträge (je ein Datumsbereich pro Formular-Submit) von
+    Hand anzulegen. Geplantes Design:
+    - Neuer Tab/Umschalter "Jahresplan" mit **Mitarbeiter-Auswahl** (Dropdown, analog zur
+      Stations-Auswahl) statt Stations-Auswahl -- die Ansicht ist pro Person gedacht, nicht pro
+      Station. Admin/Planer können jede Person wählen, Mitarbeitende nur sich selbst (analog zur
+      Sperrung im Abwesenheiten-Formular, siehe `OwnEmployeeRecordPermission`).
+    - Für die gewählte Person alle 12 Monate des Jahres (Mini-Kalender oder eine lange scrollbare
+      Liste), mit den bestehenden Schicht-Zuweisungen als Kontext (read-only Chips wie im
+      Monatsblatt) sowie den Absenzen farblich hervorgehoben.
+    - **Bearbeitbar direkt in dieser Ansicht**: dasselbe "Markieren, dann stempeln"-Muster wie beim
+      neuen Schicht-Stempel im Monatsblatt (Punkt 11 oben, `ShiftCell.jsx: selectionMode`/
+      `PlanGrid.jsx: handleStampAssign`) -- Tage markieren, dann per Klick auf "Ferien"/"Krankheit"/
+      "Sonstiges" (oder "leeren") alle markierten Tage auf einmal als Absenz anlegen/entfernen.
+      Zusammenhängende markierte Tage sollten dabei zu **einer** Absenz mit Start-/Enddatum
+      zusammengefasst werden (nicht ein `Absence`-Datensatz pro Tag), damit z. B. zwei
+      Ferienwochen als zwei Einträge entstehen statt vierzehn Einzeltagen. Bestehender
+      Genehmigungs-Workflow (Block 2.3) gilt unverändert: von Admin/Planer angelegte Absenzen sind
+      sofort `approved`, von Mitarbeitenden selbst angelegte starten `pending`.
+    - *Noch offen*: "Wunschfrei" ist aktuell kein eigener `Absence.Type` (nur `vacation`/`sick`/
+      `other`) -- klären, ob dafür ein neuer Typ sinnvoll ist oder ob es sich als weicher Wunsch
+      (ohne harte Sperrwirkung wie eine genehmigte Ferienabsenz) grundsätzlich anders verhalten
+      soll als eine echte Absenz, bevor das umgesetzt wird.
+    - Ergänzend weiterhin denkbar, aber nachrangig: eine kompakte, read-only
+      Mehr-Personen-Heatmap für einen schnellen Stations-Überblick übers Jahr (die ursprünglich
+      hier skizzierte Variante) -- das löst aber nicht den oben beschriebenen Haupt-Anwendungsfall
+      und wird deshalb nicht vor der Einzelperson-Ansicht priorisiert.
+    - Datengrundlage: `api.getShiftAssignments`/`api.getAbsences` unterstützen bereits beliebige
+      Zeiträume (`dateFrom=YYYY-01-01`/`dateTo=YYYY-12-31`), keine neuen Lese-Endpoints nötig --
+      nur das bestehende Absence-Anlegen/-Löschen muss aus der neuen Ansicht heraus aufrufbar sein.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

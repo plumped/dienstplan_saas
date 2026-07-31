@@ -429,6 +429,34 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     gar nicht erst markieren (Regel-Engine würde die Zuweisung ohnehin ablehnen). Der bestehende
     Einzel-Dropdown bleibt für gezielte Korrekturen einer einzelnen Zelle erhalten -- Ergänzung,
     kein Ersatz.
+12. **Jahresübersicht**: das Planblatt (`PlanGrid.jsx`) zeigt aktuell immer nur einen Monat
+    (`MonthNav.jsx` blättert Monat für Monat). Für einen Planer, der z. B. Ferienwünsche über das
+    Jahr verteilen, Personalengpässe im Voraus erkennen oder einfach nachschauen will, wie eine
+    Person übers Jahr eingesetzt war, ist das mühsam -- dafür müsste man sich zwölfmal durchklicken
+    und im Kopf zusammensetzen. Ein voll editierbares 365-Tage-Grid wie im Monatsblatt wäre
+    allerdings unbrauchbar breit; sinnvoller ist eine kompakte, read-only **Jahresübersicht** pro
+    Station:
+    - Ein neuer Tab oder Umschalter "Jahr" neben dem bestehenden Planblatt (Admin/Planer, evtl.
+      auch Mitarbeitende für die eigene Person), mit Jahres- statt Monatsnavigation.
+    - Pro Mitarbeiter eine Zeile mit 365/366 kompakten Tages-Zellen (ähnlich einem
+      Kalender-Heatmap/Contribution-Graph), eingefärbt nach Schichttyp (`TimeTemplate.color`,
+      dieselbe Farbe wie im Monatsblatt) bzw. als Absenz-Muster (Ferien/Krankheit/Sonstiges,
+      analog zu `shift-chip--absence`), damit Muster und Lücken auf einen Blick sichtbar sind.
+      Hover/Klick auf eine Tages-Zelle zeigt Details (Datum, Schichttyp, Zeiten) als Tooltip/Popover
+      -- Bearbeiten bleibt bewusst dem Monatsblatt vorbehalten (kein zweiter Bearbeitungsweg mit
+      eigener Regel-Engine-Anbindung nötig).
+    - Datengrundlage: `api.getShiftAssignments(nodeId, dateFrom, dateTo)` und
+      `api.getAbsences()` unterstützen bereits beliebige Zeiträume -- für die Jahresübersicht
+      genügt ein Aufruf mit `dateFrom=YYYY-01-01`/`dateTo=YYYY-12-31` statt der bisherigen
+      Monatsgrenzen, keine neuen Backend-Endpoints nötig. Bei grösseren Stationen (viele
+      Mitarbeitende × 365 Tage) Ladezeit/Rendering im Auge behalten -- ggf. Virtualisierung der
+      Zeilen, falls das in der Praxis zum Problem wird.
+    - Zusätzlich eine kompakte Monats- oder Quartalssumme pro Mitarbeiter (Anzahl Dienste,
+      Ferientage) am Zeilenende, ähnlich der Saldo-Spalte im Monatsblatt (Block 2.7), damit die
+      Jahresübersicht nicht nur Muster, sondern auch Zahlen liefert.
+    - *Noch offen*: ob/wie sich das mit der geplanten Monatsauswertung (Block 2.6,
+      Soll/Ist-Stunden für den Lohnlauf) und dem Export (Punkt 5 oben) überschneidet, sobald beide
+      existieren.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

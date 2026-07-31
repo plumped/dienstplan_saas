@@ -449,6 +449,9 @@ main {
   border-collapse: separate;
   border-spacing: 0;
   min-width: 100%;
+  /* Verhindert Text-Selektion beim Markieren mehrerer Zellen durch Ziehen
+     mit gedrückter Maustaste (Mehrfachauswahl-Modus, siehe PlanGrid.jsx). */
+  user-select: none;
 }
 
 .plan-grid th,
@@ -1216,6 +1219,9 @@ thead .col-employee {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 14px;
+  /* Verhindert Text-Selektion beim Markieren mehrerer Tage durch Ziehen mit
+     gedrückter Maustaste. */
+  user-select: none;
 }
 
 .year-month-card {

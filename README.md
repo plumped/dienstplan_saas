@@ -429,6 +429,15 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     gar nicht erst markieren (Regel-Engine würde die Zuweisung ohnehin ablehnen). Der bestehende
     Einzel-Dropdown bleibt für gezielte Korrekturen einer einzelnen Zelle erhalten -- Ergänzung,
     kein Ersatz.
+    - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
+      entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
+      wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim
+      Drüberziehen mit gedrückter Maustaste auf weitere Zellen an; ein globaler `mouseup`-Listener
+      am `window` beendet den Ziehvorgang auch dann, wenn die Maustaste ausserhalb einer Zelle
+      losgelassen wird. `onClick` bleibt als Tastatur-Fallback (Enter/Leertaste lösen `click` ohne
+      vorheriges `mousedown` aus) -- ein bereits per `mousedown` verarbeiteter Klick unterdrückt das
+      nachfolgende `click`, damit nicht doppelt (ent-)markiert wird. Gleiches Muster in
+      `ShiftCell.jsx` (Planblatt) und `YearPlan.jsx` (Jahresplan, Punkt 12 unten).
 12. ✅ **Jahresplan pro Mitarbeiter -- anzeigbar und bearbeitbar**: das Planblatt (`PlanGrid.jsx`)
     zeigt weiterhin nur einen Monat (`MonthNav.jsx`). Der Jahresplan (`YearPlan.jsx`, neuer Tab
     "Jahresplan") deckt den Hauptfall ab, eine einzelne Person übers ganze Jahr zu bearbeiten --

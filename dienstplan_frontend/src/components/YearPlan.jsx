@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
 
@@ -73,6 +73,25 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
   const [absences, setAbsences] = useState([]);
   const [loading, setLoading] = useState(true);
   const [markedDates, setMarkedDates] = useState(() => new Set());
+  // Ziehen mit gedrückter Maustaste markiert mehrere Tage am Stück (analog
+  // zu PlanGrid.jsx): "mark"/"unmark" je nach Zustand des zuerst angeklickten
+  // Tages, null = kein Ziehvorgang aktiv.
+  const dragMarkModeRef = useRef(null);
+  // Unterdrückt das synthetische click-Event nach einem bereits per
+  // mousedown verarbeiteten Klick (siehe ShiftCell.jsx: gleiches Muster) --
+  // ein einzelner globaler Ref genügt, weil zu jedem Zeitpunkt höchstens ein
+  // Ziehvorgang aktiv ist.
+  const suppressClickRef = useRef(false);
+
+  // Beendet einen laufenden Ziehvorgang auch dann, wenn die Maustaste
+  // ausserhalb einer Tages-Zelle losgelassen wird.
+  useEffect(() => {
+    function handleWindowMouseUp() {
+      dragMarkModeRef.current = null;
+    }
+    window.addEventListener("mouseup", handleWindowMouseUp);
+    return () => window.removeEventListener("mouseup", handleWindowMouseUp);
+  }, []);
 
   // Mitarbeitende sehen nur die eigene Person (analog zur Sperrung im
   // Abwesenheiten-Formular); Admin/Planer wählen frei, bleiben aber bei
@@ -138,13 +157,28 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
     return map;
   }, [absences]);
 
-  function toggleMark(date) {
+  function applyMark(date, shouldMark) {
     setMarkedDates((prev) => {
+      if (prev.has(date) === shouldMark) return prev;
       const next = new Set(prev);
-      if (next.has(date)) next.delete(date);
-      else next.add(date);
+      if (shouldMark) next.add(date);
+      else next.delete(date);
       return next;
     });
+  }
+
+  // Startet den Ziehen-Modus beim ersten Antippen/Klicken eines Tages (siehe
+  // PlanGrid.jsx: startMark/continueMark -- identisches Muster, hier auf
+  // einzelne Tage statt Mitarbeiter+Tag angewendet).
+  function startMark(date) {
+    const shouldMark = !markedDates.has(date);
+    dragMarkModeRef.current = shouldMark ? "mark" : "unmark";
+    applyMark(date, shouldMark);
+  }
+
+  function continueMark(date) {
+    if (!dragMarkModeRef.current) return;
+    applyMark(date, dragMarkModeRef.current === "mark");
   }
 
   async function handleStampShift(templateId) {
@@ -394,7 +428,20 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
                         className={`year-day-cell${marked ? " is-marked" : ""}`}
                         title={title}
                         aria-pressed={marked}
-                        onClick={() => toggleMark(date)}
+                        onMouseDown={(e) => {
+                          if (e.button !== 0) return;
+                          e.preventDefault();
+                          suppressClickRef.current = true;
+                          startMark(date);
+                        }}
+                        onMouseEnter={() => continueMark(date)}
+                        onClick={() => {
+                          if (suppressClickRef.current) {
+                            suppressClickRef.current = false;
+                            return;
+                          }
+                          startMark(date);
+                        }}
                       >
                         <span className={`year-day-fill year-day-fill--${kind}`} style={color ? { "--chip-color": color } : undefined}>
                           {day}

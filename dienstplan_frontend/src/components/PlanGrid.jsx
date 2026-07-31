@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
 import BalanceBadge from "./BalanceBadge.jsx";
@@ -35,6 +35,12 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
   // nicht dessen Ersatz.
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [markedCells, setMarkedCells] = useState(() => new Set());
+  // Ziehen mit gedrückter Maustaste markiert mehrere Zellen am Stück, statt
+  // jede einzeln anklicken zu müssen: "mark" oder "unmark", je nachdem, ob
+  // die Zelle, auf der die Maustaste gedrückt wurde, schon markiert war;
+  // null = kein Ziehvorgang aktiv. Ref statt State, weil das nur die laufende
+  // Maus-Interaktion steuert und kein Re-Render braucht.
+  const dragMarkModeRef = useRef(null);
   const canManage = canManageSchedule(me);
   const ownEmployeeId = me?.employee?.id ?? null;
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -73,6 +79,17 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId, dateFrom, dateTo]);
+
+  // Beendet einen laufenden Ziehvorgang auch dann, wenn die Maustaste
+  // ausserhalb einer Zelle losgelassen wird (z. B. nach dem Verlassen des
+  // Grids) -- sonst bliebe dragMarkModeRef "aktiv" hängen.
+  useEffect(() => {
+    function handleWindowMouseUp() {
+      dragMarkModeRef.current = null;
+    }
+    window.addEventListener("mouseup", handleWindowMouseUp);
+    return () => window.removeEventListener("mouseup", handleWindowMouseUp);
+  }, []);
 
   const assignmentMap = useMemo(() => {
     const map = new Map();
@@ -214,14 +231,31 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
     setMarkedCells(new Set());
   }
 
-  function toggleMark(employeeId, date) {
-    const key = `${employeeId}:${date}`;
+  function applyMark(key, shouldMark) {
     setMarkedCells((prev) => {
+      if (prev.has(key) === shouldMark) return prev;
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+      if (shouldMark) next.add(key);
+      else next.delete(key);
       return next;
     });
+  }
+
+  // Setzt beim ersten Antippen/Klicken einer Zelle den Ziehen-Modus (markieren
+  // oder entmarkieren, je nachdem, ob die Zelle schon markiert war) und wendet
+  // ihn gleich auf diese Zelle an. Bei einem einfachen Klick ohne Ziehen ist
+  // das schlicht ein Toggle; beim Ziehen wenden nachfolgende continueMark()-
+  // Aufrufe denselben Modus auf weitere Zellen an.
+  function startMark(employeeId, date) {
+    const key = `${employeeId}:${date}`;
+    const shouldMark = !markedCells.has(key);
+    dragMarkModeRef.current = shouldMark ? "mark" : "unmark";
+    applyMark(key, shouldMark);
+  }
+
+  function continueMark(employeeId, date) {
+    if (!dragMarkModeRef.current) return;
+    applyMark(`${employeeId}:${date}`, dragMarkModeRef.current === "mark");
   }
 
   // Stempel-Leiste: weist templateId (oder null zum Leeren) allen markierten
@@ -433,7 +467,8 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
                         onDeleteTimeRecord={() => handleDeleteTimeRecord(timeRecord)}
                         selectionMode={multiSelectMode}
                         marked={markedCells.has(`${emp.id}:${date}`)}
-                        onToggleMark={() => toggleMark(emp.id, date)}
+                        onMarkStart={() => startMark(emp.id, date)}
+                        onMarkEnter={() => continueMark(emp.id, date)}
                       />
                     </td>
                   );

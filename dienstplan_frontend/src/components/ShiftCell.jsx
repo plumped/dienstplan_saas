@@ -35,12 +35,16 @@ export default function ShiftCell({
   onSaveTimeRecord,
   onDeleteTimeRecord,
   // Mehrfachauswahl + Schicht-Stempel (siehe README, inspiriert von Polypoint):
-  // solange aktiv, markiert ein Klick die Zelle statt die übliche
+  // solange aktiv, markiert ein Klick/Ziehen die Zelle statt die übliche
   // Dropdown-Zuweisung zu öffnen -- die eigentliche Zuweisung passiert
-  // gesammelt über die Stempel-Leiste in PlanGrid.jsx.
+  // gesammelt über die Stempel-Leiste in PlanGrid.jsx. onMarkStart entscheidet
+  // anhand von `marked`, ob markiert oder entmarkiert wird, und startet damit
+  // den Ziehen-Modus in PlanGrid; onMarkEnter wendet denselben Modus beim
+  // Drüberziehen auf weitere Zellen an.
   selectionMode = false,
   marked = false,
-  onToggleMark,
+  onMarkStart,
+  onMarkEnter,
 }) {
   const [editing, setEditing] = useState(false);
   const [offering, setOffering] = useState(false);
@@ -49,6 +53,7 @@ export default function ShiftCell({
   const [dragOver, setDragOver] = useState(false);
   const selectRef = useRef(null);
   const recordBadgeRef = useRef(null);
+  const suppressClickRef = useRef(false);
 
   useEffect(() => {
     if (editing || offering) selectRef.current?.focus();
@@ -144,13 +149,37 @@ export default function ShiftCell({
     // Icon-Stempeln würde also nur stillschweigend übersprungen. Hier gleich
     // gar nicht erst als Ziel anbieten, statt das erst beim Zuweisen zu
     // melden.
+    //
+    // Markieren per Ziehen: onMouseDown startet den Ziehen-Modus (mark/
+    // unmark, je nach aktuellem Zustand dieser Zelle) und markiert sie
+    // gleich mit; onMouseEnter wendet denselben Modus beim Drüberziehen mit
+    // gedrückter Maustaste auf weitere Zellen an. onClick bleibt als
+    // Tastatur-Fallback (Enter/Leertaste lösen click ohne vorheriges
+    // mousedown aus) -- ein durch Maus-Klick bereits verarbeitetes
+    // mousedown unterdrückt das nachfolgende click, damit nicht doppelt
+    // markiert/entmarkiert wird.
+    const handleMouseDown = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault(); // verhindert Text-/Bild-Selektion beim Ziehen
+      suppressClickRef.current = true;
+      onMarkStart();
+    };
+    const handleClick = () => {
+      if (suppressClickRef.current) {
+        suppressClickRef.current = false;
+        return;
+      }
+      onMarkStart();
+    };
     return (
       <button
         type="button"
         className={`shift-chip-btn is-selectable${marked ? " is-marked" : ""}`}
         aria-pressed={marked}
-        title={marked ? "Markierung aufheben" : "Für Mehrfachzuweisung markieren"}
-        onClick={onToggleMark}
+        title={marked ? "Markierung aufheben" : "Für Mehrfachzuweisung markieren (auch durch Ziehen)"}
+        onMouseDown={handleMouseDown}
+        onMouseEnter={onMarkEnter}
+        onClick={handleClick}
       >
         {templateInfo ? (
           <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>

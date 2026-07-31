@@ -34,6 +34,13 @@ export default function ShiftCell({
   canRecordTime = false,
   onSaveTimeRecord,
   onDeleteTimeRecord,
+  // Mehrfachauswahl + Schicht-Stempel (siehe README, inspiriert von Polypoint):
+  // solange aktiv, markiert ein Klick die Zelle statt die übliche
+  // Dropdown-Zuweisung zu öffnen -- die eigentliche Zuweisung passiert
+  // gesammelt über die Stempel-Leiste in PlanGrid.jsx.
+  selectionMode = false,
+  marked = false,
+  onToggleMark,
 }) {
   const [editing, setEditing] = useState(false);
   const [offering, setOffering] = useState(false);
@@ -128,6 +135,38 @@ export default function ShiftCell({
           {ABSENCE_LABELS[absence.type] ?? absence.type.slice(0, 3).toUpperCase()}
         </span>
       </span>
+    );
+  }
+
+  if (selectionMode && canEdit) {
+    // Absenz-Tage lassen sich nicht markieren -- eine Zuweisung würde die
+    // Regel-Engine ohnehin ablehnen (_check_no_absence_conflict), das
+    // Icon-Stempeln würde also nur stillschweigend übersprungen. Hier gleich
+    // gar nicht erst als Ziel anbieten, statt das erst beim Zuweisen zu
+    // melden.
+    return (
+      <button
+        type="button"
+        className={`shift-chip-btn is-selectable${marked ? " is-marked" : ""}`}
+        aria-pressed={marked}
+        title={marked ? "Markierung aufheben" : "Für Mehrfachzuweisung markieren"}
+        onClick={onToggleMark}
+      >
+        {templateInfo ? (
+          <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>
+            {templateInfo.name.slice(0, 3)}
+          </span>
+        ) : (
+          <span className="shift-chip shift-chip--empty" aria-hidden="true">
+            +
+          </span>
+        )}
+        {marked && (
+          <span className="select-check" aria-hidden="true">
+            ✓
+          </span>
+        )}
+      </button>
     );
   }
 

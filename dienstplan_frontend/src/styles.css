@@ -343,6 +343,94 @@ main {
 
 /* ---------- Plan grid ---------- */
 
+/* Mehrfachauswahl + Schicht-Stempel (README-Task, inspiriert von Polypoint):
+   Tage markieren, dann per Klick auf einen Schichttyp alle markierten Tage
+   auf einmal beplanen -- Ergänzung zum bestehenden Einzel-Dropdown. */
+.multi-select-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.btn-toggle-multiselect {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-muted);
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.btn-toggle-multiselect:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.btn-toggle-multiselect.is-active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.multi-select-hint {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+.stamp-palette {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.stamp-chip {
+  --chip-color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--chip-color) 40%, var(--border));
+  background: color-mix(in srgb, var(--chip-color) 16%, white);
+  color: color-mix(in srgb, var(--chip-color) 80%, black);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.stamp-chip:hover {
+  box-shadow: inset 0 0 0 1px var(--chip-color);
+}
+
+.stamp-chip--empty {
+  --chip-color: var(--ink-muted);
+  background: transparent;
+  font-weight: 400;
+  text-transform: none;
+}
+
+.shift-chip-btn.is-selectable {
+  cursor: pointer;
+  position: relative;
+}
+
+.shift-chip-btn.is-marked {
+  background: var(--primary-soft);
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.select-check {
+  position: absolute;
+  top: 1px;
+  right: 3px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--primary);
+  font-weight: 700;
+}
+
 .grid-scroll {
   overflow: auto;
   border: 1px solid var(--border);

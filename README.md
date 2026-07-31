@@ -414,6 +414,21 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      Oberfläche -- keine Backend-Änderungen nötig ausser den neuen `api.js`-CRUD-Methoden.
    - *Noch offen*: Überschneidet sich mit Block 3.1 (Setup-Wizard bei Self-Signup) -- der
      Setup-Wizard sollte dieselben Formulare/Komponenten wiederverwenden, sobald er existiert.
+11. ✅ **Mehrfachauswahl + Schicht-Stempel im Planblatt-Grid** (inspiriert von Polypoint): zuvor
+    liess sich pro Zelle nur einzeln per Dropdown ein Schichttyp zuweisen (plus "Wochenmuster
+    kopieren" für den Sonderfall "gleiche Woche wiederholen"). Polypoint markiert stattdessen
+    mehrere Tage und weist ihnen mit einem Klick auf das Schichttyp-Icon alle auf einmal zu -- für
+    den Alltag eines Planers, der oft denselben Dienst über viele Tage/Mitarbeitende verteilt
+    einträgt, deutlich weniger Klicks als N einzelne Dropdown-Interaktionen. Umsetzung:
+    "Mehrfachauswahl"-Umschalter über dem Grid (`PlanGrid.jsx`); solange aktiv, markiert ein Klick
+    auf eine Zelle sie (visuell hervorgehoben, `ShiftCell.jsx: selectionMode`) statt die
+    Dropdown-Zuweisung zu öffnen; sobald mindestens eine Zelle markiert ist, erscheint eine
+    Stempel-Leiste mit den Schichttyp-Chips (plus "leeren"), die per Klick alle markierten Zellen
+    auf einmal zuweist (`handleStampAssign`, Regel-Engine-Konflikte werden wie beim
+    Wochenmuster-Kopieren pro Zelle übersprungen und summarisch gemeldet). Absenz-Tage lassen sich
+    gar nicht erst markieren (Regel-Engine würde die Zuweisung ohnehin ablehnen). Der bestehende
+    Einzel-Dropdown bleibt für gezielte Korrekturen einer einzelnen Zelle erhalten -- Ergänzung,
+    kein Ersatz.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

@@ -29,6 +29,12 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
   const [absences, setAbsences] = useState([]);
   const [timeRecords, setTimeRecords] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Mehrfachauswahl + Schicht-Stempel (README-Task, inspiriert von Polypoint):
+  // Zellen markieren, dann per Klick auf einen Schichttyp alle markierten
+  // Zellen auf einmal beplanen -- Ergänzung zum bestehenden Einzel-Dropdown,
+  // nicht dessen Ersatz.
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [markedCells, setMarkedCells] = useState(() => new Set());
   const canManage = canManageSchedule(me);
   const ownEmployeeId = me?.employee?.id ?? null;
   const todayIso = new Date().toISOString().slice(0, 10);
@@ -203,6 +209,79 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
     }
   }
 
+  function toggleMultiSelectMode() {
+    setMultiSelectMode((v) => !v);
+    setMarkedCells(new Set());
+  }
+
+  function toggleMark(employeeId, date) {
+    const key = `${employeeId}:${date}`;
+    setMarkedCells((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  // Stempel-Leiste: weist templateId (oder null zum Leeren) allen markierten
+  // Zellen auf einmal zu. Läuft absichtlich sequenziell wie
+  // handleCopyWeekPattern -- ein Konflikt (z. B. Ruhezeit) auf einer Zelle
+  // soll die übrigen nicht blockieren, nur summarisch gemeldet werden.
+  async function handleStampAssign(templateId) {
+    const keys = Array.from(markedCells);
+    const upserted = [];
+    const deletedIds = [];
+    let skipped = 0;
+
+    for (const key of keys) {
+      const [employeeIdStr, date] = key.split(":");
+      const employeeId = Number(employeeIdStr);
+      const existing = assignmentMap.get(key);
+      try {
+        if (templateId === null) {
+          if (existing) {
+            await api.deleteShiftAssignment(existing.id);
+            deletedIds.push(existing.id);
+          }
+        } else if (existing) {
+          const updated = await api.updateShiftAssignment(existing.id, { template: templateId });
+          upserted.push(updated);
+        } else {
+          const created = await api.createShiftAssignment({
+            employee: employeeId,
+            node: nodeId,
+            date,
+            template: templateId,
+          });
+          upserted.push(created);
+        }
+      } catch {
+        // z. B. Ruhezeit-, Höchstarbeitszeit- oder Absenz-Konflikt -- Zelle
+        // überspringen, restliche markierte Zellen trotzdem weiterstempeln.
+        skipped += 1;
+      }
+    }
+
+    if (upserted.length) {
+      setAssignments((prev) => {
+        const byId = new Map(prev.map((a) => [a.id, a]));
+        for (const a of upserted) byId.set(a.id, a);
+        return Array.from(byId.values());
+      });
+    }
+    if (deletedIds.length) {
+      setAssignments((prev) => prev.filter((a) => !deletedIds.includes(a.id)));
+    }
+    setMarkedCells(new Set());
+    if (skipped > 0) {
+      onError(
+        `${keys.length - skipped} von ${keys.length} markierten Zellen zugewiesen, ${skipped} wegen ` +
+          "Regel-Konflikten (z. B. Ruhezeit) übersprungen."
+      );
+    }
+  }
+
   async function handleOfferTrade(employeeId, date, targetEmployeeId) {
     const assignment = assignmentMap.get(`${employeeId}:${date}`);
     if (!assignment) return;
@@ -231,95 +310,144 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
   }
 
   return (
-    <div className="grid-scroll">
-      <table className="plan-grid">
-        <thead>
-          <tr>
-            <th className="col-employee">Mitarbeiter</th>
-            {days.map((d) => {
-              const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
-              return (
-                <th key={d} className={weekend ? "is-weekend" : ""}>
-                  <span className="day-num">{d}</span>
-                  <span className="day-weekday">{weekdayLabel(year, month, d)}</span>
-                </th>
-              );
-            })}
-            {/* Block 2.7: nur für Admin/Planer -- eigene, am rechten Rand
-                fixierte Spalte statt in die ohnehin schon volle
-                Mitarbeiter-Zelle gequetscht, damit der Saldo unabhängig
-                von der Scroll-Position sichtbar bleibt. */}
-            {canManage && <th className="col-balance">Saldo</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {employees.map((emp) => (
-            <tr key={emp.id}>
-              <th scope="row" className="col-employee">
-                <span className="employee-row-inner">
-                  <span className="employee-name">
-                    {emp.first_name} {emp.last_name}
-                  </span>
-                  <span className="pct">{emp.employment_pct}%</span>
-                  {canManage && (
-                    <button
-                      type="button"
-                      className="btn-copy-week"
-                      title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
-                      onClick={() => handleCopyWeekPattern(emp.id)}
-                    >
-                      ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
-                    </button>
-                  )}
-                </span>
-              </th>
+    <>
+      {canManage && (
+        <div className="multi-select-toolbar">
+          <button
+            type="button"
+            className={`btn-toggle-multiselect${multiSelectMode ? " is-active" : ""}`}
+            onClick={toggleMultiSelectMode}
+          >
+            {multiSelectMode ? "✕ Mehrfachauswahl beenden" : "☐ Mehrfachauswahl"}
+          </button>
+          {multiSelectMode && markedCells.size === 0 && (
+            <span className="multi-select-hint">Tage anklicken, um sie zu markieren.</span>
+          )}
+          {multiSelectMode && markedCells.size > 0 && (
+            <span className="stamp-palette">
+              <span className="multi-select-hint">
+                {markedCells.size} markiert -- Schichttyp zum Zuweisen anklicken:
+              </span>
+              {templates.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className="stamp-chip"
+                  style={{ "--chip-color": t.color }}
+                  title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
+                  onClick={() => handleStampAssign(t.id)}
+                >
+                  {t.name.slice(0, 3)}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="stamp-chip stamp-chip--empty"
+                title="Markierte Tage leeren"
+                onClick={() => handleStampAssign(null)}
+              >
+                — leer —
+              </button>
+              <button type="button" className="btn-ghost" onClick={() => setMarkedCells(new Set())}>
+                Auswahl aufheben
+              </button>
+            </span>
+          )}
+        </div>
+      )}
+      <div className="grid-scroll">
+        <table className="plan-grid">
+          <thead>
+            <tr>
+              <th className="col-employee">Mitarbeiter</th>
               {days.map((d) => {
-                const date = isoDate(year, month, d);
-                const assignment = assignmentMap.get(`${emp.id}:${date}`);
-                const template = templates.find((t) => t.id === assignment?.template);
-                const absence = findAbsence(emp.id, date);
                 const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
-                const canOfferTrade = canManage || me?.employee?.id === emp.id;
-                // Block 1.13: Ist-Zeit-Badge nur auf der eigenen, bereits
-                // stattgefundenen Schicht -- unabhängig von canManage, damit
-                // auch ein Admin/Planer mit eigenem Employee-Profil seine
-                // eigenen Schichten erfassen kann.
-                const canRecordTime = Boolean(assignment) && date <= todayIso && ownEmployeeId === emp.id;
-                const timeRecord = assignment ? timeRecordByAssignment.get(assignment.id) : undefined;
                 return (
-                  <td key={d} className={weekend ? "is-weekend" : ""}>
-                    <ShiftCell
-                      templates={templates}
-                      selectedTemplateId={assignment?.template ?? null}
-                      templateInfo={template}
-                      employeeId={emp.id}
-                      date={date}
-                      absence={absence}
-                      colleagues={employees.filter((e) => e.id !== emp.id)}
-                      canEdit={canManage}
-                      canOfferTrade={canOfferTrade}
-                      onChange={(templateId) => handleAssign(emp.id, date, templateId)}
-                      onMove={handleMove}
-                      onOfferTrade={(targetEmployeeId) =>
-                        handleOfferTrade(emp.id, date, targetEmployeeId)
-                      }
-                      timeRecord={timeRecord}
-                      canRecordTime={canRecordTime}
-                      onSaveTimeRecord={(payload) => handleSaveTimeRecord(assignment.id, timeRecord, payload)}
-                      onDeleteTimeRecord={() => handleDeleteTimeRecord(timeRecord)}
-                    />
-                  </td>
+                  <th key={d} className={weekend ? "is-weekend" : ""}>
+                    <span className="day-num">{d}</span>
+                    <span className="day-weekday">{weekdayLabel(year, month, d)}</span>
+                  </th>
                 );
               })}
-              {canManage && (
-                <td className="col-balance">
-                  <BalanceBadge employeeId={emp.id} variant="cell" />
-                </td>
-              )}
+              {/* Block 2.7: nur für Admin/Planer -- eigene, am rechten Rand
+                  fixierte Spalte statt in die ohnehin schon volle
+                  Mitarbeiter-Zelle gequetscht, damit der Saldo unabhängig
+                  von der Scroll-Position sichtbar bleibt. */}
+              {canManage && <th className="col-balance">Saldo</th>}
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {employees.map((emp) => (
+              <tr key={emp.id}>
+                <th scope="row" className="col-employee">
+                  <span className="employee-row-inner">
+                    <span className="employee-name">
+                      {emp.first_name} {emp.last_name}
+                    </span>
+                    <span className="pct">{emp.employment_pct}%</span>
+                    {canManage && (
+                      <button
+                        type="button"
+                        className="btn-copy-week"
+                        title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
+                        onClick={() => handleCopyWeekPattern(emp.id)}
+                      >
+                        ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
+                      </button>
+                    )}
+                  </span>
+                </th>
+                {days.map((d) => {
+                  const date = isoDate(year, month, d);
+                  const assignment = assignmentMap.get(`${emp.id}:${date}`);
+                  const template = templates.find((t) => t.id === assignment?.template);
+                  const absence = findAbsence(emp.id, date);
+                  const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
+                  const canOfferTrade = canManage || me?.employee?.id === emp.id;
+                  // Block 1.13: Ist-Zeit-Badge nur auf der eigenen, bereits
+                  // stattgefundenen Schicht -- unabhängig von canManage, damit
+                  // auch ein Admin/Planer mit eigenem Employee-Profil seine
+                  // eigenen Schichten erfassen kann.
+                  const canRecordTime = Boolean(assignment) && date <= todayIso && ownEmployeeId === emp.id;
+                  const timeRecord = assignment ? timeRecordByAssignment.get(assignment.id) : undefined;
+                  return (
+                    <td key={d} className={weekend ? "is-weekend" : ""}>
+                      <ShiftCell
+                        templates={templates}
+                        selectedTemplateId={assignment?.template ?? null}
+                        templateInfo={template}
+                        employeeId={emp.id}
+                        date={date}
+                        absence={absence}
+                        colleagues={employees.filter((e) => e.id !== emp.id)}
+                        canEdit={canManage}
+                        canOfferTrade={canOfferTrade}
+                        onChange={(templateId) => handleAssign(emp.id, date, templateId)}
+                        onMove={handleMove}
+                        onOfferTrade={(targetEmployeeId) =>
+                          handleOfferTrade(emp.id, date, targetEmployeeId)
+                        }
+                        timeRecord={timeRecord}
+                        canRecordTime={canRecordTime}
+                        onSaveTimeRecord={(payload) => handleSaveTimeRecord(assignment.id, timeRecord, payload)}
+                        onDeleteTimeRecord={() => handleDeleteTimeRecord(timeRecord)}
+                        selectionMode={multiSelectMode}
+                        marked={markedCells.has(`${emp.id}:${date}`)}
+                        onToggleMark={() => toggleMark(emp.id, date)}
+                      />
+                    </td>
+                  );
+                })}
+                {canManage && (
+                  <td className="col-balance">
+                    <BalanceBadge employeeId={emp.id} variant="cell" />
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }

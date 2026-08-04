@@ -1,3 +1,4 @@
+from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
 from django.conf import settings
@@ -357,6 +358,21 @@ class Employee(TenantScopedModel):
         als hätte der Mitarbeiter in einer Woche vor Anstellungsbeginn oder
         in einer Lücke die volle Sollzeit verpasst.
 
+        Anders als weekly_hours_summary() (dort zählt für Art. 13 ArG immer
+        der volle vertragliche Wochensoll, unabhängig davon, an wie vielen
+        Tagen gearbeitet wurde) wird der Wochensoll hier **anteilig auf die
+        tatsächlich verplanten Tage der Woche** angerechnet (min(verplante
+        Tage, 5) / 5 * Wochensoll, dieselbe Mo-Fr-Konvention wie
+        _count_workdays beim Feriensaldo) -- sonst würde eine einzelne, gerade
+        erst eingeplante Schicht in einer neuen Woche sofort mit dem vollen
+        Wochensoll (z. B. 42h) verrechnet und den Saldo um fast eine ganze
+        Wochenarbeitszeit einbrechen lassen, obwohl die Woche erst zu einem
+        Fünftel verplant ist. Bei 5 oder mehr verplanten Tagen (auch über eine
+        klassische Mo-Fr-Woche hinaus, z. B. inkl. Wochenende) bleibt der
+        volle Wochensoll die Obergrenze, damit Mehrarbeit an zusätzlichen
+        Tagen weiterhin voll als Überstunden zählt statt künstlich einen noch
+        höheren Soll zu erzeugen.
+
         as_of_date=None (Normalfall, z.B. Topbar-Badge/Settings-Liste) bezieht
         *alle* Wochen mit Zuweisung ein, auch künftig geplante -- Zuweisungen
         zählen laut is_provisional/weekly_hours_summary bewusst sofort, nicht
@@ -377,13 +393,16 @@ class Employee(TenantScopedModel):
         if as_of_date is not None:
             assignment_qs = assignment_qs.filter(date__lte=as_of_date)
         assignment_dates = assignment_qs.values_list("date", flat=True)
-        week_starts = {d - timedelta(days=d.weekday()) for d in assignment_dates}
+        days_by_week = defaultdict(set)
+        for d in assignment_dates:
+            days_by_week[d - timedelta(days=d.weekday())].add(d)
 
         balance = self.overtime_balance_carryover_hours
         is_provisional = False
-        for week_start in week_starts:
+        for week_start, assigned_days in days_by_week.items():
             summary = self.weekly_hours_summary(week_start)
-            balance += summary["ist_hours"] - summary["soll_hours"]
+            prorated_soll = round(summary["soll_hours"] * min(len(assigned_days), 5) / 5, 2)
+            balance += summary["ist_hours"] - prorated_soll
             is_provisional = is_provisional or summary["is_provisional"]
         return {"balance_hours": round(balance, 2), "is_provisional": is_provisional}
 

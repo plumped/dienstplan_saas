@@ -499,6 +499,24 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      interne Berechnungs-Stichtag wurde entkoppelt). Siehe `test_overtime_balance_without_as_of_
      includes_future_assignments` (Modell) und `test_api_without_as_of_includes_future_assignments`
      (API) in `scheduling/tests.py`.
+   - ✅ **Bugfix #2 (2026-08, direkte Folge von Bugfix #1)**: sobald künftige Wochen sofort zählen
+     (siehe oben), wurde ein zweites, vorher kaum sichtbares Problem offensichtlich: `overtime_
+     summary()` hat pro Woche mit **mindestens einer** Zuweisung immer den **vollen** Wochensoll
+     (z. B. 42h) angerechnet -- unabhängig davon, ob 1 oder 6 Schichten in dieser Woche standen. Das
+     liess den Saldo bei jeder frisch begonnenen Planungswoche um fast eine ganze Wochenarbeitszeit
+     einbrechen, sobald die erste Schicht gesetzt wurde, und sich beim Auffüllen der Woche wieder
+     erholen -- exakt das vom Nutzer beobachtete "sinkt, dann steigt wieder je nachdem wo ich sie
+     eingebe". Fix (nach Rücksprache, da eine Änderung an dieser Kernrechnung): der Wochensoll wird
+     jetzt **anteilig auf die tatsächlich verplanten Tage** dieser Woche angerechnet (`min(verplante
+     Tage, 5) / 5 * Wochensoll`, dieselbe Mo-Fr-Konvention wie `_count_workdays` beim Feriensaldo,
+     gedeckelt auf den vollen Wochensoll ab 5 Tagen, damit Mehrarbeit an zusätzlichen Tagen weiterhin
+     voll als Überstunden zählt). Eine einzelne 8h-Schicht in einer neuen Woche zählt dadurch nur
+     noch mit ca. -0.4h statt -34h; eine vollständige 5-Tage-Woche mit je 8h ergibt weiterhin die
+     erwarteten -2h (40h Ist vs. 42h Soll), unverändert gegenüber vorher. Bewusst **nicht** verändert:
+     `weekly_hours_summary()` selbst (Block 1.11, Art. 13 ArG Überzeit/Zuschlag für eine einzelne,
+     konkret abgefragte Woche) rechnet weiterhin mit dem vollen Wochensoll -- das ist dort korrekt,
+     weil die gesetzliche Normalarbeitszeit pro Woche gilt, nicht pro Tag. Siehe
+     `test_overtime_balance_prorates_soll_by_days_scheduled_in_week` in `scheduling/tests.py`.
 8. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
    eine belegte Zelle wird abgelehnt statt getauscht).
 9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn

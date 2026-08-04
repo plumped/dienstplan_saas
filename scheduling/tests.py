@@ -1493,30 +1493,45 @@ class EmployeeBalanceTests(APITestCase):
         self.assertEqual(self.employee.overtime_balance(date(2026, 8, 10)), 15.5)
 
     def test_overtime_balance_sums_signed_difference_across_weeks(self):
-        # Woche 1 (ab Mo 2026-08-03): 6 Schichten a 8h = 48h ist, 42h soll -> +6h.
+        # Woche 1 (ab Mo 2026-08-03): 6 Schichten a 8h = 48h ist, an 6 Tagen
+        # verplant -> Soll bleibt bei vollen 42h gedeckelt -> +6h.
         for offset in range(6):
             self._assign(self.employee, date(2026, 8, 3) + timedelta(days=offset))
-        # Woche 2 (ab Mo 2026-08-10): nur 3 Schichten a 8h = 24h ist, 42h soll -> -18h.
+        # Woche 2 (ab Mo 2026-08-10): nur 3 Schichten a 8h = 24h ist, an 3
+        # Tagen verplant -> anteiliger Soll 42h * 3/5 = 25.2h -> -1.2h.
         for offset in range(3):
             self._assign(self.employee, date(2026, 8, 10) + timedelta(days=offset))
         # Woche dazwischen/danach ohne jede Zuweisung darf NICHT als -42h zählen.
         balance = self.employee.overtime_balance(date(2026, 8, 20))
-        self.assertEqual(balance, -12.0)  # +6 - 18
+        self.assertEqual(balance, 4.8)  # +6 - 1.2
 
     def test_overtime_balance_ignores_assignments_after_as_of_date(self):
-        self._assign(self.employee, date(2026, 8, 3))  # 8h in einer 42h-Soll-Woche -> -34h
+        self._assign(self.employee, date(2026, 8, 3))  # 1 Tag -> Soll 42h*1/5=8.4h -> -0.4h
         self._assign(self.employee, date(2026, 8, 24))  # spätere Woche, soll nicht mitzählen
         balance = self.employee.overtime_balance(date(2026, 8, 10))
-        self.assertEqual(balance, -34.0)
+        self.assertEqual(balance, -0.4)
 
     def test_overtime_balance_without_as_of_includes_future_assignments(self):
         # Bugfix: eine für einen künftigen Monat verplante Schicht muss sofort
         # in den Saldo einfliessen (wie is_provisional/weekly_hours_summary es
         # vorsehen), nicht erst, sobald "heute" ihr Datum erreicht.
-        self._assign(self.employee, date(2026, 8, 3))  # 8h in einer 42h-Soll-Woche -> -34h
-        self._assign(self.employee, date(2027, 3, 15))  # weit in der Zukunft -> -34h
+        self._assign(self.employee, date(2026, 8, 3))  # 1 Tag -> -0.4h
+        self._assign(self.employee, date(2027, 3, 15))  # weit in der Zukunft, 1 Tag -> -0.4h
         balance = self.employee.overtime_balance()
-        self.assertEqual(balance, -68.0)
+        self.assertEqual(balance, -0.8)
+
+    def test_overtime_balance_prorates_soll_by_days_scheduled_in_week(self):
+        # Regression: eine einzelne, gerade erst eingeplante Schicht in einer
+        # frischen Woche darf nicht sofort mit dem vollen Wochensoll (42h)
+        # verrechnet werden (das liesse den Saldo bei jeder neu begonnenen
+        # Planungswoche um fast eine ganze Wochenarbeitszeit einbrechen).
+        self._assign(self.employee, date(2026, 8, 3))  # Mo, 1. Tag der Woche
+        self.assertEqual(self.employee.overtime_balance(), -0.4)  # 8h - 8.4h
+        self._assign(self.employee, date(2026, 8, 4))  # Di, 2. Tag
+        self.assertEqual(self.employee.overtime_balance(), -0.8)  # 16h - 16.8h
+        for offset in range(2, 5):  # Mi-Fr auffüllen -> volle 5-Tage-Woche
+            self._assign(self.employee, date(2026, 8, 3) + timedelta(days=offset))
+        self.assertEqual(self.employee.overtime_balance(), -2.0)  # 40h - 42h, wie eine normale Woche
 
     # --- is_provisional (UX-Nachbesserung: Saldo ist rechnerisch sofort aktuell, auch vor
     # der Prüfung -- das Flag macht das im Frontend nur transparent) ---
@@ -1646,12 +1661,12 @@ class EmployeeBalanceTests(APITestCase):
         # Bugfix: das Frontend ruft balance/ nie mit ?as_of= auf -- ohne den
         # Parameter muss eine für einen künftigen Monat verplante Schicht
         # trotzdem sofort im Saldo auftauchen.
-        self._assign(self.employee, date(2026, 8, 3))  # 8h in einer 42h-Soll-Woche -> -34h
-        self._assign(self.employee, date(2027, 3, 15))  # weit in der Zukunft -> -34h
+        self._assign(self.employee, date(2026, 8, 3))  # 1 Tag -> -0.4h
+        self._assign(self.employee, date(2027, 3, 15))  # weit in der Zukunft, 1 Tag -> -0.4h
         self.auth_as(self.planner_user)
         response = self.client.get(f"/api/employees/{self.employee.id}/balance/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["overtime_balance_hours"], -68.0)
+        self.assertEqual(response.data["overtime_balance_hours"], -0.8)
 
 
 class ShiftTradeRequestTests(TestCase):
@@ -2287,11 +2302,16 @@ class RoleBasedPermissionTests(APITestCase):
         self.assertEqual(ids, [in_range.id])
 
     def test_employee_cannot_record_time_for_others_shift(self):
+        # Bewusst ein fixes Datum statt "gestern" (timezone.localdate() -
+        # 1 Tag): dieselbe Kollisionsgefahr wie beim alice_past_assignment
+        # oben -- sobald "heute" (Europe/Zurich) auf das fixe bob_assignment-
+        # Datum (2026-08-04) fällt, wäre "gestern" == "heute" und würde
+        # ebenfalls gegen den UNIQUE-constraint employee+date laufen.
         bob_past_assignment = ShiftAssignment.objects.create(
             tenant=self.tenant,
             employee=self.bob,
             node=self.node,
-            date=timezone.localdate() - timedelta(days=1),
+            date=date(2026, 7, 20),
             template=self.template,
         )
         self.auth_as(self.alice_user)

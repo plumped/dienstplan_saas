@@ -2,6 +2,7 @@ import uuid
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
+from django.core.exceptions import ValidationError
 from django.db import models
 
 from core.context import get_current_tenant
@@ -16,6 +17,24 @@ class User(AbstractUser):
     Diensttausch-Benachrichtigungen) kann später ohne Datenmigration der
     Auth-Tabellen ergänzt werden.
     """
+
+    def save(self, *args, **kwargs):
+        """
+        Erzwingt strukturell, dass ein Account nie gleichzeitig Django-Admin-
+        Zugriff (is_staff/is_superuser) UND eine Tenant-Mitgliedschaft
+        (Membership) hat -- siehe README, Architektur-Abschnitt "Django Admin
+        ist bewusst kein Kundenzugriff": die ModelAdmins sind nicht
+        tenant-gescoped, ein solcher Account würde alle Tenants sehen. Nur
+        für bereits gespeicherte User relevant (self.pk gesetzt) -- ein noch
+        nicht gespeicherter User kann per Definition noch keine Memberships
+        haben, die Prüfung wäre dort ohnehin nicht auswertbar.
+        """
+        if self.pk and (self.is_staff or self.is_superuser) and self.memberships.exists():
+            raise ValidationError(
+                "Dieser Account hat eine Tenant-Mitgliedschaft (Membership) -- is_staff/"
+                "is_superuser (Django-Admin-Zugriff) darf damit nicht kombiniert werden."
+            )
+        super().save(*args, **kwargs)
 
 
 class Tenant(models.Model):
@@ -142,6 +161,23 @@ class Membership(models.Model):
 
     def __str__(self):
         return f"{self.user} @ {self.tenant} ({self.role})"
+
+    def save(self, *args, **kwargs):
+        """
+        Kehrseite der Prüfung in User.save(): verhindert auch den umgekehrten
+        Weg, einem bestehenden Django-Admin-Account (is_staff/is_superuser)
+        nachträglich eine Tenant-Mitgliedschaft zu geben. Bewusst hier in
+        save() statt nur in clean(): Memberships werden im ganzen Code
+        (Tests, künftige Einladungs-/Onboarding-Flows) über
+        `Membership.objects.create(...)` angelegt, was clean() NICHT
+        automatisch aufruft -- nur save() wird garantiert immer durchlaufen.
+        """
+        if self.user.is_staff or self.user.is_superuser:
+            raise ValidationError(
+                "Kann keine Tenant-Mitgliedschaft für einen Account mit Django-Admin-Zugriff "
+                "(is_staff/is_superuser) anlegen -- siehe README, Architektur-Abschnitt."
+            )
+        super().save(*args, **kwargs)
 
 
 class TenantScopedManager(models.Manager):

@@ -153,6 +153,20 @@ ihre eigene per `migrate`.
   "Einstellungen"-Bereich unten sowie MVP-Fahrplan Block 2, Punkt 14 für die noch fehlende
   Tenant-Konfiguration).
 
+  **Strukturell erzwungen, nicht nur Konvention**: `User.save()`/`Membership.save()`
+  (`core.models`) lehnen jede Kombination aus `is_staff`/`is_superuser` und einer Tenant-
+  Mitgliedschaft aktiv ab (`ValidationError`) -- egal ob die Membership zuerst existiert und
+  danach `is_staff` gesetzt wird, oder umgekehrt. Bewusst in `save()` statt nur in `clean()`:
+  Memberships werden im gesamten Code (Tests, künftige Einladungs-/Onboarding-Flows) über
+  `Membership.objects.create(...)` angelegt, was `clean()` nicht automatisch aufruft -- nur
+  `save()` wird garantiert bei jedem Erstellungsweg durchlaufen. Getestet in
+  `core.tests.StaffAccountsCannotHaveMembershipsTests`. Das ist die zweite Verteidigungslinie
+  zusätzlich zur reinen Rollentrennung oben: selbst ein versehentlicher `is_staff=True` auf einem
+  Kunden-Account (oder umgekehrt) wird von der Datenbank-Schicht zurückgewiesen, nicht nur durch
+  sorgfältiges Vorgehen vermieden. *Ergänzend denkbar, noch nicht umgesetzt*: zusätzliche
+  Netzwerk-Absicherung von `/admin/` selbst (z. B. IP-Allowlist fürs Büro-/VPN-Netz, separates
+  Interface) als dritte, infrastrukturelle Verteidigungslinie -- siehe MVP-Fahrplan Block 4.
+
 ## Frontend
 
 Ein kleines React/Vite-Template liegt separat unter `dienstplan_frontend/` (eigenes README dort).

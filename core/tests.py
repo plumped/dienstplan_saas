@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.test import RequestFactory, TestCase
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
@@ -10,6 +11,45 @@ from core.tenancy import resolve_tenant_for_user
 from scheduling.models import Employee, Skill
 
 User = get_user_model()
+
+
+class StaffAccountsCannotHaveMembershipsTests(TestCase):
+    """
+    Cross-Tenant-Schutz für /admin/ (siehe README, Architektur-Abschnitt
+    "Django Admin ist bewusst kein Kundenzugriff"): ein Account darf nie
+    gleichzeitig is_staff/is_superuser UND eine Tenant-Mitgliedschaft haben,
+    weil die ModelAdmins nicht tenant-gescoped sind. Strukturell erzwungen
+    in Membership.save()/User.save(), nicht nur als Konvention.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+
+    def test_cannot_create_membership_for_staff_user(self):
+        staff_user = User.objects.create_user(username="staff", password="pw-not-real-123!", is_staff=True)
+        with self.assertRaises(ValidationError):
+            Membership.objects.create(user=staff_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+    def test_cannot_create_membership_for_superuser(self):
+        superuser = User.objects.create_superuser(username="root", password="pw-not-real-123!")
+        with self.assertRaises(ValidationError):
+            Membership.objects.create(user=superuser, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+    def test_cannot_promote_membership_holder_to_staff(self):
+        user = User.objects.create_user(username="anna", password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        user.is_staff = True
+        with self.assertRaises(ValidationError):
+            user.save()
+
+    def test_ordinary_membership_creation_still_works(self):
+        user = User.objects.create_user(username="bob", password="pw-not-real-123!")
+        membership = Membership.objects.create(user=user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        self.assertEqual(membership.user, user)
+
+    def test_creating_superuser_without_membership_still_works(self):
+        superuser = User.objects.create_superuser(username="root2", password="pw-not-real-123!")
+        self.assertTrue(superuser.is_superuser)
 
 
 class TenantScopedManagerTests(TestCase):

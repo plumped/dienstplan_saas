@@ -124,6 +124,22 @@ button {
   color: var(--primary);
 }
 
+/* Block 2.4: Zähler-Badge für offene Tasks (Abwesenheiten/Diensttausch/
+   Zeiterfassung), siehe App.jsx: TABS[].taskCountKey. */
+.tab-badge {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
 .node-selector select,
 .month-nav {
   font-family: var(--font-body);

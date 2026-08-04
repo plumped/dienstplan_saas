@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "./api.js";
+import { api, onTasksChanged } from "./api.js";
 import AbsencePanel from "./components/AbsencePanel.jsx";
 import BalanceBadge from "./components/BalanceBadge.jsx";
 import LoginForm from "./components/LoginForm.jsx";
@@ -12,12 +12,17 @@ import TradeRequestPanel from "./components/TradeRequestPanel.jsx";
 import YearPlan from "./components/YearPlan.jsx";
 import { canManageSchedule, ROLE_LABELS } from "./roles.js";
 
+// Block 2.4: taskCountKey verweist auf GET /api/me/: task_counts (siehe
+// core.views._task_counts) -- Grundlage für die Zähler-Badges neben den
+// jeweiligen Tabs, sichtbar für Admin/Planer (tenant-weite offene
+// Genehmigungen) bzw. Mitarbeitende (eigene, an sie adressierte
+// Tauschanfragen).
 const TABS = [
   { id: "grid", label: "Planblatt" },
   { id: "yearplan", label: "Jahresplan" },
-  { id: "absences", label: "Abwesenheiten" },
-  { id: "trades", label: "Diensttausch" },
-  { id: "timerecords", label: "Zeiterfassung" },
+  { id: "absences", label: "Abwesenheiten", taskCountKey: "absences" },
+  { id: "trades", label: "Diensttausch", taskCountKey: "trades" },
+  { id: "timerecords", label: "Zeiterfassung", taskCountKey: "time_records" },
   { id: "settings", label: "Einstellungen", managerOnly: true },
 ];
 
@@ -41,13 +46,22 @@ export default function App() {
       setMe(null);
       return;
     }
-    api
-      .getMe()
-      .then(setMe)
-      .catch((e) => {
-        if (e.message === "unauthorized") setLoggedIn(false);
-        else setError(e.message);
-      });
+    function loadMe() {
+      api
+        .getMe()
+        .then(setMe)
+        .catch((e) => {
+          if (e.message === "unauthorized") setLoggedIn(false);
+          else setError(e.message);
+        });
+    }
+    loadMe();
+    // Block 2.4: task_counts (Header-Badges) sollen sich ohne Reload
+    // aktualisieren, sobald irgendwo eine Absenz/Tauschanfrage/Zeiterfassung
+    // erstellt oder entschieden wurde (siehe affectsTasks in api.js) --
+    // gleiches Pub/Sub-Muster wie onBalanceChanged für den Saldo.
+    const unsubscribe = onTasksChanged(loadMe);
+    return unsubscribe;
   }, [loggedIn]);
 
   useEffect(() => {
@@ -97,16 +111,24 @@ export default function App() {
         </div>
 
         <nav className="tab-nav">
-          {TABS.filter((t) => !t.managerOnly || canManageSchedule(me)).map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={`tab-btn${tab === t.id ? " is-active" : ""}`}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
+          {TABS.filter((t) => !t.managerOnly || canManageSchedule(me)).map((t) => {
+            const count = t.taskCountKey ? me?.task_counts?.[t.taskCountKey] : 0;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                className={`tab-btn${tab === t.id ? " is-active" : ""}`}
+                onClick={() => setTab(t.id)}
+              >
+                {t.label}
+                {!!count && (
+                  <span className="tab-badge" title={`${count} offen`}>
+                    {count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </nav>
 
         {nodes.length > 0 && <NodeSelector nodes={nodes} value={nodeId} onChange={setNodeId} />}

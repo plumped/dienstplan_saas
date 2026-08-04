@@ -404,8 +404,29 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    die Zustimmung der Zielperson, `approve`/`reject` durch Admin/Planer vollziehen/verwerfen den
    Tausch tatsächlich) haben jetzt eine Planer-Freigabe-Stufe. Details siehe Architektur-Abschnitt
    oben (Absenzen/Diensttausch) und Frontend-Abschnitt (Genehmigungs-Workflow).
-4. **Benachrichtigungen** (mind. E-Mail) bei neuer Absenz-/Tauschanfrage, Genehmigung/Ablehnung
-   und Veröffentlichung eines neuen Monatsplans.
+4. ✅ **Benachrichtigungen** bei neuer Absenz-/Tauschanfrage und deren Genehmigung/Ablehnung, in
+   zwei Kanälen:
+   - **E-Mail** (`core/notifications.py`): neue Absenz → Admin/Planer; Absenz-Entscheid →
+     antragstellende Person; neue Tauschanfrage → Zielperson; Zustimmung der Zielperson →
+     Admin/Planer (zur Freigabe); Freigabe/Ablehnung durch Admin/Planer → beide Beteiligten;
+     `decline` durch die Zielperson → anbietende Person. Empfänger über
+     `Employee.user.email`/`Membership` aufgelöst, still-silent ohne verknüpften Account bzw.
+     ohne hinterlegte Adresse -- das ist der Normalfall bei Mitarbeitenden ohne eigenen Login,
+     kein Fehler. `EMAIL_BACKEND` ist auf das Console-Backend gesetzt (Mails landen auf stdout,
+     kein SMTP-Server im Dev-Setup) -- für einen echten Betrieb muss das durch einen SMTP-Backend
+     ersetzt werden (Umgebungsvariablen, siehe Block 4). "Veröffentlichung eines neuen
+     Monatsplans" bewusst **nicht** enthalten -- es gibt aktuell keinen "Veröffentlichen"-
+     Workflow (jede Zuweisung ist sofort für alle sichtbar), das wäre eine eigene, grössere
+     Funktion.
+   - **In-App-Indikator**: Zähler-Badges neben "Abwesenheiten"/"Diensttausch"/"Zeiterfassung" im
+     Header (`App.jsx`, `.tab-badge`), gespeist aus `task_counts` in `GET /api/me/`
+     (`core.views._task_counts`) -- rollenabhängig: Admin/Planer sehen tenant-weite offene
+     Genehmigungen (offene Absenzanträge, Tauschanfragen im Status `employee_accepted` --
+     tatsächlich freigabebereit, nicht bereits jede offene `pending`-Anfrage, die meist zuerst
+     auf die Zielperson wartet --, offene Zeiterfassungen), Mitarbeitende nur eigene, an sie
+     adressierte Tauschanfragen (`target_employee` + `pending`). Aktualisiert sich ohne Reload
+     über denselben Pub/Sub-Mechanismus wie der Saldo (`api.js: onTasksChanged`/`affectsTasks`,
+     analog zu `onBalanceChanged`/`affectsBalance` aus Block 2.7).
 5. **Export** (PDF/Excel) des Monatsplans — für Aushang in der Praxis und Übergabe an externe
    Lohnbuchhaltung, die selten direkt an die API angebunden ist.
 6. **Monatsauswertung Soll/Ist-Stunden pro Mitarbeiter** (inkl. Nacht-/Sonntagszuschläge,

@@ -9,6 +9,14 @@ from rest_framework.response import Response
 
 from core.context import set_current_tenant
 from core.models import Membership
+from core.notifications import (
+    notify_absence_decision,
+    notify_new_absence_request,
+    notify_new_trade_request,
+    notify_trade_accepted_by_employee,
+    notify_trade_declined,
+    notify_trade_decision,
+)
 from core.permissions import (
     IsTenantManager,
     OwnEmployeeRecordPermission,
@@ -341,10 +349,15 @@ class AbsenceViewSet(TenantScopedViewSet):
             employee_profile = self.request.employee_profile
             if not employee_profile or target_employee.id != employee_profile.id:
                 raise PermissionDenied("Mitarbeitende dürfen nur eigene Absenzen anlegen.")
-        serializer.save(
+        absence = serializer.save(
             tenant=self.request.tenant,
             status=Absence.Status.APPROVED if is_manager else Absence.Status.PENDING,
         )
+        # Block 2.4: nur bei selbst-erstellten (PENDING) Absenzen -- von
+        # Admin/Planer angelegte sind sofort APPROVED, niemand muss dafür
+        # noch benachrichtigt werden.
+        if not is_manager:
+            notify_new_absence_request(absence)
 
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
@@ -353,6 +366,7 @@ class AbsenceViewSet(TenantScopedViewSet):
             raise ValidationError("Nur offene Absenzanträge können genehmigt werden.")
         absence.status = Absence.Status.APPROVED
         absence.save(update_fields=["status"])
+        notify_absence_decision(absence)
         return Response(self.get_serializer(absence).data)
 
     @action(detail=True, methods=["post"])
@@ -362,6 +376,7 @@ class AbsenceViewSet(TenantScopedViewSet):
             raise ValidationError("Nur offene Absenzanträge können abgelehnt werden.")
         absence.status = Absence.Status.REJECTED
         absence.save(update_fields=["status"])
+        notify_absence_decision(absence)
         return Response(self.get_serializer(absence).data)
 
 
@@ -430,6 +445,7 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
             if not employee_profile or requester_assignment.employee_id != employee_profile.id:
                 raise PermissionDenied("Mitarbeitende dürfen nur eigene Schichten zum Tausch anbieten.")
         super().perform_create(serializer)
+        notify_new_trade_request(serializer.instance)
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):
@@ -439,6 +455,7 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
             trade_request.accept()
         except DjangoValidationError as e:
             raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
+        notify_trade_accepted_by_employee(trade_request)
         return Response(self.get_serializer(trade_request).data)
 
     @action(detail=True, methods=["post"])
@@ -449,6 +466,7 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
             trade_request.approve()
         except DjangoValidationError as e:
             raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
+        notify_trade_decision(trade_request)
         return Response(self.get_serializer(trade_request).data)
 
     @action(detail=True, methods=["post"])
@@ -459,6 +477,7 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
             trade_request.reject()
         except DjangoValidationError as e:
             raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
+        notify_trade_decision(trade_request)
         return Response(self.get_serializer(trade_request).data)
 
     @action(detail=True, methods=["post"])
@@ -469,6 +488,7 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
         trade_request.status = ShiftTradeRequest.Status.DECLINED
         trade_request.resolved_at = timezone.now()
         trade_request.save(update_fields=["status", "resolved_at"])
+        notify_trade_declined(trade_request)
         return Response(self.get_serializer(trade_request).data)
 
     @action(detail=True, methods=["post"])

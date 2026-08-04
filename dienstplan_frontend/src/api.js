@@ -27,7 +27,25 @@ function notifyBalanceChanged() {
   balanceListeners.forEach((listener) => listener());
 }
 
-async function request(path, { method = "GET", body, base = API_BASE, affectsBalance = false } = {}) {
+// Block 2.4: analog zu onBalanceChanged, aber für die "offene Tasks"-Zähler
+// (GET /api/me/: task_counts) hinter den Header-Badges bei Abwesenheiten/
+// Diensttausch/Zeiterfassung -- eigener Kanal statt onBalanceChanged
+// wiederzuverwenden, weil beide Konzepte zwar oft gleichzeitig, aber nicht
+// zwingend zusammen ausgelöst werden (z. B. accept/decline/cancel einer
+// Tauschanfrage ändert nur den Task-Zähler, nicht den Saldo).
+const taskListeners = new Set();
+export function onTasksChanged(listener) {
+  taskListeners.add(listener);
+  return () => taskListeners.delete(listener);
+}
+function notifyTasksChanged() {
+  taskListeners.forEach((listener) => listener());
+}
+
+async function request(
+  path,
+  { method = "GET", body, base = API_BASE, affectsBalance = false, affectsTasks = false } = {}
+) {
   const headers = { "Content-Type": "application/json" };
   const token = getToken();
   if (token) headers.Authorization = `Token ${token}`;
@@ -60,6 +78,7 @@ async function request(path, { method = "GET", body, base = API_BASE, affectsBal
     throw error;
   }
   if (affectsBalance) notifyBalanceChanged();
+  if (affectsTasks) notifyTasksChanged();
   if (res.status === 204) return null;
   return res.json();
 }
@@ -122,29 +141,33 @@ export const api = {
   getAbsences: (employeeId) =>
     request(employeeId ? `/absences/?employee=${employeeId}` : "/absences/"),
   createAbsence: (payload) =>
-    request("/absences/", { method: "POST", body: payload, affectsBalance: true }),
+    request("/absences/", { method: "POST", body: payload, affectsBalance: true, affectsTasks: true }),
   deleteAbsence: (id) => request(`/absences/${id}/`, { method: "DELETE", affectsBalance: true }),
   approveAbsence: (id) =>
-    request(`/absences/${id}/approve/`, { method: "POST", affectsBalance: true }),
+    request(`/absences/${id}/approve/`, { method: "POST", affectsBalance: true, affectsTasks: true }),
   rejectAbsence: (id) =>
-    request(`/absences/${id}/reject/`, { method: "POST", affectsBalance: true }),
+    request(`/absences/${id}/reject/`, { method: "POST", affectsBalance: true, affectsTasks: true }),
 
   getShiftTradeRequests: () => request("/shift-trade-requests/"),
   createShiftTradeRequest: (payload) =>
-    request("/shift-trade-requests/", { method: "POST", body: payload }),
+    request("/shift-trade-requests/", { method: "POST", body: payload, affectsTasks: true }),
   acceptShiftTradeRequest: (id) =>
-    request(`/shift-trade-requests/${id}/accept/`, { method: "POST" }),
+    request(`/shift-trade-requests/${id}/accept/`, { method: "POST", affectsTasks: true }),
   declineShiftTradeRequest: (id) =>
-    request(`/shift-trade-requests/${id}/decline/`, { method: "POST" }),
+    request(`/shift-trade-requests/${id}/decline/`, { method: "POST", affectsTasks: true }),
   cancelShiftTradeRequest: (id) =>
-    request(`/shift-trade-requests/${id}/cancel/`, { method: "POST" }),
+    request(`/shift-trade-requests/${id}/cancel/`, { method: "POST", affectsTasks: true }),
   // approve() vollzieht den eigentlichen Tausch (siehe ShiftTradeRequest.approve
   // im Backend) -- verschiebt Zuweisungen zwischen zwei Mitarbeitenden und
   // beeinflusst damit den Saldo beider. accept/decline/cancel tun das nicht.
   approveShiftTradeRequest: (id) =>
-    request(`/shift-trade-requests/${id}/approve/`, { method: "POST", affectsBalance: true }),
+    request(`/shift-trade-requests/${id}/approve/`, {
+      method: "POST",
+      affectsBalance: true,
+      affectsTasks: true,
+    }),
   rejectShiftTradeRequest: (id) =>
-    request(`/shift-trade-requests/${id}/reject/`, { method: "POST" }),
+    request(`/shift-trade-requests/${id}/reject/`, { method: "POST", affectsTasks: true }),
 
   // Wunschfrei/Wunschdienst (Block 2.13): reine Selbstauskunft, kein Effekt
   // auf den Saldo -- deshalb kein affectsBalance.
@@ -160,10 +183,16 @@ export const api = {
       dateFrom && dateTo ? `/time-records/?date_from=${dateFrom}&date_to=${dateTo}` : "/time-records/"
     ),
   createTimeRecord: (payload) =>
-    request("/time-records/", { method: "POST", body: payload, affectsBalance: true }),
+    request("/time-records/", { method: "POST", body: payload, affectsBalance: true, affectsTasks: true }),
   updateTimeRecord: (id, payload) =>
-    request(`/time-records/${id}/`, { method: "PATCH", body: payload, affectsBalance: true }),
-  deleteTimeRecord: (id) => request(`/time-records/${id}/`, { method: "DELETE", affectsBalance: true }),
+    request(`/time-records/${id}/`, {
+      method: "PATCH",
+      body: payload,
+      affectsBalance: true,
+      affectsTasks: true,
+    }),
+  deleteTimeRecord: (id) =>
+    request(`/time-records/${id}/`, { method: "DELETE", affectsBalance: true, affectsTasks: true }),
   confirmTimeRecord: (id) =>
-    request(`/time-records/${id}/confirm/`, { method: "POST", affectsBalance: true }),
+    request(`/time-records/${id}/confirm/`, { method: "POST", affectsBalance: true, affectsTasks: true }),
 };

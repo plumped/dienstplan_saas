@@ -135,6 +135,14 @@ USE_I18N = True
 USE_TZ = True
 
 
+# E-Mail-Benachrichtigungen (MVP-Fahrplan Block 2.4, siehe core/notifications.py):
+# Console-Backend fürs lokale Dev/Testing -- gibt Mails auf stdout statt sie zu
+# versenden, kein SMTP-Server nötig. Für einen echten Betrieb muss das durch
+# einen SMTP-Backend (Postfach, SendGrid, ...) über Umgebungsvariablen ersetzt
+# werden -- siehe MVP-Fahrplan Block 4 (Produktionsreife).
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+DEFAULT_FROM_EMAIL = 'Dienstplan <noreply@dienstplan.example>'
+
 # Django REST Framework
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [

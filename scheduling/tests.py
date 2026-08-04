@@ -1,6 +1,7 @@
 from datetime import date, time, timedelta
 
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
@@ -2527,3 +2528,265 @@ class ShiftPreferenceTests(APITestCase):
             response = self.client.get("/api/shift-preferences/")
             self.assertEqual(response.status_code, status.HTTP_200_OK)
             self.assertEqual(len(response.data["results"]), 1)
+
+
+class NotificationsAndTaskCountsTests(APITestCase):
+    """
+    E-Mail-Benachrichtigungen (MVP-Fahrplan Block 2.4, core.notifications)
+    und task_counts in GET /api/me/ (Grundlage der Header-Badges bei
+    Abwesenheiten/Diensttausch/Zeiterfassung).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+        self.admin_user = User.objects.create_user(
+            username="admin", password="pw-not-real-123!", email="admin@example.com"
+        )
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+        self.alice_user = User.objects.create_user(
+            username="alice", password="pw-not-real-123!", email="alice@example.com"
+        )
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+        self.bob_user = User.objects.create_user(
+            username="bob", password="pw-not-real-123!", email="bob@example.com"
+        )
+        Membership.objects.create(user=self.bob_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.bob = Employee.objects.create(
+            tenant=self.tenant, user=self.bob_user, first_name="Bob", last_name="B", employment_pct=100
+        )
+        mail.outbox.clear()
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    # -- E-Mail-Benachrichtigungen --
+
+    def test_new_absence_request_notifies_managers(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/absences/",
+            {
+                "employee": self.alice.id,
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "type": "vacation",
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.admin_user.email, mail.outbox[0].to)
+
+    def test_admin_created_absence_sends_no_mail(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/absences/",
+            {
+                "employee": self.alice.id,
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "type": "vacation",
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_absence_approval_notifies_requester(self):
+        absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12)
+        )
+        mail.outbox.clear()
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/absences/{absence.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.alice_user.email, mail.outbox[0].to)
+
+    def test_absence_rejection_notifies_requester(self):
+        absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12)
+        )
+        mail.outbox.clear()
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/absences/{absence.id}/reject/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.alice_user.email, mail.outbox[0].to)
+
+    def test_new_trade_request_notifies_target(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": assignment.id, "target_employee": self.bob.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.bob_user.email, mail.outbox[0].to)
+
+    def test_trade_accept_notifies_managers(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=assignment, target_employee=self.bob
+        )
+        mail.outbox.clear()
+        self.auth_as(self.bob_user)
+        response = self.client.post(f"/api/shift-trade-requests/{trade.id}/accept/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.admin_user.email, mail.outbox[0].to)
+
+    def test_trade_decline_notifies_requester(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=assignment, target_employee=self.bob
+        )
+        mail.outbox.clear()
+        self.auth_as(self.bob_user)
+        response = self.client.post(f"/api/shift-trade-requests/{trade.id}/decline/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.alice_user.email, mail.outbox[0].to)
+
+    def test_trade_approve_notifies_both_parties(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=assignment,
+            target_employee=self.bob,
+            status=ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED,
+        )
+        mail.outbox.clear()
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/shift-trade-requests/{trade.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.alice_user.email, mail.outbox[0].to)
+        self.assertIn(self.bob_user.email, mail.outbox[0].to)
+
+    def test_trade_reject_notifies_both_parties(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=assignment,
+            target_employee=self.bob,
+            status=ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED,
+        )
+        mail.outbox.clear()
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/shift-trade-requests/{trade.id}/reject/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.alice_user.email, mail.outbox[0].to)
+        self.assertIn(self.bob_user.email, mail.outbox[0].to)
+
+    def test_employee_without_email_is_silently_skipped(self):
+        no_email_user = User.objects.create_user(username="noemail", password="pw-not-real-123!")
+        Membership.objects.create(user=no_email_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        no_email_employee = Employee.objects.create(
+            tenant=self.tenant, user=no_email_user, first_name="Kein", last_name="Mail", employment_pct=100
+        )
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": assignment.id, "target_employee": no_email_employee.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(mail.outbox), 0)
+
+    # -- task_counts (Header-Badges) --
+
+    def auth_and_get_me(self, user):
+        self.auth_as(user)
+        return self.client.get("/api/me/")
+
+    def test_admin_sees_pending_absence_count(self):
+        Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12)
+        )
+        response = self.auth_and_get_me(self.admin_user)
+        self.assertEqual(response.data["task_counts"]["absences"], 1)
+
+    def test_employee_sees_zero_absence_count(self):
+        Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12)
+        )
+        response = self.auth_and_get_me(self.alice_user)
+        self.assertEqual(response.data["task_counts"]["absences"], 0)
+
+    def test_admin_trade_count_only_counts_employee_accepted(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=assignment, target_employee=self.bob
+        )
+        response = self.auth_and_get_me(self.admin_user)
+        self.assertEqual(response.data["task_counts"]["trades"], 0)  # noch PENDING
+
+        trade.accept()
+        response = self.auth_and_get_me(self.admin_user)
+        self.assertEqual(response.data["task_counts"]["trades"], 1)
+
+    def test_employee_trade_count_only_own_pending_as_target(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=assignment, target_employee=self.bob
+        )
+        bob_response = self.auth_and_get_me(self.bob_user)
+        self.assertEqual(bob_response.data["task_counts"]["trades"], 1)
+
+        alice_response = self.auth_and_get_me(self.alice_user)
+        self.assertEqual(alice_response.data["task_counts"]["trades"], 0)
+
+    def test_admin_sees_submitted_time_record_count(self):
+        past_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node,
+            date=date(2026, 7, 27),
+            template=self.template,
+        )
+        TimeRecord.objects.create(
+            tenant=self.tenant, assignment=past_assignment, actual_start=time(8, 0), actual_end=time(16, 0)
+        )
+        response = self.auth_and_get_me(self.admin_user)
+        self.assertEqual(response.data["task_counts"]["time_records"], 1)
+
+    def test_hr_sees_zero_task_counts(self):
+        Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12)
+        )
+        hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
+        Membership.objects.create(user=hr_user, tenant=self.tenant, role=Membership.Role.HR)
+        response = self.auth_and_get_me(hr_user)
+        self.assertEqual(response.data["task_counts"], {"absences": 0, "trades": 0, "time_records": 0})

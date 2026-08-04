@@ -143,7 +143,15 @@ class MeViewTests(APITestCase):
         self.auth_as(user)
         response = self.client.get("/api/me/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {"role": None, "tenant_name": None, "employee": None})
+        self.assertEqual(
+            response.data,
+            {
+                "role": None,
+                "tenant_name": None,
+                "employee": None,
+                "task_counts": {"absences": 0, "trades": 0, "time_records": 0},
+            },
+        )
 
     def test_planner_without_employee_profile(self):
         tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")

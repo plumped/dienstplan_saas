@@ -3,9 +3,53 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.models import Membership
 from core.permissions import IsTenantAdmin
 from core.serializers import TenantSerializer
 from core.tenancy import resolve_membership_for_user
+
+_EMPTY_TASK_COUNTS = {"absences": 0, "trades": 0, "time_records": 0}
+
+
+def _task_counts(membership, employee):
+    """
+    "Offene Tasks"-Zähler für die Header-Badges (MVP-Fahrplan Block 2.4):
+    Admin/Planer sehen, was auf tenant-weite Freigabe wartet; Mitarbeitende
+    sehen nur eigene, tatsächlich an sie persönlich adressierte Tasks
+    (Tauschanfragen, bei denen sie die Zielperson sind) -- Absenzen/
+    Zeiterfassung genehmigen sie ohnehin nicht, dort bleibt der Zähler 0.
+    Import von scheduling.models hier aus demselben Grund wie in MeView.get()
+    (core bleibt die "unterste" App).
+    """
+    from scheduling.models import Absence, ShiftTradeRequest, TimeRecord
+
+    if membership.role in (Membership.Role.ADMIN, Membership.Role.PLANNER):
+        return {
+            "absences": Absence.all_objects.filter(
+                tenant=membership.tenant, status=Absence.Status.PENDING
+            ).count(),
+            # EMPLOYEE_ACCEPTED, nicht PENDING: das ist der Stand, an dem die
+            # Anfrage tatsächlich auf Admin/Planer-Freigabe wartet (siehe
+            # ShiftTradeRequest-Docstring) -- ein PENDING-Request wartet in
+            # aller Regel zuerst auf die Zielperson.
+            "trades": ShiftTradeRequest.all_objects.filter(
+                tenant=membership.tenant, status=ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
+            ).count(),
+            "time_records": TimeRecord.all_objects.filter(
+                tenant=membership.tenant, status=TimeRecord.Status.SUBMITTED
+            ).count(),
+        }
+    if membership.role == Membership.Role.EMPLOYEE and employee:
+        return {
+            "absences": 0,
+            "trades": ShiftTradeRequest.all_objects.filter(
+                tenant=membership.tenant,
+                target_employee=employee,
+                status=ShiftTradeRequest.Status.PENDING,
+            ).count(),
+            "time_records": 0,
+        }
+    return dict(_EMPTY_TASK_COUNTS)
 
 
 class MeView(APIView):
@@ -27,7 +71,9 @@ class MeView(APIView):
 
         membership = resolve_membership_for_user(request.user)
         if not membership:
-            return Response({"role": None, "tenant_name": None, "employee": None})
+            return Response(
+                {"role": None, "tenant_name": None, "employee": None, "task_counts": dict(_EMPTY_TASK_COUNTS)}
+            )
 
         employee = Employee.all_objects.filter(tenant=membership.tenant, user=request.user).first()
         return Response(
@@ -43,6 +89,7 @@ class MeView(APIView):
                     if employee
                     else None
                 ),
+                "task_counts": _task_counts(membership, employee),
             }
         )
 

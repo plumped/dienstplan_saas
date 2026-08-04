@@ -98,6 +98,7 @@ export default function TenantSettings({ onError }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState({});
 
   useEffect(() => {
     let cancelled = false;
@@ -121,12 +122,19 @@ export default function TenantSettings({ onError }) {
       const value = type === "checkbox" ? event.target.checked : event.target.value;
       setForm((prev) => ({ ...prev, [key]: value }));
       setSaved(false);
+      setFieldErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
     };
+  }
+
+  function fieldError(key) {
+    const message = fieldErrors[key]?.[0];
+    return message ? <span className="field-error">{message}</span> : null;
   }
 
   async function handleSubmit(event) {
     event.preventDefault();
     setSaving(true);
+    setFieldErrors({});
     try {
       const payload = {};
       for (const group of FIELD_GROUPS) {
@@ -140,6 +148,7 @@ export default function TenantSettings({ onError }) {
       setForm(updated);
       setSaved(true);
     } catch (e) {
+      if (e.fields && typeof e.fields === "object") setFieldErrors(e.fields);
       onError(e.message);
     } finally {
       setSaving(false);
@@ -172,6 +181,7 @@ export default function TenantSettings({ onError }) {
                   {field.label}
                 </label>
                 <span className="panel-hint">{field.hint}</span>
+                {fieldError(field.key)}
               </div>
             ) : (
               <label key={field.key}>
@@ -184,6 +194,7 @@ export default function TenantSettings({ onError }) {
                   required
                 />
                 <span className="panel-hint">{field.hint}</span>
+                {fieldError(field.key)}
               </label>
             )
           )}

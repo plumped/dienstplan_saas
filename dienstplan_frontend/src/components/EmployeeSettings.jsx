@@ -45,12 +45,19 @@ function selectedOptions(select) {
 // bisher nur im Django-Admin editierbar, den ein Planer (Membership.Role.
 // PLANNER) normalerweise gar nicht erreicht (separates Berechtigungssystem
 // über User.is_staff).
+//
+// Block 2.16: Formular in Abschnitte gegliedert (fieldset), Felder mit
+// Erklärtext analog zum Django-Admin-help_text, Fehler direkt am Feld statt
+// nur im globalen Banner (error.fields aus api.js), Textfilter über der
+// Liste ab realistischer Praxisgrösse (30+ Mitarbeitende).
 export default function EmployeeSettings({ nodes, skills, onError }) {
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState({});
+  const [filter, setFilter] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -68,11 +75,21 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
   function startEditing(employee) {
     setEditingId(employee.id);
     setForm(toFormValues(employee));
+    setFieldErrors({});
   }
 
   function startCreating() {
     setEditingId(null);
     setForm(emptyForm());
+    setFieldErrors({});
+  }
+
+  function updateField(key) {
+    return (e) => {
+      const value = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+      setForm((prev) => ({ ...prev, [key]: value }));
+      setFieldErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
+    };
   }
 
   async function handleSubmit(event) {
@@ -96,6 +113,7 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
       last_night_work_medical_exam_date: form.last_night_work_medical_exam_date || null,
     };
     setSaving(true);
+    setFieldErrors({});
     try {
       if (editingId) {
         const updated = await api.updateEmployee(editingId, payload);
@@ -106,6 +124,7 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
       }
       startCreating();
     } catch (e) {
+      if (e.fields && typeof e.fields === "object") setFieldErrors(e.fields);
       onError(e.message);
     } finally {
       setSaving(false);
@@ -116,149 +135,172 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
     return ids.map((id) => nodes.find((n) => n.id === id)?.name ?? `#${id}`).join(", ") || "—";
   }
 
+  function fieldError(key) {
+    const message = fieldErrors[key]?.[0];
+    return message ? <span className="field-error">{message}</span> : null;
+  }
+
+  const filteredEmployees = employees.filter((emp) =>
+    `${emp.first_name} ${emp.last_name}`.toLowerCase().includes(filter.trim().toLowerCase())
+  );
+
   return (
     <div className="side-panel">
       <form className="panel-form" onSubmit={handleSubmit}>
         <h2>{editingId ? "Mitarbeiter bearbeiten" : "Mitarbeiter anlegen"}</h2>
-        <div className="panel-form-row">
+
+        <fieldset className="panel-form-group">
+          <h3>Stammdaten</h3>
+          <div className="panel-form-row">
+            <label>
+              Vorname
+              <input type="text" value={form.first_name} onChange={updateField("first_name")} required />
+              {fieldError("first_name")}
+            </label>
+            <label>
+              Nachname
+              <input type="text" value={form.last_name} onChange={updateField("last_name")} required />
+              {fieldError("last_name")}
+            </label>
+          </div>
+          <div className="panel-form-row">
+            <label>
+              Geburtsdatum (optional)
+              <input type="date" value={form.birth_date} onChange={updateField("birth_date")} />
+              <span className="panel-hint">
+                Nötig für den Jugendschutz (ArGV 5) bei Lernenden unter 18 Jahren -- ohne Angabe gilt die
+                Person als volljährig.
+              </span>
+              {fieldError("birth_date")}
+            </label>
+            <label>
+              Pensum (%)
+              <input
+                type="number"
+                min="1"
+                max="100"
+                value={form.employment_pct}
+                onChange={updateField("employment_pct")}
+                required
+              />
+              {fieldError("employment_pct")}
+            </label>
+          </div>
+          <div className="panel-form-row">
+            <label>
+              Stationen
+              <select
+                multiple
+                value={form.nodes}
+                onChange={(e) => setForm((prev) => ({ ...prev, nodes: selectedOptions(e.target) }))}
+              >
+                {nodes.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.name}
+                  </option>
+                ))}
+              </select>
+              {fieldError("nodes")}
+            </label>
+            <label>
+              Skills
+              <select
+                multiple
+                value={form.skills}
+                onChange={(e) => setForm((prev) => ({ ...prev, skills: selectedOptions(e.target) }))}
+              >
+                {skills.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+              {fieldError("skills")}
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset className="panel-form-group">
+          <h3>Wochenstunden-Override (Block 1.14)</h3>
+          <p className="panel-hint">
+            Beide Felder leer lassen, um die Tenant-weiten Standardwerte zu übernehmen -- nur setzen, wenn
+            diese Person vertraglich abweicht (z. B. Ärzteschaft mit 50h statt 42h).
+          </p>
+          <div className="panel-form-row">
+            <label>
+              Höchstarbeitszeit/Woche, Std.
+              <input
+                type="number"
+                min="1"
+                max="80"
+                placeholder="z. B. 50 für Ärzteschaft"
+                value={form.maximum_weekly_hours}
+                onChange={updateField("maximum_weekly_hours")}
+              />
+              <span className="panel-hint">Gesetzliche/GAV-Höchstgrenze (Art. 9 ArG).</span>
+              {fieldError("maximum_weekly_hours")}
+            </label>
+            <label>
+              Normalarbeitszeit/Woche, Std.
+              <input
+                type="number"
+                min="1"
+                max="80"
+                placeholder="z. B. 42"
+                value={form.standard_weekly_hours}
+                onChange={updateField("standard_weekly_hours")}
+              />
+              <span className="panel-hint">Soll-Basis für die Überzeitberechnung (Art. 13 ArG).</span>
+              {fieldError("standard_weekly_hours")}
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset className="panel-form-group">
+          <h3>Saldo & Zeiterfassung (Block 2.7 / 1.5)</h3>
+          <div className="panel-form-row">
+            <label>
+              Ferienanspruch/Jahr, Tage
+              <input
+                type="number"
+                min="0"
+                max="60"
+                placeholder="z. B. 25"
+                value={form.vacation_days_per_year}
+                onChange={updateField("vacation_days_per_year")}
+              />
+              <span className="panel-hint">Leer = Tenant-Standard (Art. 329a Abs. 1 OR: 20 Tage Minimum).</span>
+              {fieldError("vacation_days_per_year")}
+            </label>
+            <label>
+              Überstunden-Startsaldo, Std.
+              <input
+                type="number"
+                step="0.5"
+                value={form.overtime_balance_carryover_hours}
+                onChange={updateField("overtime_balance_carryover_hours")}
+              />
+              <span className="panel-hint">Beim Systemstart übernommen, z. B. aus der Vorsystem-Zeiterfassung.</span>
+              {fieldError("overtime_balance_carryover_hours")}
+            </label>
+          </div>
           <label>
-            Vorname
-            <input
-              type="text"
-              value={form.first_name}
-              onChange={(e) => setForm((prev) => ({ ...prev, first_name: e.target.value }))}
-              required
-            />
-          </label>
-          <label>
-            Nachname
-            <input
-              type="text"
-              value={form.last_name}
-              onChange={(e) => setForm((prev) => ({ ...prev, last_name: e.target.value }))}
-              required
-            />
-          </label>
-        </div>
-        <div className="panel-form-row">
-          <label>
-            Geburtsdatum (optional, für Jugendschutz)
+            Letzte arbeitsmedizinische Untersuchung
             <input
               type="date"
-              value={form.birth_date}
-              onChange={(e) => setForm((prev) => ({ ...prev, birth_date: e.target.value }))}
+              value={form.last_night_work_medical_exam_date}
+              onChange={updateField("last_night_work_medical_exam_date")}
             />
+            <span className="panel-hint">
+              Nur relevant bei regelmässiger Nachtarbeit (Art. 17c ArG) -- wird nur ausgewertet, wenn die
+              Person laut Saldo/Zeiterfassung regelmässig nachts arbeitet.
+            </span>
+            {fieldError("last_night_work_medical_exam_date")}
           </label>
-          <label>
-            Pensum (%)
-            <input
-              type="number"
-              min="1"
-              max="100"
-              value={form.employment_pct}
-              onChange={(e) => setForm((prev) => ({ ...prev, employment_pct: e.target.value }))}
-              required
-            />
-          </label>
-        </div>
-        <div className="panel-form-row">
-          <label>
-            Stationen
-            <select
-              multiple
-              value={form.nodes}
-              onChange={(e) => setForm((prev) => ({ ...prev, nodes: selectedOptions(e.target) }))}
-            >
-              {nodes.map((n) => (
-                <option key={n.id} value={n.id}>
-                  {n.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Skills
-            <select
-              multiple
-              value={form.skills}
-              onChange={(e) => setForm((prev) => ({ ...prev, skills: selectedOptions(e.target) }))}
-            >
-              {skills.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-        <div className="panel-form-row">
-          <label>
-            Höchstarbeitszeit/Woche, Std. (Block 1.14 -- leer = Tenant-Standard)
-            <input
-              type="number"
-              min="1"
-              max="80"
-              placeholder="z. B. 50 für Ärzteschaft"
-              value={form.maximum_weekly_hours}
-              onChange={(e) => setForm((prev) => ({ ...prev, maximum_weekly_hours: e.target.value }))}
-            />
-          </label>
-          <label>
-            Normalarbeitszeit/Woche, Std. (Soll für Überzeit -- leer = Tenant-Standard)
-            <input
-              type="number"
-              min="1"
-              max="80"
-              placeholder="z. B. 42"
-              value={form.standard_weekly_hours}
-              onChange={(e) => setForm((prev) => ({ ...prev, standard_weekly_hours: e.target.value }))}
-            />
-          </label>
-        </div>
-        <div className="panel-form-row">
-          <label>
-            Ferienanspruch/Jahr, Tage (Block 2.7 -- leer = Tenant-Standard)
-            <input
-              type="number"
-              min="0"
-              max="60"
-              placeholder="z. B. 25"
-              value={form.vacation_days_per_year}
-              onChange={(e) => setForm((prev) => ({ ...prev, vacation_days_per_year: e.target.value }))}
-            />
-          </label>
-          <label>
-            Überstunden-Startsaldo, Std. (Block 2.7 -- beim Systemstart übernommen)
-            <input
-              type="number"
-              step="0.5"
-              value={form.overtime_balance_carryover_hours}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, overtime_balance_carryover_hours: e.target.value }))
-              }
-            />
-          </label>
-        </div>
-        <label>
-          Letzte arbeitsmedizinische Untersuchung (Block 1.5)
-          <input
-            type="date"
-            value={form.last_night_work_medical_exam_date}
-            onChange={(e) =>
-              setForm((prev) => ({ ...prev, last_night_work_medical_exam_date: e.target.value }))
-            }
-          />
-          <span className="panel-hint">
-            Nur relevant bei regelmässiger Nachtarbeit (Art. 17c ArG) -- wird nur ausgewertet, wenn
-            die Person laut Saldo/Zeiterfassung regelmässig nachts arbeitet.
-          </span>
-        </label>
+        </fieldset>
+
         <label className="checkbox-row">
-          <input
-            type="checkbox"
-            checked={form.is_active}
-            onChange={(e) => setForm((prev) => ({ ...prev, is_active: e.target.checked }))}
-          />
+          <input type="checkbox" checked={form.is_active} onChange={updateField("is_active")} />
           Aktiv (deaktivierte Mitarbeitende erscheinen nicht mehr im Planblatt)
         </label>
         <div className="entry-actions">
@@ -275,13 +317,24 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
 
       <div className="panel-list">
         <h2>Mitarbeitende</h2>
+        {employees.length > 8 && (
+          <input
+            type="search"
+            className="panel-list-filter"
+            placeholder="Name filtern …"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+        )}
         {loading ? (
           <p className="loading-state">Wird geladen …</p>
         ) : !employees.length ? (
           <p className="empty-state">Noch keine Mitarbeitenden angelegt.</p>
+        ) : !filteredEmployees.length ? (
+          <p className="empty-state">Keine Mitarbeitenden gefunden.</p>
         ) : (
           <ul className="entry-list">
-            {employees.map((emp) => (
+            {filteredEmployees.map((emp) => (
               <li key={emp.id} className="entry-list-item">
                 {!emp.is_active && <span className="status-badge status-badge--cancelled">Inaktiv</span>}
                 <span className="entry-main">

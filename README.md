@@ -618,31 +618,36 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     (`maximum_weekly_hours`, `standard_weekly_hours`, `vacation_days_per_year`), die ebenfalls
     immer sichtbar sind statt bedingt versteckt, und ohne den zusätzlichen API-Aufwand, "ist diese
     Person aktuell regelmässige Nachtarbeiterin" pro Zeile in der Mitarbeitendenliste zu ermitteln.
-16. **UX-Überarbeitung der gesamten Einstellungen-Oberfläche**: über die fehlende
-    Tenant-Konfiguration (Punkt 14) hinaus wirkt die bestehende Oberfläche (`SettingsPanel.jsx` +
-    die vier Untermodule) insgesamt wenig selbsterklärend, gerade für eine nicht-technische
-    Praxisleitung. Konkrete Ansatzpunkte:
-    - **Einstiegsseite statt sofortigem Sprung ins erste Modul**: aktuell öffnet der Tab immer
-      direkt "Schichttypen" (`useState("templates")`); eine Kachel-/Karten-Übersicht mit
-      Kurzbeschreibung pro Modul (inkl. des neuen Tenant-Moduls aus Punkt 14) würde erst zeigen,
-      *was* sich wo einstellen lässt, bevor man in ein Formular springt.
-    - **Lange Formulare gliedern**: `EmployeeSettings.jsx` und das neue Tenant-Modul haben viele
-      Felder auf einer Ebene ohne visuelle Gruppierung (Stammdaten vs. Wochenstunden-Override vs.
-      Saldo-Startwerte); Abschnittsüberschriften oder Akkordeons würden das entzerren.
-    - **Feldnahe Erklärungen statt reinem Label**: der Django-Admin liefert zu praktisch jedem
-      Feld einen erklärenden `help_text` (Gesetzesartikel, Beispiel, Default-Begründung) -- im
-      Frontend gibt es aktuell nur nackte Labels wie "Wochenhöchststunden". Diese Erklärungen
-      sollten (gekürzt) als Tooltip/Hilfetext neben dem Feld erscheinen, nicht nur im Admin.
-    - **Feldbezogene statt nur globaler Fehlermeldungen**: `onError`/`setError` in `App.jsx` zeigt
-      aktuell einen einzigen globalen Banner für den gesamten Tab -- bei einem Formular mit vielen
-      Feldern (z. B. "Ruhezeit darf nicht negativ sein") ist unklar, welches Feld betroffen ist.
-      Serverseitige Validierungsfehler pro Feld (DRF liefert sie bereits strukturiert) sollten
-      direkt am Feld angezeigt werden.
-    - **Suchfunktion in langen Listen**: `EmployeeSettings`/`SkillSettings` zeigen alle Einträge
-      als flache Liste -- bei 30+ Mitarbeitenden (realistische Praxisgrösse laut Zielgruppe oben)
-      wird das unübersichtlich; ein einfaches Textfilter-Feld über der Liste würde reichen.
-    - *Bewusst kein fixes Detail-Design hier festgelegt* -- diese Punkte sind Ansatzpunkte für eine
-      Überarbeitung, keine fertige Spezifikation.
+16. ✅ **UX-Überarbeitung der gesamten Einstellungen-Oberfläche**: alle fünf Ansatzpunkte
+    umgesetzt (kein fixes Detail-Design war vorgegeben, siehe Umsetzung als Antwort auf die
+    jeweils offen formulierte Frage):
+    - **Einstiegsseite** (`SettingsPanel.jsx`): `module`-State startet jetzt bei `null` statt
+      `"templates"` -- zeigt eine Kachel-Übersicht (`.settings-module-grid`) mit Kurzbeschreibung
+      pro Modul (inkl. des Tenant-Moduls aus Punkt 14, dort mit Admin-only-Hinweis in der
+      Beschreibung selbst). Klick auf eine Kachel öffnet das Modul, ein "← Übersicht"-Link in der
+      Modul-Navigation führt zurück.
+    - **Formulare gegliedert**: `EmployeeSettings.jsx` in drei `<fieldset>`-Abschnitte
+      ("Stammdaten", "Wochenstunden-Override (Block 1.14)", "Saldo & Zeiterfassung (Block 2.7 /
+      1.5)") -- dieselbe `.panel-form-group`-Klasse, die `TenantSettings.jsx` (Punkt 14) bereits
+      für seine fünf Themenblöcke nutzt.
+    - **Feldnahe Erklärungen**: `EmployeeSettings.jsx` hat jetzt zu den ArG-/GAV-relevanten
+      Feldern (Geburtsdatum, Wochenstunden-Override, Ferienanspruch, arbeitsmedizinische
+      Untersuchung) denselben `.panel-hint`-Text wie der Django-Admin-`help_text`, nicht mehr nur
+      knappe Klammer-Hinweise im Label.
+    - **Feldbezogene Fehlermeldungen**: `api.js: request()` hängt die von DRF strukturiert
+      gelieferten Validierungsfehler jetzt zusätzlich als `error.fields` an (`.message` bleibt für
+      bestehende Aufrufer unverändert ein einzelner String, rein additiv). `EmployeeSettings.jsx`
+      und `TenantSettings.jsx` zeigen `error.fields[feldname]` direkt unter dem betroffenen Feld
+      (`.field-error`, in `--warn`-Farbe) zusätzlich zum weiterhin bestehenden globalen Banner --
+      geprüft per Vergleich mit der tatsächlichen DRF-Fehlerform (`curl -X PATCH .../api/tenant/`
+      mit ungültigem Wert liefert exakt `{"feldname": ["Meldung"]}`).
+    - **Suchfunktion**: Textfilter (`.panel-list-filter`) über der Liste in `EmployeeSettings.jsx`
+      und `SkillSettings.jsx`, erscheint erst ab 8 Einträgen (kleine Listen brauchen keinen
+      Filter). `NodeSettings.jsx`/`TimeTemplateSettings.jsx` bewusst ausgenommen -- typische
+      Stations-/Schichttyp-Anzahl pro Tenant bleibt klein, ein Filter wäre dort Overhead ohne
+      echten Nutzen.
+    - Manuell im Browser verifiziert (Playwright): Kachel-Übersicht, Formular-Gliederung,
+      Hint-Texte, Suchfilter (11 Testmitarbeitende, korrekt gefiltert), Rücksprung zur Übersicht.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

@@ -49,7 +49,15 @@ async function request(path, { method = "GET", body, base = API_BASE, affectsBal
       detail.detail ||
       Object.values(detail)[0]?.[0] ||
       `Fehler (HTTP ${res.status})`;
-    throw new Error(message);
+    const error = new Error(message);
+    // Block 2.16: DRF liefert Validierungsfehler strukturiert pro Feld
+    // (z. B. {"minimum_rest_hours": ["..."]}) -- .message bleibt wie bisher
+    // ein einzelner String für Aufrufer, die nur den globalen Fehlerbanner
+    // füllen; .fields gibt Formularen mit vielen Feldern (EmployeeSettings,
+    // TenantSettings) die Möglichkeit, Fehler direkt am betroffenen Feld
+    // statt nur global anzuzeigen.
+    error.fields = detail;
+    throw error;
   }
   if (affectsBalance) notifyBalanceChanged();
   if (res.status === 204) return null;

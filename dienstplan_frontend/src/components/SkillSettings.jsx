@@ -6,6 +6,8 @@ export default function SkillSettings({ skills, onCreated, onUpdated, onDeleted,
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState("");
+  const [filter, setFilter] = useState("");
+  const filteredSkills = skills.filter((s) => s.name.toLowerCase().includes(filter.trim().toLowerCase()));
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -61,11 +63,22 @@ export default function SkillSettings({ skills, onCreated, onUpdated, onDeleted,
 
       <div className="panel-list">
         <h2>Skills</h2>
+        {skills.length > 8 && (
+          <input
+            type="search"
+            className="panel-list-filter"
+            placeholder="Name filtern …"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
+        )}
         {!skills.length ? (
           <p className="empty-state">Noch keine Skills angelegt.</p>
+        ) : !filteredSkills.length ? (
+          <p className="empty-state">Keine Skills gefunden.</p>
         ) : (
           <ul className="entry-list">
-            {skills.map((s) => (
+            {filteredSkills.map((s) => (
               <li key={s.id} className="entry-list-item">
                 <span className="entry-main">
                   {editingId === s.id ? (

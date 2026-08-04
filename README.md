@@ -530,6 +530,11 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Praxen besonders wichtig, auch wenn diese App selbst keine Patientendaten speichert).
 4. **CI-Pipeline**: Tests + Migration-Check vor jedem Deploy (heute nur lokal per
    `python manage.py test` ausführbar).
+5. **Automatisierte Frontend-Tests**: `dienstplan_frontend` hat aktuell keine persistierte
+   Testsuite -- jedes Feature wurde bei der Entwicklung manuell per Playwright im Browser
+   verifiziert, aber nichts davon liegt als wiederholbarer Test im Repo. Regressionen im
+   Frontend fallen damit nicht automatisch auf, anders als im Backend (155 Tests, `python
+   manage.py test`).
 
 ### 5. Datenschutz (revDSG) & Rechtliches
 

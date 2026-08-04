@@ -244,7 +244,9 @@ class EmployeeViewSet(TenantScopedViewSet):
             except ValueError:
                 raise ValidationError({"as_of": "Ungültiges Datum, erwartet YYYY-MM-DD."})
         else:
-            as_of_date = timezone.localdate()
+            as_of_date = None
+
+        response_date = as_of_date or timezone.localdate()
 
         year_param = request.query_params.get("year")
         if year_param:
@@ -253,12 +255,15 @@ class EmployeeViewSet(TenantScopedViewSet):
             except ValueError:
                 raise ValidationError({"year": "Ungültiges Jahr."})
         else:
-            year = as_of_date.year
+            year = response_date.year
 
+        # as_of_date bewusst nur weiterreichen, wenn die Anfrage explizit einen
+        # Stichtag angibt -- ohne ?as_of= soll der Saldo alle Wochen inkl.
+        # künftig geplanter Zuweisungen umfassen (siehe Employee.overtime_summary).
         overtime = employee.overtime_summary(as_of_date)
         vacation = employee.vacation_balance(year)
         data = {
-            "as_of": as_of_date,
+            "as_of": response_date,
             "overtime_balance_hours": overtime["balance_hours"],
             "overtime_is_provisional": overtime["is_provisional"],
             "vacation_year": vacation["year"],

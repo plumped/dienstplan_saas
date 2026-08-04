@@ -357,6 +357,14 @@ class Employee(TenantScopedModel):
         als hätte der Mitarbeiter in einer Woche vor Anstellungsbeginn oder
         in einer Lücke die volle Sollzeit verpasst.
 
+        as_of_date=None (Normalfall, z.B. Topbar-Badge/Settings-Liste) bezieht
+        *alle* Wochen mit Zuweisung ein, auch künftig geplante -- Zuweisungen
+        zählen laut is_provisional/weekly_hours_summary bewusst sofort, nicht
+        erst ab ihrem Datum. Wird as_of_date dagegen explizit übergeben (z.B.
+        eine Saldo-Momentaufnahme "Stand <Datum>"), begrenzt das die
+        einbezogenen Wochen auf date__lte=as_of_date, wie von Aufrufern
+        erwartet, die bewusst einen historischen/zukünftigen Stichtag angeben.
+
         `is_provisional` (Block 2.7 UX-Nachbesserung): True, wenn der Saldo
         mindestens eine ungeprüfte Schicht enthält (siehe
         weekly_hours_summary). Der Saldo selbst ist trotzdem schon jetzt
@@ -365,10 +373,10 @@ class Employee(TenantScopedModel):
         falschen Eindruck zu erwecken, ungeprüfte Erfassungen zählten noch
         nicht mit.
         """
-        as_of_date = as_of_date or timezone.localdate()
-        assignment_dates = ShiftAssignment.all_objects.filter(
-            employee=self, date__lte=as_of_date
-        ).values_list("date", flat=True)
+        assignment_qs = ShiftAssignment.all_objects.filter(employee=self)
+        if as_of_date is not None:
+            assignment_qs = assignment_qs.filter(date__lte=as_of_date)
+        assignment_dates = assignment_qs.values_list("date", flat=True)
         week_starts = {d - timedelta(days=d.weekday()) for d in assignment_dates}
 
         balance = self.overtime_balance_carryover_hours

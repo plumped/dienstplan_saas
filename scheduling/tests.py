@@ -1509,6 +1509,15 @@ class EmployeeBalanceTests(APITestCase):
         balance = self.employee.overtime_balance(date(2026, 8, 10))
         self.assertEqual(balance, -34.0)
 
+    def test_overtime_balance_without_as_of_includes_future_assignments(self):
+        # Bugfix: eine für einen künftigen Monat verplante Schicht muss sofort
+        # in den Saldo einfliessen (wie is_provisional/weekly_hours_summary es
+        # vorsehen), nicht erst, sobald "heute" ihr Datum erreicht.
+        self._assign(self.employee, date(2026, 8, 3))  # 8h in einer 42h-Soll-Woche -> -34h
+        self._assign(self.employee, date(2027, 3, 15))  # weit in der Zukunft -> -34h
+        balance = self.employee.overtime_balance()
+        self.assertEqual(balance, -68.0)
+
     # --- is_provisional (UX-Nachbesserung: Saldo ist rechnerisch sofort aktuell, auch vor
     # der Prüfung -- das Flag macht das im Frontend nur transparent) ---
 
@@ -1632,6 +1641,17 @@ class EmployeeBalanceTests(APITestCase):
         self.auth_as(self.planner_user)
         response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=not-a-date")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_api_without_as_of_includes_future_assignments(self):
+        # Bugfix: das Frontend ruft balance/ nie mit ?as_of= auf -- ohne den
+        # Parameter muss eine für einen künftigen Monat verplante Schicht
+        # trotzdem sofort im Saldo auftauchen.
+        self._assign(self.employee, date(2026, 8, 3))  # 8h in einer 42h-Soll-Woche -> -34h
+        self._assign(self.employee, date(2027, 3, 15))  # weit in der Zukunft -> -34h
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/balance/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["overtime_balance_hours"], -68.0)
 
 
 class ShiftTradeRequestTests(TestCase):

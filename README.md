@@ -481,6 +481,24 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
        Speichern einer Ist-Zeit sofort eine kurze, farblich neutrale Zeile mit der Wochenbilanz der
        betroffenen Kalenderwoche (Ist/Soll/Delta, via `GET /api/employees/{id}/weekly-overtime/`),
        statt den Effekt nur indirekt über den Topbar erahnen zu lassen.
+   - ✅ **Bugfix (2026-08)**: `Employee.overtime_summary()` schloss Zuweisungen, die nach dem
+     Stichtag liegen, implizit über den Query-Filter `date__lte=as_of_date` aus -- und
+     `EmployeeViewSet.balance()` löste `as_of_date` *immer* auf ein konkretes Datum auf
+     (`?as_of=` fehlt → "heute"), selbst wenn die Anfrage gar keinen Stichtag verlangt hatte. Das
+     Frontend ruft `balance/` nirgends mit `?as_of=` auf (`api.js: getEmployeeBalance`), also griff
+     dieser Default in der Praxis immer -- eine für einen künftigen Monat verplante Schicht (z. B.
+     bei der Diensteinplanung für den nächsten Monat) fehlte dadurch komplett im Saldo (Topbar,
+     Mitarbeitenden-Verwaltung, Planblatt-Grid-Spalte), bis "heute" ihr Datum erreichte. Das
+     widersprach sowohl der oben dokumentierten Definition ("alle Kalenderwochen, in denen der
+     Mitarbeiter mindestens eine Zuweisung hatte", ohne Stichtag-Einschränkung) als auch dem
+     `is_provisional`-Designziel, dass auch ungeprüfte/künftige Zuweisungen sofort mitzählen sollen.
+     Fix: `overtime_summary(as_of_date=None)` filtert nur noch, wenn `as_of_date` **explizit**
+     übergeben wird (z. B. für eine historische Stichtag-Momentaufnahme) -- der API-Default lässt
+     `as_of_date` jetzt `None`, sodass ohne `?as_of=` wirklich alle Wochen einbezogen werden, auch
+     künftige. Das Antwortfeld `as_of` in der API zeigt weiterhin das heutige Datum (nur der
+     interne Berechnungs-Stichtag wurde entkoppelt). Siehe `test_overtime_balance_without_as_of_
+     includes_future_assignments` (Modell) und `test_api_without_as_of_includes_future_assignments`
+     (API) in `scheduling/tests.py`.
 8. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
    eine belegte Zelle wird abgelehnt statt getauscht).
 9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn

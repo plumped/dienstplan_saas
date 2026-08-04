@@ -129,6 +129,30 @@ ihre eigene per `migrate`.
   es die volle Planer-Oberfläche oder die read-only Self-Service-Ansicht zeigt (siehe Frontend-
   Abschnitt unten).
 
+  Innerhalb der Kundenrollen sind Admin und Planer aktuell **funktional identisch**:
+  `MANAGER_ROLES = {ADMIN, PLANNER}` behandelt beide überall gleich. Bewusst so für das
+  Tagesgeschäft (Node/Skill/Employee/TimeTemplate/ShiftAssignment) -- eine strikte Trennung würde
+  dort nur Reibung erzeugen, ohne einen echten Interessenkonflikt abzubilden. Für die geplante
+  Tenant-Konfiguration (numerische ArG-/Zuschlags-Grenzwerte, MVP-Fahrplan Block 2, Punkt 14) gilt
+  das nicht: die steuert Rechtssicherheit und Lohnzuschläge direkt, deshalb dort **Admin-only** --
+  die erste Stelle im System, an der die beiden Rollen sich tatsächlich unterscheiden.
+
+- **Django Admin (`/admin/`) ist bewusst kein Kundenzugriff, sondern ein Betreiber-Werkzeug**:
+  gesteuert über `User.is_staff`/`is_superuser` (Standard-Django), ein von `Membership.Role`
+  komplett getrenntes Berechtigungssystem -- ein Kunden-Admin (`Membership.Role.ADMIN`) hat
+  dadurch standardmässig **keinen** Zugriff auf `/admin/`, ein Planer ohnehin nicht. Das ist kein
+  reines UX-/Zuständigkeits-Argument, sondern eine Sicherheitsentscheidung: die ModelAdmins
+  (`EmployeeAdmin`, `NodeAdmin`, `TenantAdmin`, ...) sind **nicht** tenant-gescoped --
+  `list_filter = ["tenant"]` heisst nur "filterbar", nicht "isoliert" wie das explizite
+  `request.tenant`-Scoping der API (siehe Multi-Tenancy oben). Ein Account mit `is_staff=True`
+  sieht im Django-Admin standardmässig alle Tenants nebeneinander. `is_staff`/`is_superuser` an
+  einen Kunden-Account zu vergeben, würde also nicht nur eine unpassende Oberfläche freischalten,
+  sondern die gesamte Mandantentrennung der App aushebeln -- deshalb bleibt `/admin/`
+  ausschliesslich für das Betreiber-Team (Entwicklung/Ops). Alles, was ein Kunde selbst
+  konfigurieren soll, muss über die tenant-gescopte API/Frontend-Oberfläche laufen (siehe
+  "Einstellungen"-Bereich unten sowie MVP-Fahrplan Block 2, Punkt 14 für die noch fehlende
+  Tenant-Konfiguration).
+
 ## Frontend
 
 Ein kleines React/Vite-Template liegt separat unter `dienstplan_frontend/` (eigenes README dort).
@@ -536,10 +560,13 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       `GET /api/me/` liefert den Tenant-Namen als Teil einer anderen Ressource) -- erst
       `GET`/`PATCH /api/tenant/` (Single-Object, kein ViewSet mit Liste, analog zu `MeView`)
       schaffen, inkl. Serializer für alle oben genannten Felder.
-    - **Berechtigung, noch zu klären**: reicht `IsTenantManager` (Admin+Planer, wie bei
-      Node/Skill/Employee/TimeTemplate), oder sollten diese Werte -- weil sie direkt
-      Rechtssicherheit und Lohnzuschläge steuern -- **Admin-only** sein, strenger als der Rest der
-      Stammdaten? Tendenz: Admin-only, aber noch keine Entscheidung.
+    - **Berechtigung: Admin-only** (Entscheid, siehe Architektur-Abschnitt) -- strenger als
+      `IsTenantManager` (Admin+Planer), das für Node/Skill/Employee/TimeTemplate/ShiftAssignment
+      gilt. Begründung: diese Werte steuern direkt Rechtssicherheit und Lohnzuschläge, nicht das
+      Tagesgeschäft der Planung; ausserdem wären Admin und Planer sonst in der ganzen App
+      funktional identisch (`MANAGER_ROLES` behandelt beide bislang überall gleich) -- das hier
+      wäre die erste Stelle, an der sich die beiden Rollen tatsächlich unterscheiden. Braucht eine
+      neue Permission-Klasse (Admin-only, keine bestehende passt) statt `IsTenantManager`.
     - **Frontend**: neues Modul in `SettingsPanel.jsx` (`MODULES`-Liste), thematisch gruppiert
       statt einer flachen Feldliste (z. B. "Ruhezeit & Höchstarbeitszeit", "Pausen", "Überzeit",
       "Ferien", "Nacht-/Sonntagsarbeit" als eigene Abschnitte/Akkordeons), mit demselben

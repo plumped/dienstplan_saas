@@ -159,6 +159,17 @@ class Employee(TenantScopedModel):
         "Arbeitstagen) für diesen Mitarbeiter. Leer lassen, um den Tenant-Wert zu übernehmen.",
     )
 
+    # Nachtarbeit (MVP-Fahrplan Block 1.5, Art. 17c ArG): Pflicht zur
+    # arbeitsmedizinischen Untersuchung bei regelmässiger Nachtarbeit, siehe
+    # night_work_medical_exam_due() weiter unten.
+    last_night_work_medical_exam_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Datum der letzten arbeitsmedizinischen Untersuchung (Art. 17c ArG) -- Pflicht "
+        "bei regelmässiger Nachtarbeit, alle 2 Jahre bzw. jährlich ab 45 Jahren (Art. 45 ArGV 1). "
+        "Nur relevant, wenn night_work_summary() regelmässige Nachtarbeit erkennt.",
+    )
+
     history = HistoricalRecords()
 
     class Meta:
@@ -167,14 +178,18 @@ class Employee(TenantScopedModel):
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
 
-    def is_minor_on(self, reference_date):
-        """True, wenn der Mitarbeiter am reference_date unter 18 Jahre alt ist."""
+    def _age_on(self, reference_date):
+        """Alter in vollen Jahren am reference_date, oder None ohne bekanntes Geburtsdatum."""
         if not self.birth_date:
-            return False
-        age = reference_date.year - self.birth_date.year - (
+            return None
+        return reference_date.year - self.birth_date.year - (
             (reference_date.month, reference_date.day) < (self.birth_date.month, self.birth_date.day)
         )
-        return age < 18
+
+    def is_minor_on(self, reference_date):
+        """True, wenn der Mitarbeiter am reference_date unter 18 Jahre alt ist."""
+        age = self._age_on(reference_date)
+        return age is not None and age < 18
 
     def weekly_hours_summary(self, reference_date):
         """
@@ -194,6 +209,7 @@ class Employee(TenantScopedModel):
         ).select_related("template", "time_record")
 
         ist_hours = 0.0
+        sunday_hours = 0.0
         is_provisional = False
         for assignment in assignments:
             time_record = getattr(assignment, "time_record", None)
@@ -204,12 +220,20 @@ class Employee(TenantScopedModel):
             else:
                 ist_hours += ShiftAssignment._shift_hours(assignment.date, assignment.template)
                 is_provisional = True
+            if assignment.is_sunday:
+                # Sonntagszuschlag (Art. 19 Abs. 3 ArG, Block 1.6): bewusst auf
+                # den geplanten Stunden berechnet, nicht auf der Ist-Zeit --
+                # analog zu night_hours/is_sunday selbst, die ebenfalls den
+                # Plan auswerten, nicht die Zeiterfassung.
+                sunday_hours += ShiftAssignment._shift_hours(assignment.date, assignment.template)
 
         standard_weekly_hours = self.standard_weekly_hours or self.tenant.standard_weekly_hours
         soll_hours = round(self.employment_pct / 100 * standard_weekly_hours, 2)
         ist_hours = round(ist_hours, 2)
         overtime_hours = round(max(0.0, ist_hours - soll_hours), 2)
         surcharge_hours = round(overtime_hours * self.tenant.overtime_surcharge_pct / 100, 2)
+        sunday_hours = round(sunday_hours, 2)
+        sunday_surcharge_hours = round(sunday_hours * self.tenant.sunday_work_surcharge_pct / 100, 2)
 
         return {
             "week_start": week_start,
@@ -218,6 +242,8 @@ class Employee(TenantScopedModel):
             "ist_hours": ist_hours,
             "overtime_hours": overtime_hours,
             "surcharge_hours": surcharge_hours,
+            "sunday_hours": sunday_hours,
+            "sunday_surcharge_hours": sunday_surcharge_hours,
             # True, sobald mindestens eine Schicht der Woche nicht auf einer
             # geprüften (CONFIRMED) Zeiterfassung beruht -- entweder, weil noch
             # keine Ist-Zeit erfasst wurde (Schätzung aus der Planung), oder
@@ -225,6 +251,91 @@ class Employee(TenantScopedModel):
             # trotzdem schon mit, siehe overtime_summary().
             "is_provisional": is_provisional,
         }
+
+    def sunday_replacement_rest_missing(self, sunday_date):
+        """
+        Vereinfachte Kontrolle des Ersatzruhetags (Art. 20 ArG) für eine am
+        sunday_date geleistete Sonntagsschicht (Block 1.6): prüft, ob im
+        14-Tage-Fenster ab sunday_date (Rest der Sonntagswoche + gesamte
+        Folgewoche) mindestens zwei Tage ohne jede Zuweisung liegen -- einer
+        für den ohnehin vorgeschriebenen wöchentlichen freien Tag (Art. 21
+        ArG, siehe ShiftAssignment._check_weekly_rest_day), einer als
+        zusätzlicher Ersatzruhetag für die Sonntagsarbeit. Prüft bewusst
+        *nicht* die genaue gesetzliche Anforderung, dass der Ersatzruhetag
+        unmittelbar an eine Tagesruhezeit anschliessen und mit ihr zusammen
+        mindestens 35 zusammenhängende Stunden ergeben muss (Art. 20 Abs. 2
+        ArG) -- das wäre eine deutlich aufwändigere Prüfung. Rein informativ,
+        blockiert nichts (siehe ShiftAssignment.sunday_replacement_rest_missing).
+        """
+        window_end = sunday_date + timedelta(days=13)
+        worked_dates = set(
+            ShiftAssignment.all_objects.filter(
+                employee=self, date__range=[sunday_date, window_end]
+            ).values_list("date", flat=True)
+        )
+        free_days = sum(
+            1 for offset in range(14) if (sunday_date + timedelta(days=offset)) not in worked_dates
+        )
+        return free_days < 2
+
+    def night_work_summary(self, year=None):
+        """
+        Nachtarbeit-Auswertung für ein Kalenderjahr (MVP-Fahrplan Block 1.5):
+        Anzahl Nächte mit Nachtarbeit, ob das als "regelmässig" gilt (ArGV 1
+        Art. 31, Tenant.night_work_regular_threshold_nights), die daraus
+        resultierende Zeitgutschrift (Art. 17b ArG) sowie zwei Hinweise für
+        Admin/Planer: fehlende Bewilligungsbestätigung und fällige
+        arbeitsmedizinische Untersuchung (Art. 17c ArG). Rein informativ wie
+        night_hours selbst -- blockiert keine Zuweisung, ist kein
+        Rechtsrat.
+        """
+        year = year or timezone.localdate().year
+        assignments = ShiftAssignment.all_objects.filter(employee=self, date__year=year).select_related(
+            "template"
+        )
+
+        total_night_hours = 0.0
+        night_dates = set()
+        for assignment in assignments:
+            hours = assignment.night_hours
+            if hours > 0:
+                total_night_hours += hours
+                night_dates.add(assignment.date)
+
+        nights_count = len(night_dates)
+        is_regular = nights_count >= self.tenant.night_work_regular_threshold_nights
+        surcharge_hours = (
+            round(total_night_hours * self.tenant.night_work_surcharge_pct / 100, 2) if is_regular else 0.0
+        )
+
+        return {
+            "year": year,
+            "nights_count": nights_count,
+            "night_hours": round(total_night_hours, 2),
+            "is_regular": is_regular,
+            "surcharge_hours": surcharge_hours,
+            "permit_warning": is_regular and not self.tenant.night_work_permit_confirmed,
+            "medical_exam_due": self.night_work_medical_exam_due(is_regular=is_regular),
+        }
+
+    def night_work_medical_exam_due(self, as_of_date=None, is_regular=None):
+        """
+        Arbeitsmedizinische Untersuchungspflicht (Art. 17c ArG, Art. 45 ArGV
+        1): alle 2 Jahre, ab 45 Jahren jährlich. Nur relevant bei
+        regelmässiger Nachtarbeit; ohne bisherige Untersuchung
+        (last_night_work_medical_exam_date leer) sofort fällig.
+        """
+        as_of_date = as_of_date or timezone.localdate()
+        if is_regular is None:
+            is_regular = self.night_work_summary(as_of_date.year)["is_regular"]
+        if not is_regular:
+            return False
+        if not self.last_night_work_medical_exam_date:
+            return True
+        age = self._age_on(as_of_date)
+        interval_years = 1 if (age is not None and age >= 45) else 2
+        next_due = self.last_night_work_medical_exam_date + timedelta(days=interval_years * 365)
+        return as_of_date >= next_due
 
     def overtime_balance(self, as_of_date=None):
         """
@@ -487,6 +598,18 @@ class ShiftAssignment(TenantScopedModel):
     def is_sunday(self):
         """Informativ (Art. 19/20 ArG: Sonntagszuschlag/Ersatzruhetag) -- blockiert nichts."""
         return self.date.weekday() == 6 if self.date else None
+
+    @property
+    def sunday_replacement_rest_missing(self):
+        """
+        Nur aussagekräftig, wenn is_sunday True ist (sonst False). Informativ
+        (Art. 20 ArG: Ersatzruhetag) -- siehe
+        Employee.sunday_replacement_rest_missing für Definition/
+        Einschränkungen der (vereinfachten) Prüfung.
+        """
+        if not self.is_sunday or not self.employee_id:
+            return False
+        return self.employee.sunday_replacement_rest_missing(self.date)
 
     def clean(self):
         """

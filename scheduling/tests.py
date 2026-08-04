@@ -1280,6 +1280,180 @@ class WeeklyOvertimeTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class NightAndSundayWorkTests(APITestCase):
+    """
+    Nacht-/Sonntagsarbeit (MVP-Fahrplan Block 1.5/1.6, Art. 17b/17c/19/20 ArG):
+    Zeitgutschrift bei regelmässiger Nachtarbeit, Bewilligungs-Warnhinweis,
+    arbeitsmedizinische Untersuchungspflicht, Sonntagszuschlag und die
+    (vereinfachte) Ersatzruhetag-Kontrolle. Alles informativ, wie
+    night_hours/is_sunday selbst -- nichts davon blockiert eine Zuweisung.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        # 23:00-06:00 deckt sich exakt mit dem Nachtarbeitszeitraum (Art. 16
+        # ArG) -> 7h Nachtstunden pro Schicht, einfache Erwartungswerte.
+        self.night_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtdienst", start_time=time(23, 0), end_time=time(6, 0)
+        )
+        self.day_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _assign_nights(self, employee, count, start=date(2026, 1, 5)):
+        for i in range(count):
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=employee, node=self.node, date=start + timedelta(days=i),
+                template=self.night_template,
+            )
+
+    # -- Nachtarbeit (Block 1.5) --
+
+    def test_few_night_shifts_are_not_regular(self):
+        self._assign_nights(self.employee, 5)
+        summary = self.employee.night_work_summary(2026)
+        self.assertEqual(summary["nights_count"], 5)
+        self.assertFalse(summary["is_regular"])
+        self.assertEqual(summary["surcharge_hours"], 0)
+        self.assertFalse(summary["permit_warning"])  # nicht regelmässig -> keine Bewilligungspflicht
+        self.assertFalse(summary["medical_exam_due"])
+
+    def test_25_night_shifts_are_regular_with_surcharge(self):
+        self._assign_nights(self.employee, 25)  # Schwellenwert (Tenant-Default)
+        summary = self.employee.night_work_summary(2026)
+        self.assertEqual(summary["nights_count"], 25)
+        self.assertTrue(summary["is_regular"])
+        self.assertEqual(summary["night_hours"], 175.0)  # 25 * 7h
+        self.assertEqual(summary["surcharge_hours"], 17.5)  # 10% Zeitgutschrift (Tenant-Default)
+
+    def test_permit_warning_when_regular_and_not_confirmed(self):
+        self._assign_nights(self.employee, 25)
+        summary = self.employee.night_work_summary(2026)
+        self.assertTrue(summary["permit_warning"])
+        self.tenant.night_work_permit_confirmed = True
+        self.tenant.save()
+        summary = self.employee.night_work_summary(2026)
+        self.assertFalse(summary["permit_warning"])
+
+    def test_medical_exam_due_without_prior_exam(self):
+        self._assign_nights(self.employee, 25)
+        self.assertIsNone(self.employee.last_night_work_medical_exam_date)
+        self.assertTrue(self.employee.night_work_medical_exam_due(date(2026, 6, 1)))
+
+    def test_medical_exam_not_due_within_two_year_interval(self):
+        self._assign_nights(self.employee, 25)
+        self.employee.last_night_work_medical_exam_date = date(2025, 1, 1)
+        self.employee.save()
+        self.assertFalse(self.employee.night_work_medical_exam_due(date(2026, 6, 1)))  # < 2 Jahre her
+
+    def test_medical_exam_due_after_two_year_interval(self):
+        self._assign_nights(self.employee, 25)
+        self.employee.last_night_work_medical_exam_date = date(2023, 1, 1)
+        self.employee.save()
+        self.assertTrue(self.employee.night_work_medical_exam_due(date(2026, 6, 1)))  # > 2 Jahre her
+
+    def test_medical_exam_interval_is_yearly_from_45(self):
+        self.employee.birth_date = date(1980, 1, 1)  # wird 2026 bereits 45+
+        self._assign_nights(self.employee, 25)
+        self.employee.last_night_work_medical_exam_date = date(2025, 1, 1)
+        self.employee.save()
+        self.assertTrue(self.employee.night_work_medical_exam_due(date(2026, 6, 1)))  # > 1 Jahr her, ab 45 Pflicht
+
+    def test_medical_exam_not_due_when_not_regular(self):
+        self._assign_nights(self.employee, 5)
+        self.assertFalse(self.employee.night_work_medical_exam_due(date(2026, 6, 1)))
+
+    def test_api_night_work_endpoint(self):
+        self._assign_nights(self.employee, 25)
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/night-work/?year=2026")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["nights_count"], 25)
+        self.assertTrue(response.data["is_regular"])
+        self.assertEqual(response.data["surcharge_hours"], 17.5)
+
+    def test_api_night_work_rejects_invalid_year(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/night-work/?year=not-a-year")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # -- Sonntagsarbeit (Block 1.6) --
+
+    def test_sunday_shift_adds_surcharge_to_weekly_summary(self):
+        sunday = date(2026, 8, 9)  # Sonntag
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=sunday, template=self.day_template
+        )
+        summary = self.employee.weekly_hours_summary(sunday)
+        self.assertEqual(summary["sunday_hours"], 7.5)  # 8h Spanne - 30min Pause
+        self.assertEqual(summary["sunday_surcharge_hours"], 3.75)  # 50% Zuschlag (Tenant-Default)
+
+    def test_non_sunday_shift_has_no_sunday_surcharge(self):
+        monday = date(2026, 8, 3)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=monday, template=self.day_template
+        )
+        summary = self.employee.weekly_hours_summary(monday)
+        self.assertEqual(summary["sunday_hours"], 0)
+        self.assertEqual(summary["sunday_surcharge_hours"], 0)
+
+    def test_replacement_rest_missing_when_no_free_days_in_window(self):
+        sunday = date(2026, 8, 9)
+        for i in range(14):  # gesamtes 14-Tage-Fenster durchgehend belegt
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node, date=sunday + timedelta(days=i),
+                template=self.day_template,
+            )
+        self.assertTrue(self.employee.sunday_replacement_rest_missing(sunday))
+
+    def test_replacement_rest_ok_with_two_free_days_in_window(self):
+        sunday = date(2026, 8, 9)
+        for i in range(14):
+            if i in (3, 10):  # zwei freie Tage im Fenster
+                continue
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node, date=sunday + timedelta(days=i),
+                template=self.day_template,
+            )
+        self.assertFalse(self.employee.sunday_replacement_rest_missing(sunday))
+
+    def test_shift_assignment_property_only_relevant_for_sundays(self):
+        monday = date(2026, 8, 3)
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=monday, template=self.day_template
+        )
+        self.assertFalse(assignment.sunday_replacement_rest_missing)
+
+    def test_api_shift_assignment_exposes_replacement_rest_flag(self):
+        sunday = date(2026, 8, 9)
+        for i in range(14):  # keine freien Tage -> Ersatzruhetag fehlt
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node, date=sunday + timedelta(days=i),
+                template=self.day_template,
+            )
+        self.auth_as(self.planner_user)
+        response = self.client.get(
+            f"/api/shift-assignments/?node={self.node.id}&date_from={sunday}&date_to={sunday}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["results"][0]["sunday_replacement_rest_missing"])
+
+
 class EmployeeBalanceTests(APITestCase):
     """Saldo-Übersicht (MVP-Fahrplan Block 2.7): Überstunden-Saldo + Feriensaldo."""
 

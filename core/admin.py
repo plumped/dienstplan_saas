@@ -47,6 +47,19 @@ class TenantAdmin(admin.ModelAdmin):
             "Ferien (Art. 329a OR)",
             {"fields": ("default_vacation_days_per_year",)},
         ),
+        (
+            "Nacht-/Sonntagsarbeit (Art. 17b/17c/19/20 ArG)",
+            {
+                "fields": (
+                    "night_work_surcharge_pct",
+                    "night_work_regular_threshold_nights",
+                    "night_work_permit_confirmed",
+                    "sunday_work_surcharge_pct",
+                ),
+                "description": "Zuschläge/Schwellenwerte für Employee.night_work_summary() und "
+                "weekly_hours_summary() (siehe README).",
+            },
+        ),
     )
 
 

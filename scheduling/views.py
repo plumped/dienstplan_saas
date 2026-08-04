@@ -33,6 +33,7 @@ from .serializers import (
     AbsenceSerializer,
     EmployeeBalanceSerializer,
     EmployeeSerializer,
+    NightWorkSummarySerializer,
     NodeSerializer,
     ShiftAssignmentSerializer,
     ShiftPreferenceSerializer,
@@ -192,6 +193,27 @@ class EmployeeViewSet(TenantScopedViewSet):
             reference_date = timezone.localdate()
         summary = employee.weekly_hours_summary(reference_date)
         return Response(WeeklyOvertimeSerializer(summary).data)
+
+    @action(detail=True, methods=["get"], url_path="night-work")
+    def night_work(self, request, pk=None):
+        """
+        Nachtarbeit-Auswertung für ein Kalenderjahr (MVP-Fahrplan Block 1.5,
+        Art. 17b/17c ArG): Anzahl Nächte, Zeitgutschrift bei regelmässiger
+        Nachtarbeit, Bewilligungs-Warnhinweis und fällige arbeitsmedizinische
+        Untersuchung. ?year=YYYY (Default aktuelles Jahr). Lesen wie bei
+        weekly_overtime/balance für alle Rollen offen.
+        """
+        employee = self.get_object()
+        year_param = request.query_params.get("year")
+        if year_param:
+            try:
+                year = int(year_param)
+            except ValueError:
+                raise ValidationError({"year": "Ungültiges Jahr."})
+        else:
+            year = timezone.localdate().year
+        summary = employee.night_work_summary(year)
+        return Response(NightWorkSummarySerializer(summary).data)
 
     @action(detail=True, methods=["get"])
     def balance(self, request, pk=None):

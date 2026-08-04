@@ -57,6 +57,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "standard_weekly_hours",
             "overtime_balance_carryover_hours",
             "vacation_days_per_year",
+            "last_night_work_medical_exam_date",
         ]
 
 
@@ -84,7 +85,22 @@ class WeeklyOvertimeSerializer(serializers.Serializer):
     ist_hours = serializers.FloatField()
     overtime_hours = serializers.FloatField()
     surcharge_hours = serializers.FloatField()
+    # Sonntagszuschlag (Block 1.6, Art. 19 Abs. 3 ArG).
+    sunday_hours = serializers.FloatField()
+    sunday_surcharge_hours = serializers.FloatField()
     is_provisional = serializers.BooleanField()
+
+
+class NightWorkSummarySerializer(serializers.Serializer):
+    """Read-only: Ergebnis von Employee.night_work_summary (Block 1.5, Art. 17b/17c ArG)."""
+
+    year = serializers.IntegerField()
+    nights_count = serializers.IntegerField()
+    night_hours = serializers.FloatField()
+    is_regular = serializers.BooleanField()
+    surcharge_hours = serializers.FloatField()
+    permit_warning = serializers.BooleanField()
+    medical_exam_due = serializers.BooleanField()
 
 
 class TimeTemplateSegmentSerializer(serializers.ModelSerializer):
@@ -167,10 +183,23 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
     # berücksichtigen können.
     night_hours = serializers.FloatField(read_only=True)
     is_sunday = serializers.BooleanField(read_only=True)
+    # Block 1.6: nur aussagekräftig, wenn is_sunday True ist -- vereinfachte
+    # Ersatzruhetag-Kontrolle, siehe Employee.sunday_replacement_rest_missing.
+    sunday_replacement_rest_missing = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = ShiftAssignment
-        fields = ["id", "employee", "node", "date", "template", "note", "night_hours", "is_sunday"]
+        fields = [
+            "id",
+            "employee",
+            "node",
+            "date",
+            "template",
+            "note",
+            "night_hours",
+            "is_sunday",
+            "sunday_replacement_rest_missing",
+        ]
 
     def validate(self, attrs):
         """

@@ -82,8 +82,10 @@ ihre eigene per `migrate`.
   kein Nacht-/Sonntagsarbeit, ArGV 5), Pflicht-Qualifikation (`TimeTemplate.required_skill`) und
   Kollision mit einer `Absence`.
   Zusätzlich berechnet (informativ, blockiert nichts): `night_hours` (Überlappung mit
-  23:00–06:00, Art. 16) und `is_sunday` -- als Grundlage für Zuschläge/Ersatzruhetag in einer
-  künftigen Lohnauswertung (siehe [MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife), Block 1).
+  23:00–06:00, Art. 16) und `is_sunday` -- Grundlage für die Zeitgutschrift bei regelmässiger
+  Nachtarbeit (`Employee.night_work_summary()`) sowie den Sonntagszuschlag/die
+  Ersatzruhetag-Kontrolle (`Employee.weekly_hours_summary()`/`sunday_replacement_rest_missing`),
+  siehe [MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife), Block 1, Punkte 5/6.
   Greift über die API, weil `ShiftAssignmentSerializer.validate()` `clean()` aufruft — nicht nur
   im Admin.
 
@@ -197,15 +199,29 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 4. ✅ **Wöchentlicher freier Tag**: mindestens ein ganzer freier Tag pro Kalenderwoche
    (Art. 21 ArG) wird geprüft. *Noch offen*: die zusätzliche Anforderung "im Schnitt einmal
    monatlich ein Sonntag frei" ist nicht automatisiert.
-5. 🟡 **Nachtarbeit** (23:00–06:00, Art. 16 ff. ArG): wird pro Schicht als `night_hours` erkannt
-   und über die API ausgegeben (informativ). *Noch offen*: Zeitzuschlag-Berechnung
-   (i. d. R. +10% Zeitgutschrift bei regelmässiger Nachtarbeit), automatische
-   Bewilligungs-/Warnhinweise und Tracking der arbeitsmedizinischen Untersuchungspflicht bei
-   regelmässiger Nachtarbeit.
-6. 🟡 **Sonntagsarbeit** (Art. 19/27 ArG): wird pro Schicht als `is_sunday` erkannt (Gesundheits-
-   betriebe sind von der Bewilligungspflicht ausgenommen). *Noch offen*: automatische Kontrolle,
-   ob der gesetzlich vorgeschriebene Ersatzruhetag (Art. 20 ArG) tatsächlich gewährt wurde, sowie
-   ein allfälliger Lohnzuschlag.
+5. ✅ **Nachtarbeit** (23:00–06:00, Art. 16 ff. ArG): wird pro Schicht als `night_hours` erkannt
+   und über die API ausgegeben (informativ, blockiert nichts). Zusätzlich
+   `Employee.night_work_summary(year)` (API: `GET /api/employees/{id}/night-work/?year=YYYY`):
+   zählt Nächte mit Nachtarbeit pro Kalenderjahr und wertet sie als "regelmässig" (ArGV 1 Art. 31),
+   sobald `Tenant.night_work_regular_threshold_nights` (Default 25) erreicht ist. Für regelmässige
+   Nachtarbeiter:innen liefert das eine Zeitgutschrift (Art. 17b ArG, `Tenant.
+   night_work_surcharge_pct`, Default 10% der Nachtstunden), einen Bewilligungs-Warnhinweis
+   (`permit_warning`, solange `Tenant.night_work_permit_confirmed` nicht gesetzt ist) sowie die
+   arbeitsmedizinische Untersuchungspflicht (Art. 17c ArG/Art. 45 ArGV 1: alle 2 Jahre, ab 45
+   Jahren jährlich) als `medical_exam_due`, ausgehend von `Employee.
+   last_night_work_medical_exam_date`. Rein informativ wie `night_hours` selbst -- kein
+   automatischer Eingriff ins Planblatt, kein Rechtsrat (die Bewilligungspflicht selbst kann die
+   App nicht prüfen, nur an sie erinnern).
+6. ✅ **Sonntagsarbeit** (Art. 19/27 ArG): wird pro Schicht als `is_sunday` erkannt (Gesundheits-
+   betriebe sind von der Bewilligungspflicht ausgenommen). `Employee.weekly_hours_summary()` (API:
+   `weekly-overtime`) liefert zusätzlich `sunday_hours`/`sunday_surcharge_hours` (Art. 19 Abs. 3
+   ArG, `Tenant.sunday_work_surcharge_pct`, Default 50% -- auf 0 setzen, falls der Betrieb als
+   Dauerbetrieb ausgenommen ist). `ShiftAssignment.sunday_replacement_rest_missing` (im
+   `shift-assignments`-Endpoint mitgeliefert) markiert eine Sonntagsschicht, für die im
+   14-Tage-Fenster danach keine zwei freien Tage liegen -- eine **vereinfachte** Kontrolle des
+   Ersatzruhetags (Art. 20 ArG): sie prüft nur die Anzahl freier Tage, nicht die genaue Vorgabe,
+   dass der Ersatzruhetag unmittelbar an eine Tagesruhezeit anschliessen und mit ihr zusammen
+   mindestens 35 zusammenhängende Stunden ergeben muss. Beides rein informativ, blockiert nichts.
 7. ✅ **Jugendschutz** (ArGV 5) für unter 18-Jährige: `Employee.birth_date` (optional) +
    `Employee.is_minor_on(date)`. Für Minderjährige gilt eine erhöhte Mindestruhezeit (12h statt
    der Tenant-Vorgabe) sowie ein hartes Verbot von Nacht- und Sonntagsarbeit. Vereinfachte

@@ -84,6 +84,36 @@ class Tenant(models.Model):
         "Tenant-Default hinterlegt, pro Mitarbeiter überschreibbar für abweichende Verträge.",
     )
 
+    # Nacht-/Sonntagsarbeit (MVP-Fahrplan Block 1.5/1.6): night_hours/is_sunday
+    # auf ShiftAssignment erkennen die Sachverhalte bereits informativ (siehe
+    # dort); diese Felder liefern die Zuschlags-/Schwellenwerte dafür, siehe
+    # scheduling.models.Employee.night_work_summary/weekly_hours_summary.
+    night_work_surcharge_pct = models.PositiveSmallIntegerField(
+        default=10,
+        help_text="Zeitgutschrift auf Nachtstunden bei regelmässiger Nachtarbeit, in Prozent "
+        "(Art. 17b Abs. 1 ArG: i. d. R. 10%, sofern nicht durch einen gleichwertigen "
+        "Lohnzuschlag abgegolten).",
+    )
+    night_work_regular_threshold_nights = models.PositiveSmallIntegerField(
+        default=25,
+        help_text="Ab dieser Anzahl Nächte mit Nachtarbeit pro Kalenderjahr gilt Nachtarbeit als "
+        "'regelmässig' (ArGV 1 Art. 31) -- Voraussetzung für Zeitgutschrift, Bewilligungspflicht "
+        "und arbeitsmedizinische Untersuchungspflicht (Art. 17c ArG).",
+    )
+    night_work_permit_confirmed = models.BooleanField(
+        default=False,
+        help_text="Von Admin bestätigt: die nötige behördliche Bewilligung für regelmässige "
+        "Nachtarbeit (Art. 17 ArG) liegt vor, bzw. der Betrieb ist davon ausgenommen. Ohne "
+        "Bestätigung erscheint ein Warnhinweis, sobald ein Mitarbeiter regelmässige Nachtarbeit "
+        "leistet (siehe Employee.night_work_summary).",
+    )
+    sunday_work_surcharge_pct = models.PositiveSmallIntegerField(
+        default=50,
+        help_text="Lohnzuschlag auf Sonntagsstunden in Prozent (Art. 19 Abs. 3 ArG i. V. m. Art. 46 "
+        "ArGV 1: i. d. R. 50%; für Dauerbetriebe wie viele Gesundheitseinrichtungen können "
+        "Ausnahmen gelten -- auf 0 setzen, falls nicht zutreffend).",
+    )
+
     class Meta:
         ordering = ["name"]
 

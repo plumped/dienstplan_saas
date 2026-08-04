@@ -609,12 +609,15 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       aus `IsTenantAdmin`) -- ein Planer sieht ihn gar nicht erst, obwohl er alle anderen
       Settings-Module weiterhin sieht/bearbeitet. Die eigentliche Absicherung bleibt serverseitig
       (403 bei PATCH-Versuch), wie beim übrigen rollenbewussten Frontend.
-15. **Employee-Zusatzfelder im Settings-Tab vervollständigen**: `last_night_work_medical_exam_date`
-    (Block 1.5) ist zwar schon über `EmployeeSerializer`/API erreichbar, aber noch nicht im
-    `EmployeeSettings.jsx`-Formular -- muss bislang wie vor Block 2.10 über den Django-Admin
-    gepflegt werden. Beim Ergänzen gleich prüfen, ob ein Datumsfeld mit Erklärtext ("wird nur für
-    regelmässige Nachtarbeiter:innen ausgewertet, siehe Saldo/Zeiterfassung") reicht, oder ob es
-    im Formular ausgeblendet werden soll, solange die Person nicht regelmässig nachts arbeitet.
+15. ✅ **Employee-Zusatzfelder im Settings-Tab vervollständigen**: `last_night_work_medical_exam_date`
+    (Block 1.5) ist jetzt auch im `EmployeeSettings.jsx`-Formular editierbar, nicht mehr nur über
+    den Django-Admin erreichbar. Entscheidung zur im Vorfeld offenen Frage: immer sichtbares
+    Datumsfeld mit Erklärtext ("nur relevant bei regelmässiger Nachtarbeit ... wird nur
+    ausgewertet, wenn die Person laut Saldo/Zeiterfassung regelmässig nachts arbeitet"), nicht
+    bedingt ausgeblendet -- konsistent mit den übrigen optionalen Override-Feldern
+    (`maximum_weekly_hours`, `standard_weekly_hours`, `vacation_days_per_year`), die ebenfalls
+    immer sichtbar sind statt bedingt versteckt, und ohne den zusätzlichen API-Aufwand, "ist diese
+    Person aktuell regelmässige Nachtarbeiterin" pro Zeile in der Mitarbeitendenliste zu ermitteln.
 16. **UX-Überarbeitung der gesamten Einstellungen-Oberfläche**: über die fehlende
     Tenant-Konfiguration (Punkt 14) hinaus wirkt die bestehende Oberfläche (`SettingsPanel.jsx` +
     die vier Untermodule) insgesamt wenig selbsterklärend, gerade für eine nicht-technische

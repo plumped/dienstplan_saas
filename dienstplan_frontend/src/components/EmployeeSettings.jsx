@@ -15,6 +15,7 @@ function emptyForm() {
     standard_weekly_hours: "",
     overtime_balance_carryover_hours: 0,
     vacation_days_per_year: "",
+    last_night_work_medical_exam_date: "",
   };
 }
 
@@ -31,6 +32,7 @@ function toFormValues(employee) {
     standard_weekly_hours: employee.standard_weekly_hours ?? "",
     overtime_balance_carryover_hours: employee.overtime_balance_carryover_hours ?? 0,
     vacation_days_per_year: employee.vacation_days_per_year ?? "",
+    last_night_work_medical_exam_date: employee.last_night_work_medical_exam_date ?? "",
   };
 }
 
@@ -91,6 +93,7 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
       standard_weekly_hours: form.standard_weekly_hours === "" ? null : Number(form.standard_weekly_hours),
       overtime_balance_carryover_hours: Number(form.overtime_balance_carryover_hours) || 0,
       vacation_days_per_year: form.vacation_days_per_year === "" ? null : Number(form.vacation_days_per_year),
+      last_night_work_medical_exam_date: form.last_night_work_medical_exam_date || null,
     };
     setSaving(true);
     try {
@@ -236,6 +239,20 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
             />
           </label>
         </div>
+        <label>
+          Letzte arbeitsmedizinische Untersuchung (Block 1.5)
+          <input
+            type="date"
+            value={form.last_night_work_medical_exam_date}
+            onChange={(e) =>
+              setForm((prev) => ({ ...prev, last_night_work_medical_exam_date: e.target.value }))
+            }
+          />
+          <span className="panel-hint">
+            Nur relevant bei regelmässiger Nachtarbeit (Art. 17c ArG) -- wird nur ausgewertet, wenn
+            die Person laut Saldo/Zeiterfassung regelmässig nachts arbeitet.
+          </span>
+        </label>
         <label className="checkbox-row">
           <input
             type="checkbox"

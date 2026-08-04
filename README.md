@@ -166,7 +166,7 @@ Klick + Dropdown auch:
   öffnet denselben Segment-Editor als Popover, ohne in den Tab wechseln zu müssen.
 - **Einstellungen** (Block 2.10): eigener Tab, nur für Admin/Planer sichtbar, mit vier Modulen
   (Schichttypen inkl. Segment-Editor, Mitarbeitende inkl. der Wochenstunden-Override-Felder aus
-  Block 1.14, Stationen, Skills) -- ersetzt den Django-Admin für den täglichen Selfservice-Betrieb.
+  Block 1.12, Stationen, Skills) -- ersetzt den Django-Admin für den täglichen Selfservice-Betrieb.
   Bleibt auch ohne jede Station erreichbar, damit ein frischer Tenant die erste Station selbst
   anlegen kann.
 
@@ -189,7 +189,7 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Santésuisse) pro Klinik/Praxis anpassbar. *Noch offen*: `maximum_weekly_hours` ist aktuell ein
    einzelner Wert **pro Tenant** -- in Spitälern gilt aber je nach Personalkategorie oft
    unterschiedliches (z. B. 42h GAV-Normalarbeitszeit für Pflegepersonal, 50h ArG-Höchstgrenze für
-   andere Gruppen). Siehe Punkt 14 weiter unten für die geplante Lösung.
+   andere Gruppen). Inzwischen gelöst, siehe Punkt 12 (Employee-Override-Felder).
 2. ✅ **Pausenregelung** (Art. 15 ArG): > 5.5h Netto-Arbeitszeit → 15 Min., > 7h → 30 Min.,
    > 9h → 1h Pause, automatisch gegen `TimeTemplate.break_minutes` geprüft statt nur erfasst.
 3. ✅ **Tägliche Höchstarbeitszeit inkl. Pausen** (Art. 10 ArG: Tagesspanne max.
@@ -284,8 +284,10 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     sobald für eine Schicht erfasst, sonst aus der Planung), Überzeit- und Zuschlagsstunden
     (`Tenant.overtime_surcharge_pct`, Default 25%). API: `GET
     /api/employees/{id}/weekly-overtime/?week=YYYY-MM-DD`, Lesen für alle Rollen offen wie beim
-    übrigen Planblatt. *Noch offen*: keine Frontend-Anzeige (folgt mit Block 2.6/2.7), keine
-    Monats-/Jahres-Kumulierung (nur pro Kalenderwoche einzeln abrufbar).
+    übrigen Planblatt. Frontend-Anzeige inzwischen vorhanden (als Pro-Schicht-Feedback nach dem
+    Speichern einer Zeiterfassung, siehe Block 2.7). *Noch offen*: keine dauerhafte
+    Wochenübersicht ausserhalb dieses Feedbacks, keine Monats-/Jahres-Kumulierung (nur pro
+    Kalenderwoche einzeln abrufbar).
 12. ✅ **Wochenstunden-Grenzwerte pro Personalkategorie statt nur pro Tenant**: ein einzelner
     Tenant-Wert reicht nicht, wenn z. B. Ärzteschaft vertraglich 50h und Büropersonal 42h hat.
     `Employee.maximum_weekly_hours`/`standard_weekly_hours` sind jetzt optionale
@@ -354,17 +356,15 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      fixer Zeile), sonst wäre er bei normaler Fensterbreite abgeschnitten worden. Im Planblatt-Grid
      (nur für Admin/Planer via `canManage`) steht der Saldo in einer eigenen, am rechten Rand
      sticky fixierten Spalte "Saldo" ganz am Ende jeder Mitarbeiterzeile (`variant="cell"`, Format
-     z. B. "-33.72 h / 19 Ferientage") -- eine erste Version zeigte den Saldo direkt in der
-     Mitarbeiter-Spalte selbst, was auf Feedback ("ultra hässlich") verworfen wurde, weil die
-     ohnehin schon volle Zelle (Name, Pensum, Kopier-Button) dadurch überladen wirkte. Die separate
-     Spalte ist analog zur Mitarbeiter-Spalte links (`position: sticky; right: 0`) fixiert, damit
-     der Saldo unabhängig von der horizontalen Scroll-Position sichtbar bleibt.
-   - ✅ **UX-Nachbesserung: sofortiges, transparentes Feedback statt scheinbarer Wartezeit auf die
-     Prüfung.** Der Saldo war rechnerisch schon immer sofort aktuell (`weekly_hours_summary()`
-     nimmt die geplante Schichtdauer, solange keine Zeiterfassung existiert, und jede erfasste
-     Ist-Zeit zählt unabhängig vom `TimeRecord.status` sofort mit) -- er **wirkte** nur so, als
-     würde er erst nach der Prüfung aktualisiert, weil `BalanceBadge.jsx` den Saldo lediglich einmal
-     beim Mounten geladen hat. Drei Verbesserungen dagegen, aus Mitarbeitersicht gedacht:
+     z. B. "-33.72 h / 19 Ferientage"), analog zur Mitarbeiter-Spalte links `position: sticky;
+     right: 0` fixiert, damit der Saldo unabhängig von der horizontalen Scroll-Position sichtbar
+     bleibt (nicht in der ohnehin schon vollen Mitarbeiter-Zelle selbst, die dadurch überladen
+     wirken würde).
+   - ✅ **UX-Nachbesserung**: der Saldo war rechnerisch schon immer sofort aktuell
+     (`weekly_hours_summary()` nimmt die geplante Schichtdauer, solange keine Zeiterfassung
+     existiert, und jede erfasste Ist-Zeit zählt unabhängig vom `TimeRecord.status` sofort mit) --
+     **wirkte** aber verzögert, weil `BalanceBadge.jsx` ihn nur einmal beim Mounten geladen hat.
+     Drei Verbesserungen dagegen:
      - **Reaktives Neuladen**: `api.js` feuert nach jeder saldorelevanten Mutation (Zuweisung,
        Zeiterfassung, Absenz-Genehmigung, Diensttausch-Freigabe, Employee-Update) ein einfaches
        Pub/Sub-Event (`onBalanceChanged`), das `BalanceBadge` abonniert und daraufhin neu lädt --
@@ -398,7 +398,7 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      hinzufügen/entfernen, weil das die Struktur ist, die spätere Ist-Erfassungen übernehmen.
    - **Mitarbeitende** (`EmployeeSettings.jsx`) — Liste + Formular (Name, Geburtsdatum, Pensum,
      Stationen/Skills-Mehrfachauswahl, aktiv/inaktiv) **inkl. der beiden Wochenstunden-Override-
-     Felder aus Block 1.14**, damit ein Planer z. B. für eine neu eingestellte Ärztin direkt 50h
+     Felder aus Block 1.12**, damit ein Planer z. B. für eine neu eingestellte Ärztin direkt 50h
      statt der 42h-Tenant-Vorgabe hinterlegen kann, ohne Admin-Zugriff zu brauchen. Löschen bewusst
      nicht vorgesehen (kaskadiert auf die Planungshistorie) -- Deaktivieren über `is_active`
      stattdessen.

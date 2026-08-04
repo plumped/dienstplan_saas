@@ -1794,12 +1794,15 @@ class RoleBasedPermissionTests(APITestCase):
             tenant=self.tenant, employee=self.bob, node=self.node, date=date(2026, 8, 4), template=self.template
         )
         # Für TimeRecord-Tests: eine bereits stattgefundene Schicht (TimeRecord.clean()
-        # lehnt Ist-Erfassung für Schichten in der Zukunft ab).
+        # lehnt Ist-Erfassung für Schichten in der Zukunft ab). Bewusst ein fixes Datum
+        # statt "gestern" (timezone.localdate() - 1 Tag): das kollidierte mit dem
+        # ebenfalls fixen alice_assignment-Datum (2026-08-03) genau an dem Tag, an dem
+        # "heute" real 2026-08-04 war (UNIQUE-constraint employee+date).
         self.alice_past_assignment = ShiftAssignment.objects.create(
             tenant=self.tenant,
             employee=self.alice,
             node=self.node,
-            date=timezone.localdate() - timedelta(days=1),
+            date=date(2026, 7, 27),
             template=self.template,
         )
 

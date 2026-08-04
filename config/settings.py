@@ -58,6 +58,9 @@ MIDDLEWARE = [
     'simple_history.middleware.HistoryRequestMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Nur für /admin/ (siehe core/middleware.py) -- muss vor der Cleanup-
+    # Middleware stehen, damit die ContextVar beim View-Aufruf gesetzt ist.
+    'core.middleware.AdminActiveTenantMiddleware',
     'core.middleware.TenantContextCleanupMiddleware',
 ]
 
@@ -68,13 +71,20 @@ ROOT_URLCONF = 'config.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        # Projektweite Template-Overrides (aktuell nur admin/base_site.html
+        # + admin/tenant_switch.html, siehe core/admin_views.py). Bewusst
+        # hier statt in core/templates/: DIRS wird VOR APP_DIRS geprüft,
+        # sonst würde Django zuerst django.contrib.admin's eigenes
+        # admin/base_site.html finden (steht in INSTALLED_APPS vor 'core')
+        # und unsere Override-Datei nie erreichen.
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'core.context_processors.active_admin_tenant',
             ],
         },
     },

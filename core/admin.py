@@ -1,7 +1,84 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 
+from core.context import get_current_tenant
+
 from .models import Membership, Tenant, User
+
+
+class TenantScopedAdminMixin:
+    """
+    Beschränkt ein ModelAdmin auf den aktiv gewählten Tenant (siehe
+    core.middleware.AdminActiveTenantMiddleware, core.admin_views.
+    tenant_switch) -- der eigentliche Fix für das Datenschutzproblem, dass
+    der Django-Admin sonst ALLE Tenants ungefiltert gemischt anzeigt (siehe
+    README, Architektur-Abschnitt).
+
+    `get_queryset` filtert explizit selbst nach `tenant`, statt sich allein
+    auf `TenantScopedManager` (den Default-Manager der meisten hier
+    betroffenen Modelle) und dessen ContextVar zu verlassen -- exakt
+    dasselbe Prinzip wie bei der API (`TenantScopedViewSet.get_queryset`):
+    explizite Filterung ist die eigentliche Sicherheitsgrenze. Das deckt
+    nebenbei auch Modelle ab, die (wie `Membership`) nicht über
+    `TenantScopedManager` laufen. Ohne aktiven Tenant: leere Liste UND
+    gesperrtes "Hinzufügen" -- sonst wäre "alles anzeigen" der Default, das
+    genaue Gegenteil von sicher.
+
+    Das `tenant`-Feld selbst wird beim Anlegen/Bearbeiten auf den aktiven
+    Tenant festgelegt (Dropdown zeigt nur diesen einen Eintrag) -- sonst
+    liesse sich trotz gewähltem Tenant versehentlich ein Datensatz für
+    einen ANDEREN Tenant anlegen.
+
+    Setzt NICHT voraus, dass das Modell `TenantScopedModel` erbt (deckt
+    auch `Membership` ab) -- verlangt nur ein `tenant`-Feld.
+
+    Wichtig für FK-/M2M-Dropdowns anderer tenant-gescopter Modelle (z. B.
+    Node/Skill beim Anlegen eines Employee): die reine ContextVar-Filterung
+    über `TenantScopedManager` als Default-Manager reicht dafür NICHT in
+    jedem Fall aus. `Node` z. B. erbt sowohl von treebeard's `MP_Node`
+    (eigener `MP_NodeManager`) als auch von `TenantScopedModel` -- durch die
+    Erbfolge gewinnt `MP_NodeManager` als `_default_manager`, der die
+    ContextVar gar nicht kennt. `formfield_for_foreignkey`/
+    `formfield_for_manytomany` filtern deshalb das von Django gebaute
+    Formfeld-Queryset zusätzlich EXPLIZIT nach `tenant`, statt sich auf den
+    jeweiligen Default-Manager zu verlassen -- funktioniert unabhängig
+    davon, welcher Manager tatsächlich "gewinnt".
+    """
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        tenant = get_current_tenant()
+        if tenant is None:
+            return qs.none()
+        return qs.filter(tenant=tenant)
+
+    def has_add_permission(self, request):
+        return super().has_add_permission(request) and get_current_tenant() is not None
+
+    @staticmethod
+    def _scope_to_active_tenant(queryset):
+        tenant = get_current_tenant()
+        if tenant is not None and hasattr(queryset.model, "tenant_id"):
+            queryset = queryset.filter(tenant=tenant)
+        return queryset
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "tenant":
+            tenant = get_current_tenant()
+            if tenant is not None:
+                kwargs["queryset"] = Tenant.objects.filter(pk=tenant.pk)
+                kwargs.setdefault("initial", tenant.pk)
+            return super().formfield_for_foreignkey(db_field, request, **kwargs)
+        formfield = super().formfield_for_foreignkey(db_field, request, **kwargs)
+        if formfield is not None and hasattr(formfield, "queryset"):
+            formfield.queryset = self._scope_to_active_tenant(formfield.queryset)
+        return formfield
+
+    def formfield_for_manytomany(self, db_field, request, **kwargs):
+        formfield = super().formfield_for_manytomany(db_field, request, **kwargs)
+        if formfield is not None and hasattr(formfield, "queryset"):
+            formfield.queryset = self._scope_to_active_tenant(formfield.queryset)
+        return formfield
 
 
 @admin.register(User)
@@ -64,6 +141,6 @@ class TenantAdmin(admin.ModelAdmin):
 
 
 @admin.register(Membership)
-class MembershipAdmin(admin.ModelAdmin):
+class MembershipAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["user", "tenant", "role"]
     list_filter = ["tenant", "role"]

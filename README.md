@@ -141,18 +141,12 @@ ihre eigene per `migrate`.
 - **Django Admin (`/admin/`) ist bewusst kein Kundenzugriff, sondern ein Betreiber-Werkzeug**:
   gesteuert über `User.is_staff`/`is_superuser` (Standard-Django), ein von `Membership.Role`
   komplett getrenntes Berechtigungssystem -- ein Kunden-Admin (`Membership.Role.ADMIN`) hat
-  dadurch standardmässig **keinen** Zugriff auf `/admin/`, ein Planer ohnehin nicht. Das ist kein
-  reines UX-/Zuständigkeits-Argument, sondern eine Sicherheitsentscheidung: die ModelAdmins
-  (`EmployeeAdmin`, `NodeAdmin`, `TenantAdmin`, ...) sind **nicht** tenant-gescoped --
-  `list_filter = ["tenant"]` heisst nur "filterbar", nicht "isoliert" wie das explizite
-  `request.tenant`-Scoping der API (siehe Multi-Tenancy oben). Ein Account mit `is_staff=True`
-  sieht im Django-Admin standardmässig alle Tenants nebeneinander. `is_staff`/`is_superuser` an
-  einen Kunden-Account zu vergeben, würde also nicht nur eine unpassende Oberfläche freischalten,
-  sondern die gesamte Mandantentrennung der App aushebeln -- deshalb bleibt `/admin/`
-  ausschliesslich für das Betreiber-Team (Entwicklung/Ops). Alles, was ein Kunde selbst
-  konfigurieren soll, muss über die tenant-gescopte API/Frontend-Oberfläche laufen (siehe
-  "Einstellungen"-Bereich unten sowie MVP-Fahrplan Block 2, Punkt 14 für die noch fehlende
-  Tenant-Konfiguration).
+  dadurch standardmässig **keinen** Zugriff auf `/admin/`, ein Planer ohnehin nicht. `is_staff`/
+  `is_superuser` an einen Kunden-Account zu vergeben, würde die gesamte Mandantentrennung
+  aushebeln (siehe unten) -- deshalb bleibt `/admin/` ausschliesslich für das Betreiber-Team
+  (Entwicklung/Ops). Alles, was ein Kunde selbst konfigurieren soll, muss über die
+  tenant-gescopte API/Frontend-Oberfläche laufen (siehe "Einstellungen"-Bereich unten sowie
+  MVP-Fahrplan Block 2, Punkt 14 für die Tenant-Konfiguration).
 
   **Strukturell erzwungen, nicht nur Konvention**: `User.save()`/`Membership.save()`
   (`core.models`) lehnen jede Kombination aus `is_staff`/`is_superuser` und einer Tenant-
@@ -161,12 +155,42 @@ ihre eigene per `migrate`.
   Memberships werden im gesamten Code (Tests, künftige Einladungs-/Onboarding-Flows) über
   `Membership.objects.create(...)` angelegt, was `clean()` nicht automatisch aufruft -- nur
   `save()` wird garantiert bei jedem Erstellungsweg durchlaufen. Getestet in
-  `core.tests.StaffAccountsCannotHaveMembershipsTests`. Das ist die zweite Verteidigungslinie
-  zusätzlich zur reinen Rollentrennung oben: selbst ein versehentlicher `is_staff=True` auf einem
-  Kunden-Account (oder umgekehrt) wird von der Datenbank-Schicht zurückgewiesen, nicht nur durch
-  sorgfältiges Vorgehen vermieden. *Ergänzend denkbar, noch nicht umgesetzt*: zusätzliche
-  Netzwerk-Absicherung von `/admin/` selbst (z. B. IP-Allowlist fürs Büro-/VPN-Netz, separates
-  Interface) als dritte, infrastrukturelle Verteidigungslinie -- siehe MVP-Fahrplan Block 4.
+  `core.tests.StaffAccountsCannotHaveMembershipsTests`.
+
+  **Auch für legitime Betreiber-Accounts war der Admin bis vor Kurzem gefährlich**: die
+  ModelAdmins (`EmployeeAdmin`, `NodeAdmin`, ...) waren **nicht** tenant-gescoped --
+  `list_filter = ["tenant"]` ist nur ein UI-Filter, keine Zugriffsbeschränkung. Ohne aktiven
+  Filter zeigte die Changelist alle Tenants gemischt, und FK-/M2M-Dropdowns in Formularen (z. B.
+  Node/Skill beim Anlegen eines Employee) liessen sich versehentlich mit dem Datensatz eines
+  ANDEREN Tenants verknüpfen -- ein echtes Cross-Tenant-Risiko selbst für sorgfältiges,
+  berechtigtes Betreiber-Personal, nicht nur ein hypothetisches Kundenzugriffs-Szenario. Behoben
+  durch drei zusammenspielende Teile:
+  - `core.middleware.AdminActiveTenantMiddleware` (nur für `/admin/`-Requests): setzt die
+    Tenant-ContextVar (`core.context`) anhand eines in der Session gewählten "aktiven Tenants" --
+    anders als bei der API (siehe unten, `core/tenancy.py`) ist eine Middleware hier
+    unproblematisch, weil `AuthenticationMiddleware` `request.user` für Session-Logins längst
+    aufgelöst hat, bevor sie läuft.
+  - `core.admin_views.tenant_switch` (`/admin/tenant-switch/`, im Header jeder Admin-Seite
+    verlinkt, siehe `templates/admin/base_site.html`): einfache Auswahlseite, setzt/löscht den
+    Session-Wert.
+  - `core.admin.TenantScopedAdminMixin`, auf jedem tenant-gescopten `ModelAdmin` (inkl.
+    `MembershipAdmin`, aber bewusst **nicht** auf `TenantAdmin` selbst -- sonst liesse sich im
+    Umschalter nie ein Tenant auswählen): filtert `get_queryset()` **explizit** nach dem aktiven
+    Tenant (dasselbe Prinzip wie bei der API -- explizite Filterung ist die Sicherheitsgrenze,
+    nicht die ContextVar/der Default-Manager) und liefert ohne aktiven Tenant eine leere Liste
+    plus gesperrtes "Hinzufügen", statt wie zuvor implizit alles zu zeigen. `formfield_for_foreignkey`/
+    `formfield_for_manytomany` filtern zusätzlich jedes FK-/M2M-Dropdown auf tenant-gescopte
+    Modelle explizit nach, statt sich auf `_default_manager` zu verlassen -- wichtig, weil z. B.
+    `Node` durch Mehrfacherbung (`MP_Node`, treebeard) einen **anderen** Default-Manager hat, der
+    die ContextVar gar nicht auswertet. Das `tenant`-Feld selbst wird beim Anlegen/Bearbeiten auf
+    den aktiven Tenant fixiert (Dropdown zeigt nur diesen einen Eintrag).
+
+  Getestet in `core.tests.AdminTenantScopingTests` (Changelist, FK-/M2M-Dropdown-Scoping,
+  gesperrtes Hinzufügen ohne aktiven Tenant, `Membership` trotz fehlendem `TenantScopedModel`-Erbe
+  korrekt gescopt, `Tenant` selbst bewusst nicht gescopt) und manuell im Browser verifiziert.
+  *Ergänzend denkbar, noch nicht umgesetzt*: zusätzliche Netzwerk-Absicherung von `/admin/` selbst
+  (z. B. IP-Allowlist fürs Büro-/VPN-Netz, separates Interface) als weitere, infrastrukturelle
+  Verteidigungslinie -- siehe MVP-Fahrplan Block 4.
 
 ## Frontend
 

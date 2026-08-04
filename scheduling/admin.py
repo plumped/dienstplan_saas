@@ -2,6 +2,8 @@ from django.contrib import admin
 from treebeard.admin import TreeAdmin
 from treebeard.forms import movenodeform_factory
 
+from core.admin import TenantScopedAdminMixin
+
 from .models import (
     Absence,
     Employee,
@@ -18,20 +20,20 @@ from .models import (
 
 
 @admin.register(Node)
-class NodeAdmin(TreeAdmin):
+class NodeAdmin(TenantScopedAdminMixin, TreeAdmin):
     form = movenodeform_factory(Node)
     list_display = ["name", "tenant"]
     list_filter = ["tenant"]
 
 
 @admin.register(Skill)
-class SkillAdmin(admin.ModelAdmin):
+class SkillAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["name", "tenant"]
     list_filter = ["tenant"]
 
 
 @admin.register(Employee)
-class EmployeeAdmin(admin.ModelAdmin):
+class EmployeeAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["last_name", "first_name", "tenant", "birth_date", "employment_pct", "is_active"]
     list_filter = ["tenant", "is_active"]
     filter_horizontal = ["nodes", "skills"]
@@ -52,7 +54,7 @@ class TimeTemplateSegmentInline(admin.TabularInline):
 
 
 @admin.register(TimeTemplate)
-class TimeTemplateAdmin(admin.ModelAdmin):
+class TimeTemplateAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["name", "node", "start_time", "end_time", "tenant"]
     list_filter = ["tenant", "node"]
     inlines = [TimeTemplateSegmentInline]
@@ -68,28 +70,28 @@ class TimeTemplateAdmin(admin.ModelAdmin):
 
 
 @admin.register(ShiftAssignment)
-class ShiftAssignmentAdmin(admin.ModelAdmin):
+class ShiftAssignmentAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["employee", "date", "template", "node", "tenant"]
     list_filter = ["tenant", "node", "date"]
     date_hierarchy = "date"
 
 
 @admin.register(Absence)
-class AbsenceAdmin(admin.ModelAdmin):
+class AbsenceAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["employee", "type", "start_date", "end_date", "tenant"]
     list_filter = ["tenant", "type"]
     date_hierarchy = "start_date"
 
 
 @admin.register(ShiftPreference)
-class ShiftPreferenceAdmin(admin.ModelAdmin):
+class ShiftPreferenceAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["employee", "type", "date", "template", "tenant"]
     list_filter = ["tenant", "type"]
     date_hierarchy = "date"
 
 
 @admin.register(ShiftTradeRequest)
-class ShiftTradeRequestAdmin(admin.ModelAdmin):
+class ShiftTradeRequestAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["requester_assignment", "target_employee", "status", "tenant", "created_at"]
     list_filter = ["tenant", "status"]
 
@@ -101,7 +103,7 @@ class TimeRecordSegmentInline(admin.TabularInline):
 
 
 @admin.register(TimeRecord)
-class TimeRecordAdmin(admin.ModelAdmin):
+class TimeRecordAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["assignment", "actual_start", "actual_end", "status", "tenant"]
     list_filter = ["tenant", "status"]
     inlines = [TimeRecordSegmentInline]

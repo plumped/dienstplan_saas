@@ -5,10 +5,10 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from core.context import get_current_tenant, set_current_tenant
-from core.middleware import TenantContextCleanupMiddleware
+from core.middleware import ADMIN_TENANT_SESSION_KEY, TenantContextCleanupMiddleware
 from core.models import Membership, Tenant
 from core.tenancy import resolve_tenant_for_user
-from scheduling.models import Employee, Skill
+from scheduling.models import Employee, Node, Skill
 
 User = get_user_model()
 
@@ -245,3 +245,130 @@ class TenantConfigAPITests(APITestCase):
         self.auth_as(user)
         response = self.client.get("/api/tenant/")
         self.assertEqual(response.status_code, 404)
+
+
+class AdminTenantScopingTests(TestCase):
+    """
+    /admin/ Cross-Tenant-Datenleck (siehe README, Architektur-Abschnitt
+    "Django Admin ist bewusst kein Kundenzugriff"): core.middleware.
+    AdminActiveTenantMiddleware + core.admin.TenantScopedAdminMixin sorgen
+    dafür, dass Staff im Django-Admin nur Daten des aktiv gewählten Tenants
+    sieht -- inkl. FK-Dropdowns (z. B. Node/Skill beim Anlegen eines
+    Employee), nicht nur die Changelist selbst.
+    """
+
+    def setUp(self):
+        self.tenant_a = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.tenant_b = Tenant.objects.create(name="Klinik B", slug="klinik-b")
+        self.node_a = Node.add_root(name="Station A", tenant=self.tenant_a)
+        self.node_b = Node.add_root(name="Station B", tenant=self.tenant_b)
+        self.employee_a = Employee.objects.create(
+            tenant=self.tenant_a, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee_b = Employee.objects.create(
+            tenant=self.tenant_b, first_name="Berta", last_name="B", employment_pct=100
+        )
+        # is_superuser (nicht nur is_staff), damit die Django-Permission-Prüfung
+        # (view/add/change auf App-Ebene) den Test nicht unabhängig von der
+        # hier zu testenden Tenant-Scoping-Mixin blockiert.
+        User.objects.create_superuser(username="staffer", password="pw-not-real-123!")
+        self.client.login(username="staffer", password="pw-not-real-123!")
+
+    def _set_active_tenant(self, tenant):
+        session = self.client.session
+        if tenant is None:
+            session.pop(ADMIN_TENANT_SESSION_KEY, None)
+        else:
+            session[ADMIN_TENANT_SESSION_KEY] = str(tenant.pk)
+        session.save()
+
+    def test_employee_changelist_empty_without_active_tenant(self):
+        response = self.client.get("/admin/scheduling/employee/")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Anna")
+        self.assertNotContains(response, "Berta")
+
+    def test_employee_changelist_scoped_to_active_tenant(self):
+        self._set_active_tenant(self.tenant_a)
+        response = self.client.get("/admin/scheduling/employee/")
+        self.assertContains(response, "Anna")
+        self.assertNotContains(response, "Berta")
+
+    def test_add_employee_blocked_without_active_tenant(self):
+        response = self.client.get("/admin/scheduling/employee/add/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_add_employee_node_dropdown_scoped_to_active_tenant(self):
+        self._set_active_tenant(self.tenant_a)
+        response = self.client.get("/admin/scheduling/employee/add/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Station A")
+        self.assertNotContains(response, "Station B")
+
+    def test_add_employee_tenant_field_locked_to_active_tenant(self):
+        self._set_active_tenant(self.tenant_a)
+        response = self.client.get("/admin/scheduling/employee/add/")
+        self.assertContains(response, "Klinik A")
+        self.assertNotContains(response, "Klinik B")
+
+    def test_node_changelist_scoped(self):
+        # NodeAdmin erbt von treebeard's TreeAdmin, nicht direkt von
+        # admin.ModelAdmin -- eigener Test, damit die Mixin-Kombination
+        # (TenantScopedAdminMixin, TreeAdmin) nicht nur bei "normalen"
+        # ModelAdmins geprüft ist.
+        response = self.client.get("/admin/scheduling/node/")
+        self.assertEqual(response.status_code, 200)
+        self._set_active_tenant(self.tenant_a)
+        response = self.client.get("/admin/scheduling/node/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Station A")
+        self.assertNotContains(response, "Station B")
+
+    def test_membership_admin_also_scoped(self):
+        # Membership erbt NICHT von TenantScopedModel -- prüft, dass die
+        # Mixin trotzdem funktioniert (explizite Filterung, nicht auf
+        # TenantScopedManager angewiesen).
+        Membership.objects.create(
+            user=User.objects.create_user(username="mem-a", password="pw-not-real-123!"),
+            tenant=self.tenant_a,
+            role=Membership.Role.PLANNER,
+        )
+        Membership.objects.create(
+            user=User.objects.create_user(username="mem-b", password="pw-not-real-123!"),
+            tenant=self.tenant_b,
+            role=Membership.Role.PLANNER,
+        )
+        response = self.client.get("/admin/core/membership/")
+        self.assertNotContains(response, "mem-a")
+        self.assertNotContains(response, "mem-b")
+
+        self._set_active_tenant(self.tenant_a)
+        response = self.client.get("/admin/core/membership/")
+        self.assertContains(response, "mem-a")
+        self.assertNotContains(response, "mem-b")
+
+    def test_tenant_admin_itself_not_scoped(self):
+        # Tenant selbst muss immer sichtbar sein, sonst liesse sich im
+        # Umschalter nie ein Tenant auswählen (Henne-Ei-Problem).
+        response = self.client.get("/admin/core/tenant/")
+        self.assertContains(response, "Klinik A")
+        self.assertContains(response, "Klinik B")
+
+    def test_non_staff_cannot_reach_tenant_switch(self):
+        self.client.logout()
+        User.objects.create_user(username="regular", password="pw-not-real-123!")
+        self.client.login(username="regular", password="pw-not-real-123!")
+        response = self.client.get("/admin/tenant-switch/")
+        self.assertEqual(response.status_code, 302)  # Redirect zum Admin-Login
+
+    def test_tenant_switch_sets_session(self):
+        response = self.client.post(
+            "/admin/tenant-switch/", {"tenant": str(self.tenant_a.pk), "next": "/admin/"}
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.client.session.get(ADMIN_TENANT_SESSION_KEY), str(self.tenant_a.pk))
+
+    def test_tenant_switch_clears_session(self):
+        self._set_active_tenant(self.tenant_a)
+        self.client.post("/admin/tenant-switch/", {"tenant": "", "next": "/admin/"})
+        self.assertNotIn(ADMIN_TENANT_SESSION_KEY, self.client.session)

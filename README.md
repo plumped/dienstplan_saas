@@ -522,6 +522,60 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     - *Noch offen*: ob ein Wunsch nach der Planung (sobald eine Schicht tatsächlich zugewiesen
       wurde) automatisch verschwinden/als "erfüllt"/"nicht erfüllt" markiert werden soll, oder ob
       er unabhängig davon stehen bleibt.
+14. **Tenant-Konfiguration im Settings-Tab (neues 5. Modul)**: alle numerischen ArG-/
+    Zuschlags-Grenzwerte sitzen als Felder auf `core.models.Tenant`, sind aber ausschliesslich im
+    Django-Admin editierbar -- ein Planer (`Membership.Role.PLANNER`) hat dort **keinen** Zugriff
+    (separates Berechtigungssystem über `User.is_staff`, siehe Architektur-Abschnitt), muss also
+    für jede Anpassung einen Admin/die IT bemühen. Betrifft aktuell: `minimum_rest_hours`,
+    `maximum_weekly_hours`, `maximum_daily_span_hours`, `time_record_deviation_tolerance_minutes`,
+    `standard_weekly_hours`, `overtime_surcharge_pct`, `default_vacation_days_per_year`,
+    `night_work_surcharge_pct`, `night_work_regular_threshold_nights`,
+    `night_work_permit_confirmed`, `sunday_work_surcharge_pct` (Block 1.1/1.5/1.6/1.11/2.7). Dafür
+    nötig:
+    - **Backend**: es gibt bisher **gar keinen** API-Endpoint für den Tenant selbst (nur
+      `GET /api/me/` liefert den Tenant-Namen als Teil einer anderen Ressource) -- erst
+      `GET`/`PATCH /api/tenant/` (Single-Object, kein ViewSet mit Liste, analog zu `MeView`)
+      schaffen, inkl. Serializer für alle oben genannten Felder.
+    - **Berechtigung, noch zu klären**: reicht `IsTenantManager` (Admin+Planer, wie bei
+      Node/Skill/Employee/TimeTemplate), oder sollten diese Werte -- weil sie direkt
+      Rechtssicherheit und Lohnzuschläge steuern -- **Admin-only** sein, strenger als der Rest der
+      Stammdaten? Tendenz: Admin-only, aber noch keine Entscheidung.
+    - **Frontend**: neues Modul in `SettingsPanel.jsx` (`MODULES`-Liste), thematisch gruppiert
+      statt einer flachen Feldliste (z. B. "Ruhezeit & Höchstarbeitszeit", "Pausen", "Überzeit",
+      "Ferien", "Nacht-/Sonntagsarbeit" als eigene Abschnitte/Akkordeons), mit demselben
+      Gesetzesartikel-Hinweis pro Feld, den der Django-Admin über `help_text` schon zeigt (aktuell
+      im Frontend nirgends sichtbar).
+15. **Employee-Zusatzfelder im Settings-Tab vervollständigen**: `last_night_work_medical_exam_date`
+    (Block 1.5) ist zwar schon über `EmployeeSerializer`/API erreichbar, aber noch nicht im
+    `EmployeeSettings.jsx`-Formular -- muss bislang wie vor Block 2.10 über den Django-Admin
+    gepflegt werden. Beim Ergänzen gleich prüfen, ob ein Datumsfeld mit Erklärtext ("wird nur für
+    regelmässige Nachtarbeiter:innen ausgewertet, siehe Saldo/Zeiterfassung") reicht, oder ob es
+    im Formular ausgeblendet werden soll, solange die Person nicht regelmässig nachts arbeitet.
+16. **UX-Überarbeitung der gesamten Einstellungen-Oberfläche**: über die fehlende
+    Tenant-Konfiguration (Punkt 14) hinaus wirkt die bestehende Oberfläche (`SettingsPanel.jsx` +
+    die vier Untermodule) insgesamt wenig selbsterklärend, gerade für eine nicht-technische
+    Praxisleitung. Konkrete Ansatzpunkte:
+    - **Einstiegsseite statt sofortigem Sprung ins erste Modul**: aktuell öffnet der Tab immer
+      direkt "Schichttypen" (`useState("templates")`); eine Kachel-/Karten-Übersicht mit
+      Kurzbeschreibung pro Modul (inkl. des neuen Tenant-Moduls aus Punkt 14) würde erst zeigen,
+      *was* sich wo einstellen lässt, bevor man in ein Formular springt.
+    - **Lange Formulare gliedern**: `EmployeeSettings.jsx` und das neue Tenant-Modul haben viele
+      Felder auf einer Ebene ohne visuelle Gruppierung (Stammdaten vs. Wochenstunden-Override vs.
+      Saldo-Startwerte); Abschnittsüberschriften oder Akkordeons würden das entzerren.
+    - **Feldnahe Erklärungen statt reinem Label**: der Django-Admin liefert zu praktisch jedem
+      Feld einen erklärenden `help_text` (Gesetzesartikel, Beispiel, Default-Begründung) -- im
+      Frontend gibt es aktuell nur nackte Labels wie "Wochenhöchststunden". Diese Erklärungen
+      sollten (gekürzt) als Tooltip/Hilfetext neben dem Feld erscheinen, nicht nur im Admin.
+    - **Feldbezogene statt nur globaler Fehlermeldungen**: `onError`/`setError` in `App.jsx` zeigt
+      aktuell einen einzigen globalen Banner für den gesamten Tab -- bei einem Formular mit vielen
+      Feldern (z. B. "Ruhezeit darf nicht negativ sein") ist unklar, welches Feld betroffen ist.
+      Serverseitige Validierungsfehler pro Feld (DRF liefert sie bereits strukturiert) sollten
+      direkt am Feld angezeigt werden.
+    - **Suchfunktion in langen Listen**: `EmployeeSettings`/`SkillSettings` zeigen alle Einträge
+      als flache Liste -- bei 30+ Mitarbeitenden (realistische Praxisgrösse laut Zielgruppe oben)
+      wird das unübersichtlich; ein einfaches Textfilter-Feld über der Liste würde reichen.
+    - *Bewusst kein fixes Detail-Design hier festgelegt* -- diese Punkte sind Ansatzpunkte für eine
+      Überarbeitung, keine fertige Spezifikation.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

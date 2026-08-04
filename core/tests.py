@@ -175,3 +175,73 @@ class MeViewTests(APITestCase):
     def test_anonymous_request_is_rejected(self):
         response = self.client.get("/api/me/")
         self.assertEqual(response.status_code, 403)
+
+
+class TenantConfigAPITests(APITestCase):
+    """
+    GET/PATCH /api/tenant/ (MVP-Fahrplan Block 2, Punkt 14): Lesen für alle
+    Rollen offen, Schreiben Admin-only (core.permissions.IsTenantAdmin) --
+    strenger als IsTenantManager (Admin+Planer) sonst überall in der App.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _membership(self, username, role):
+        user = User.objects.create_user(username=username, password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=self.tenant, role=role)
+        return user
+
+    def test_admin_can_read(self):
+        self.auth_as(self._membership("admin", Membership.Role.ADMIN))
+        response = self.client.get("/api/tenant/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["minimum_rest_hours"], 11)
+        self.assertEqual(response.data["name"], "Klinik A")
+
+    def test_planner_employee_and_hr_can_read(self):
+        for role in (Membership.Role.PLANNER, Membership.Role.EMPLOYEE, Membership.Role.HR):
+            self.auth_as(self._membership(f"user-{role}", role))
+            response = self.client.get("/api/tenant/")
+            self.assertEqual(response.status_code, 200, role)
+
+    def test_admin_can_update(self):
+        self.auth_as(self._membership("admin", Membership.Role.ADMIN))
+        response = self.client.patch(
+            "/api/tenant/", {"minimum_rest_hours": 12, "night_work_permit_confirmed": True}, format="json"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.minimum_rest_hours, 12)
+        self.assertTrue(self.tenant.night_work_permit_confirmed)
+
+    def test_planner_cannot_update(self):
+        self.auth_as(self._membership("planner", Membership.Role.PLANNER))
+        response = self.client.patch("/api/tenant/", {"minimum_rest_hours": 12}, format="json")
+        self.assertEqual(response.status_code, 403)
+
+    def test_employee_cannot_update(self):
+        self.auth_as(self._membership("employee", Membership.Role.EMPLOYEE))
+        response = self.client.patch("/api/tenant/", {"minimum_rest_hours": 12}, format="json")
+        self.assertEqual(response.status_code, 403)
+
+    def test_name_and_id_are_read_only(self):
+        self.auth_as(self._membership("admin", Membership.Role.ADMIN))
+        response = self.client.patch("/api/tenant/", {"name": "Anderer Name"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.name, "Klinik A")
+
+    def test_anonymous_request_is_rejected(self):
+        response = self.client.get("/api/tenant/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_user_without_membership_gets_not_found(self):
+        user = User.objects.create_user(username="orphan", password="pw-not-real-123!")
+        self.auth_as(user)
+        response = self.client.get("/api/tenant/")
+        self.assertEqual(response.status_code, 404)

@@ -783,6 +783,26 @@ thead .col-employee {
   min-height: 84px;
 }
 
+/* Block 2.14: Tenant-Konfiguration -- gruppierte Felder statt einer langen
+   flachen Liste, siehe TenantSettings.jsx. */
+.panel-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* .checkbox-row ist hier selbst ein <label>, das sonst die
+   flex-direction: column von ".panel-form label" erben würde (höhere
+   Spezifität als ".checkbox-row" allein) -- Checkbox + Text sollen aber wie
+   überall sonst in einer Zeile stehen. */
+.panel-form .checkbox-row {
+  flex-direction: row;
+  align-items: center;
+}
+
 .panel-form h3 {
   font-size: 13px;
   margin: 4px 0 0;

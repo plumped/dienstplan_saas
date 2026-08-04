@@ -129,13 +129,14 @@ ihre eigene per `migrate`.
   es die volle Planer-Oberfläche oder die read-only Self-Service-Ansicht zeigt (siehe Frontend-
   Abschnitt unten).
 
-  Innerhalb der Kundenrollen sind Admin und Planer aktuell **funktional identisch**:
-  `MANAGER_ROLES = {ADMIN, PLANNER}` behandelt beide überall gleich. Bewusst so für das
-  Tagesgeschäft (Node/Skill/Employee/TimeTemplate/ShiftAssignment) -- eine strikte Trennung würde
-  dort nur Reibung erzeugen, ohne einen echten Interessenkonflikt abzubilden. Für die geplante
-  Tenant-Konfiguration (numerische ArG-/Zuschlags-Grenzwerte, MVP-Fahrplan Block 2, Punkt 14) gilt
-  das nicht: die steuert Rechtssicherheit und Lohnzuschläge direkt, deshalb dort **Admin-only** --
-  die erste Stelle im System, an der die beiden Rollen sich tatsächlich unterscheiden.
+  Innerhalb der Kundenrollen sind Admin und Planer für das Tagesgeschäft **funktional identisch**:
+  `MANAGER_ROLES = {ADMIN, PLANNER}` behandelt beide bei Node/Skill/Employee/TimeTemplate/
+  ShiftAssignment gleich. Bewusst so -- eine strikte Trennung würde dort nur Reibung erzeugen,
+  ohne einen echten Interessenkonflikt abzubilden. Für die Tenant-Konfiguration (numerische ArG-/
+  Zuschlags-Grenzwerte, MVP-Fahrplan Block 2, Punkt 14) gilt das nicht: die steuert
+  Rechtssicherheit und Lohnzuschläge direkt, deshalb dort **Admin-only**
+  (`core.permissions.IsTenantAdmin`) -- die einzige Stelle im System, an der sich die beiden
+  Rollen tatsächlich unterscheiden.
 
 - **Django Admin (`/admin/`) ist bewusst kein Kundenzugriff, sondern ein Betreiber-Werkzeug**:
   gesteuert über `User.is_staff`/`is_superuser` (Standard-Django), ein von `Membership.Role`
@@ -560,32 +561,30 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     - *Noch offen*: ob ein Wunsch nach der Planung (sobald eine Schicht tatsächlich zugewiesen
       wurde) automatisch verschwinden/als "erfüllt"/"nicht erfüllt" markiert werden soll, oder ob
       er unabhängig davon stehen bleibt.
-14. **Tenant-Konfiguration im Settings-Tab (neues 5. Modul)**: alle numerischen ArG-/
-    Zuschlags-Grenzwerte sitzen als Felder auf `core.models.Tenant`, sind aber ausschliesslich im
-    Django-Admin editierbar -- ein Planer (`Membership.Role.PLANNER`) hat dort **keinen** Zugriff
-    (separates Berechtigungssystem über `User.is_staff`, siehe Architektur-Abschnitt), muss also
-    für jede Anpassung einen Admin/die IT bemühen. Betrifft aktuell: `minimum_rest_hours`,
-    `maximum_weekly_hours`, `maximum_daily_span_hours`, `time_record_deviation_tolerance_minutes`,
-    `standard_weekly_hours`, `overtime_surcharge_pct`, `default_vacation_days_per_year`,
-    `night_work_surcharge_pct`, `night_work_regular_threshold_nights`,
-    `night_work_permit_confirmed`, `sunday_work_surcharge_pct` (Block 1.1/1.5/1.6/1.11/2.7). Dafür
-    nötig:
-    - **Backend**: es gibt bisher **gar keinen** API-Endpoint für den Tenant selbst (nur
-      `GET /api/me/` liefert den Tenant-Namen als Teil einer anderen Ressource) -- erst
-      `GET`/`PATCH /api/tenant/` (Single-Object, kein ViewSet mit Liste, analog zu `MeView`)
-      schaffen, inkl. Serializer für alle oben genannten Felder.
-    - **Berechtigung: Admin-only** (Entscheid, siehe Architektur-Abschnitt) -- strenger als
-      `IsTenantManager` (Admin+Planer), das für Node/Skill/Employee/TimeTemplate/ShiftAssignment
-      gilt. Begründung: diese Werte steuern direkt Rechtssicherheit und Lohnzuschläge, nicht das
-      Tagesgeschäft der Planung; ausserdem wären Admin und Planer sonst in der ganzen App
-      funktional identisch (`MANAGER_ROLES` behandelt beide bislang überall gleich) -- das hier
-      wäre die erste Stelle, an der sich die beiden Rollen tatsächlich unterscheiden. Braucht eine
-      neue Permission-Klasse (Admin-only, keine bestehende passt) statt `IsTenantManager`.
-    - **Frontend**: neues Modul in `SettingsPanel.jsx` (`MODULES`-Liste), thematisch gruppiert
-      statt einer flachen Feldliste (z. B. "Ruhezeit & Höchstarbeitszeit", "Pausen", "Überzeit",
-      "Ferien", "Nacht-/Sonntagsarbeit" als eigene Abschnitte/Akkordeons), mit demselben
-      Gesetzesartikel-Hinweis pro Feld, den der Django-Admin über `help_text` schon zeigt (aktuell
-      im Frontend nirgends sichtbar).
+14. ✅ **Tenant-Konfiguration im Settings-Tab (neues 5. Modul)**: alle numerischen ArG-/
+    Zuschlags-Grenzwerte sassen bisher ausschliesslich als Felder auf `core.models.Tenant`, nur im
+    Django-Admin editierbar -- ein Planer (`Membership.Role.PLANNER`) hat dort ohnehin **keinen**
+    Zugriff (separates Berechtigungssystem über `User.is_staff`, siehe Architektur-Abschnitt), und
+    selbst ein Kunden-Admin sollte `/admin/` nie erreichen (siehe dort). Betrifft
+    `minimum_rest_hours`, `maximum_weekly_hours`, `maximum_daily_span_hours`,
+    `time_record_deviation_tolerance_minutes`, `standard_weekly_hours`, `overtime_surcharge_pct`,
+    `default_vacation_days_per_year`, `night_work_surcharge_pct`,
+    `night_work_regular_threshold_nights`, `night_work_permit_confirmed`,
+    `sunday_work_surcharge_pct` (Block 1.1/1.5/1.6/1.11/2.7).
+    - **Backend**: `GET`/`PATCH /api/tenant/` (`core.views.TenantView`, Single-Object statt
+      ViewSet-Liste, analog zu `MeView`) + `core.serializers.TenantSerializer` für alle oben
+      genannten Felder (`name`/`id` read-only). Lesen ist wie überall in der App für alle vier
+      Rollen offen; Schreiben ist **Admin-only** über die neue Permission-Klasse
+      `core.permissions.IsTenantAdmin` -- die erste Stelle im System, an der sich Admin und Planer
+      tatsächlich unterscheiden (siehe Architektur-Abschnitt).
+    - **Frontend**: neues Modul "Regel-Engine & Zuschläge" in `SettingsPanel.jsx`, thematisch in
+      fünf Abschnitte gruppiert (Ruhezeit & Höchstarbeitszeit, Zeiterfassung, Überzeit, Ferien,
+      Nacht-/Sonntagsarbeit), jedes Feld mit demselben Gesetzesartikel-Hinweis, den bisher nur der
+      Django-Admin über `help_text` zeigte (`TenantSettings.jsx`). Der Tab erscheint in der
+      Modul-Navigation nur für `Membership.Role.ADMIN` (`src/roles.js: isTenantAdmin`, gespiegelt
+      aus `IsTenantAdmin`) -- ein Planer sieht ihn gar nicht erst, obwohl er alle anderen
+      Settings-Module weiterhin sieht/bearbeitet. Die eigentliche Absicherung bleibt serverseitig
+      (403 bei PATCH-Versuch), wie beim übrigen rollenbewussten Frontend.
 15. **Employee-Zusatzfelder im Settings-Tab vervollständigen**: `last_night_work_medical_exam_date`
     (Block 1.5) ist zwar schon über `EmployeeSerializer`/API erreichbar, aber noch nicht im
     `EmployeeSettings.jsx`-Formular -- muss bislang wie vor Block 2.10 über den Django-Admin

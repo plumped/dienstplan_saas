@@ -11,3 +11,10 @@ export const ROLE_LABELS = {
 export function canManageSchedule(me) {
   return me?.role === "admin" || me?.role === "planner";
 }
+
+// Deckt sich mit core.permissions.IsTenantAdmin (Block 2, Punkt 14) --
+// strenger als canManageSchedule: nur Admin, nicht Planer, darf die
+// Tenant-Konfiguration (ArG-/Zuschlags-Grenzwerte) schreiben.
+export function isTenantAdmin(me) {
+  return me?.role === "admin";
+}

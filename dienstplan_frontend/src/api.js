@@ -74,6 +74,11 @@ export const api = {
 
   getMe: () => request("/me/"),
 
+  // Tenant-Konfiguration (Block 2.14): Single-Object-Endpoint
+  // (core.views.TenantView), keine Liste -- genau ein Tenant pro Account.
+  getTenant: () => request("/tenant/"),
+  updateTenant: (payload) => request("/tenant/", { method: "PATCH", body: payload }),
+
   getNodes: () => request("/nodes/"),
   createNode: (payload) => request("/nodes/", { method: "POST", body: payload }),
   updateNode: (id, payload) => request(`/nodes/${id}/`, { method: "PATCH", body: payload }),

@@ -148,7 +148,7 @@ export default function App() {
           // ohne Stationen muss die Einstellungen erreichen können, um
           // überhaupt eine erste Station anzulegen (siehe SettingsPanel ->
           // NodeSettings).
-          <SettingsPanel onError={setError} />
+          <SettingsPanel me={me} onError={setError} />
         ) : !nodeId ? (
           <p className="empty-state">
             {canManageSchedule(me)

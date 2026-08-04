@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { isTenantAdmin } from "../roles.js";
 import EmployeeSettings from "./EmployeeSettings.jsx";
 import NodeSettings from "./NodeSettings.jsx";
 import SkillSettings from "./SkillSettings.jsx";
+import TenantSettings from "./TenantSettings.jsx";
 import TimeTemplateSettings from "./TimeTemplateSettings.jsx";
 
 const MODULES = [
@@ -10,14 +12,19 @@ const MODULES = [
   { id: "employees", label: "Mitarbeitende" },
   { id: "nodes", label: "Stationen" },
   { id: "skills", label: "Skills" },
+  // Block 2.14: Admin-only, strenger als die übrigen Module (die auch
+  // Planer sehen/bearbeiten dürfen) -- steuert Rechtssicherheit und
+  // Lohnzuschläge, siehe README Architektur-Abschnitt.
+  { id: "tenant", label: "Regel-Engine & Zuschläge", adminOnly: true },
 ];
 
 // Block 2.10: Stammdaten-Selfservice für Admin/Planer, bisher nur im
 // Django-Admin möglich -- der Nodes/Skills als geteilte Referenzdaten
 // zwischen mehreren Modulen (Schichttypen brauchen Stationen+Skills,
 // Mitarbeitende brauchen Stationen+Skills) hier zentral lädt.
-export default function SettingsPanel({ onError }) {
+export default function SettingsPanel({ me, onError }) {
   const [module, setModule] = useState("templates");
+  const visibleModules = MODULES.filter((m) => !m.adminOnly || isTenantAdmin(me));
   const [nodes, setNodes] = useState([]);
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -44,7 +51,7 @@ export default function SettingsPanel({ onError }) {
   return (
     <div className="settings-panel">
       <nav className="settings-nav">
-        {MODULES.map((m) => (
+        {visibleModules.map((m) => (
           <button
             key={m.id}
             type="button"
@@ -76,6 +83,7 @@ export default function SettingsPanel({ onError }) {
           onError={onError}
         />
       )}
+      {module === "tenant" && isTenantAdmin(me) && <TenantSettings onError={onError} />}
     </div>
   );
 }

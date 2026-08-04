@@ -36,6 +36,24 @@ class IsTenantManager(BasePermission):
         return bool(membership and membership.role in MANAGER_ROLES)
 
 
+class IsTenantAdmin(BasePermission):
+    """
+    Für die Tenant-Konfiguration (MVP-Fahrplan Block 2, Punkt 14): Schreiben
+    ist Admin-only vorbehalten -- strenger als IsTenantManager (Admin+
+    Planer). Begründung: diese Werte (numerische ArG-/Zuschlags-Grenzwerte)
+    steuern direkt Rechtssicherheit und Lohnzuschläge, nicht das
+    Tagesgeschäft der Planung (siehe README, Architektur-Abschnitt). Lesen
+    bleibt wie überall in der App für alle vier Rollen offen (Transparenz)
+    -- nur das Schreiben ist eingeschränkter als sonst.
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        membership = getattr(request, "membership", None)
+        return bool(membership and membership.role == Membership.Role.ADMIN)
+
+
 class OwnEmployeeRecordPermission(BasePermission):
     """
     Für Absenzen: Admin/Planer dürfen alles, inkl. der Genehmigungs-Actions

@@ -1,5 +1,4 @@
 __pycache__/
 *.pyc
 venv/
-db.sqlite3
 dienstplan_frontend/dist/

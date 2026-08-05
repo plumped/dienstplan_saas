@@ -23,6 +23,12 @@ const ABSENCE_NAMES = {
 
 export default function ShiftCell({
   templates,
+  // README Punkt 17 Nachbesserung: templates bleibt der volle, stationsweite
+  // Katalog (für Namens-/Farb-Lookups z. B. beim Wunschdienst, der
+  // personenweit gilt und nicht auf das eigene Team beschränkt ist).
+  // assignableTemplates ist die für DIESE Zeile (Team) tatsächlich
+  // zuweisbare Teilmenge -- fällt auf templates zurück, falls nicht gesetzt.
+  assignableTemplates = templates,
   selectedTemplateId,
   templateInfo,
   onChange,
@@ -298,7 +304,7 @@ export default function ShiftCell({
         }}
       >
         <option value="">— leer —</option>
-        {templates.map((t) => (
+        {assignableTemplates.map((t) => (
           <option key={t.id} value={t.id}>
             {t.name} ({t.start_time.slice(0, 5)}–{t.end_time.slice(0, 5)})
           </option>

@@ -583,12 +583,12 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    nicht aktualisierten ersten kollidiert).
 9. ✅ **Mindestbesetzung pro Schicht/Node** (2026-08): neues Feld `TimeTemplate.minimum_staffing`
    (Default 0 = keine Mindestbesetzung definiert, rein additiv). Bewusst **eine** Zahl pro
-   `TimeTemplate`, stationsweit über alle Team-Zuweisungen gezählt, nicht pro Team separat --
-   `TimeTemplate.node` ist ohnehin immer die Station (Punkt 17), und "ist diese Schicht besetzt"
-   ist inhaltlich eine Frage der physischen Abdeckung, nicht der administrativen
-   Team-Zugehörigkeit. Brauchen zwei Teams für dasselbe Zeitfenster unterschiedliche Minima, deckt
-   das bestehende Modell das bereits ohne neue Tabelle ab: zwei separat benannte `TimeTemplate`s
-   für dasselbe Zeitfenster, je mit eigenem `minimum_staffing`. Rein informativ wie
+   `TimeTemplate`, über alle ihre Zuweisungen gezählt (unabhängig davon, ob das Template
+   stationsweit oder einem einzelnen Team zugeordnet ist, siehe Nachbesserung unten) -- "ist diese
+   Schicht besetzt" ist inhaltlich eine Frage der physischen Abdeckung dieses Schichttyps, nicht der
+   administrativen Team-Zugehörigkeit. Brauchen zwei Teams für dasselbe Zeitfenster unterschiedliche
+   Minima, deckt das bestehende Modell das bereits ohne neue Tabelle ab: zwei separat benannte
+   `TimeTemplate`s für dasselbe Zeitfenster, je mit eigenem `minimum_staffing`. Rein informativ wie
    `night_hours`/`is_sunday` -- **keine** neue Regel-Engine-Prüfung, `ShiftAssignment.clean()`
    bleibt unverändert, eine unterbesetzte Schicht blockiert nichts. **Kein neuer Endpoint**: die
    Auswertung "Ist-Anzahl vs. Minimum pro Tag" passiert rein clientseitig in `PlanGrid.jsx`, weil
@@ -848,11 +848,53 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
         `emp.employments`, statt sie zu verwerfen.
       - **Jahresplan zeigte keine Dienste für Team-Anstellungen**: `YearPlan.jsx` filterte
         `TimeTemplate`s nach `selectedNode` (der Team-Id bei einer Employment), `TimeTemplate.node`
-        ist aber bewusst immer stationsweit (siehe oben, "ein Team teilt sich den
-        Schichttyp-Katalog der Station"). `templates` war dadurch für jede Team-Anstellung leer,
-        der Template-Lookup pro Tageszelle schlug folglich immer fehl und die Zelle zeigte "frei"
-        an, obwohl die zugrunde liegende `ShiftAssignment` korrekt geladen war. Fix: Filter wie in
-        `PlanGrid.jsx` nach der Station (`nodeId`), nicht nach dem Team.
+        war zu diesem Zeitpunkt aber ausnahmslos die Station. `templates` war dadurch für jede
+        Team-Anstellung leer, der Template-Lookup pro Tageszelle schlug folglich immer fehl und die
+        Zelle zeigte "frei" an, obwohl die zugrunde liegende `ShiftAssignment` korrekt geladen war.
+        Fix zu diesem Zeitpunkt: Filter wie in `PlanGrid.jsx` nach der Station (`nodeId`), nicht
+        nach dem Team -- **diese Annahme ("TimeTemplate.node ist immer die Station") wurde in der
+        folgenden Nachbesserung revidiert**, siehe unten.
+
+    - **Weitere Nachbesserung (2026-08): Schichttypen pro Team statt zwingend stationsweit** --
+      Nutzer-Feedback anhand der echten Testheim-Daten deckte zwei zusammenhängende Lücken auf:
+      - **Direkte Team-Auswahl zeigte keine Schichten**: wählte man im NodeSelector ein Team direkt
+        (statt die Station), blieb `templates` in `PlanGrid.jsx` leer (`t.node === nodeId` traf nie
+        zu, weil `TimeTemplate.node` bis dahin ausnahmslos die Station war) -- das Planblatt liess
+        sich für diese Ansicht gar nicht befüllen.
+      - **Team-Zeilen zeigten den kompletten Stations-Katalog statt nur die eigenen Schichten**: in
+        der gruppierten Stationsansicht bekam jede Team-Zeile identisch alle Schichttypen der
+        Station zur Auswahl -- ein Tagdienst-Team sah z. B. auch "Nachtwache" im Dropdown und in der
+        Mehrfachauswahl-Stempelleiste, obwohl die nur für das Nacht-Team gilt.
+      Beide Symptome haben dieselbe Ursache: `TimeTemplate.node` musste bislang zwingend die Station
+      sein, obwohl das Datenmodell (einfache FK auf `Node`) ein Team dort schon immer zugelassen
+      hätte -- nur die Frontend-Filterung ging überall stur von "Station" aus. Fix, ohne
+      Backend-/Migrationsänderung (rein Frontend + Nutzung des bereits flexiblen Feldes):
+      - Neuer Helper `stationScope(nodes, nodeId)` (`PlanGrid.jsx`) löst zu einem beliebig gewählten
+        Knoten (Station oder eines ihrer Teams) die zugehörige Station plus alle ihre Team-Kinder
+        auf (Eltern-Suche über `depth`/`path`, nicht nur Kinder-Suche wie das ältere
+        `App.jsx: relevantNodeIds`) -- damit lädt `templates` jetzt vollständig, unabhängig davon,
+        ob im NodeSelector die Station selbst oder direkt eines ihrer Teams gewählt wurde.
+      - Pro Zeile filtert `PlanGrid.jsx` jetzt zusätzlich auf `t.node === rowNodeId` (neue Prop
+        `assignableTemplates` an `ShiftCell.jsx`, getrennt von der weiterhin vollen `templates`-Liste,
+        die z. B. der personenweite Wunschdienst-Editor unverändert braucht) -- eine Team-Zeile sieht
+        dadurch nur noch ihre eigenen Schichttypen. Die Mehrfachauswahl-Stempelleiste bildet dafür die
+        Vereinigung der Schichttypen aller aktuell markierten Zeilen (`stampTemplates`, aus dem
+        Team-Anteil jedes `markedCells`-Schlüssels). `YearPlan.jsx` (das immer nur eine Anstellung
+        gleichzeitig zeigt) filtert dafür schlicht nach `t.node === selectedNode`.
+      - `TimeTemplateSettings.jsx`: die "Station"-Auswahl beim Anlegen/Bearbeiten eines Schichttyps
+        listet Teams jetzt eingerückt wie im `NodeSelector` (vorher nicht von Stationen zu
+        unterscheiden) plus einem Hinweistext, dass ein Schichttyp auf der Station allen ihren Teams
+        gemeinsam zur Verfügung steht, ein Schichttyp direkt auf einem Team dagegen nur dort.
+      - Reine Zusatz-Möglichkeit, kein Zwang: ein Schichttyp bleibt weiterhin gültig auf der Station
+        (geteilter Katalog) -- Teams mit tatsächlich geteilten Schichten müssen nichts ändern. Die
+        Testheim-Demodaten wurden auf die jetzt mögliche, sauberere Zuordnung nachgezogen
+        (Frühschicht/Spätschicht → Pflege Tag, Nachtwache → Pflege Nacht, MPA → Sekretariat A,
+        Küchendienst → Küche, Reinigungsdienst → Reinigung), weil jede dieser Schichten in der
+        Praxis ohnehin exklusiv von genau einem Team genutzt wurde.
+      - Mit Playwright verifiziert: direkte Team-Auswahl zeigt die Schichten korrekt; in der
+        Stationsansicht zeigt die Tagdienst-Zeile nur Früh-/Spätschicht, die Nachtdienst-Zeile nur
+        Nachtwache (weder im Einzel-Dropdown noch in der Stempelleiste mischen sich die Kataloge
+        mehr); Jahresplan einer Team-Anstellung zeigt ebenfalls nur deren eigene Schichttypen.
 
     Zwei Fakten, die zusammen betrachtet werden müssen, weil sie dieselbe Modell-Lücke
     treffen:

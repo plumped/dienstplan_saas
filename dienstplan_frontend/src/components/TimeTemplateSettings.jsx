@@ -135,7 +135,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
             />
           </label>
           <label>
-            Station
+            Station / Team
             <select
               value={form.node}
               onChange={(e) => setForm((prev) => ({ ...prev, node: e.target.value }))}
@@ -143,12 +143,18 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
             >
               {nodes.map((n) => (
                 <option key={n.id} value={n.id}>
+                  {"  ".repeat(Math.max(n.depth - 1, 0))}
                   {n.name}
                 </option>
               ))}
             </select>
           </label>
         </div>
+        <p className="panel-hint">
+          Ein Schichttyp auf einer Station steht allen ihren Teams gemeinsam zur Verfügung; ein
+          Schichttyp direkt auf einem Team ist nur dort auswählbar (z. B. "Nachtwache" nur beim
+          Nacht-Team, nicht beim Tag-Team derselben Station).
+        </p>
         <div className="panel-form-row">
           <label>
             Beginn

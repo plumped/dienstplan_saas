@@ -61,6 +61,22 @@ function weekdayLabel(year, month, day) {
   return WEEKDAYS_SHORT[jsDay === 0 ? 6 : jsDay - 1];
 }
 
+// Löst für einen im NodeSelector gewählten Knoten die zugehörige Station
+// (Elternknoten, falls der gewählte Knoten selbst ein Team ist) plus alle
+// ihre Team-Kinder auf -- unabhängig davon, ob im Selector die Station
+// selbst oder direkt eines ihrer Teams gewählt wurde. Bugfix: bisher wurden
+// TimeTemplates ausschliesslich nach `t.node === nodeId` geladen, was bei
+// direkter Team-Auswahl immer leer blieb (TimeTemplate.node kann seit der
+// Team-Filterung unten sowohl die Station als auch ein einzelnes Team sein).
+function stationScope(nodes, nodeId) {
+  const selected = nodes.find((n) => n.id === nodeId);
+  if (!selected) return { stationId: nodeId, scopeIds: [nodeId] };
+  const parent = nodes.find((n) => n.depth === selected.depth - 1 && selected.path.startsWith(n.path));
+  const station = parent ?? selected;
+  const children = nodes.filter((n) => n.depth === station.depth + 1 && n.path.startsWith(station.path));
+  return { stationId: station.id, scopeIds: [station.id, ...children.map((n) => n.id)] };
+}
+
 export default function PlanGrid({ nodeId, nodes, year, month, employees, me, onError }) {
   const [templates, setTemplates] = useState([]);
   const [assignments, setAssignments] = useState([]);
@@ -94,6 +110,8 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   );
   const dateFrom = isoDate(year, month, 1);
   const dateTo = isoDate(year, month, days.length);
+
+  const { scopeIds: templateScopeIds } = useMemo(() => stationScope(nodes, nodeId), [nodes, nodeId]);
 
   // README Punkt 17: eine Station mit Teams (direkte Kind-Knoten, genau eine
   // Ebene) zeigt das Planblatt als gemeinsame Tabelle mit Trennzeilen pro
@@ -185,7 +203,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     ])
       .then(([templatesRes, assignmentsRes, absencesRes, timeRecordsRes, preferencesRes, holidaysRes]) => {
         if (cancelled) return;
-        setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === nodeId));
+        setTemplates((templatesRes.results ?? templatesRes).filter((t) => templateScopeIds.includes(t.node)));
         setAssignments(assignmentsRes.results ?? assignmentsRes);
         // Nur genehmigte Absenzen blockieren/zeigen sich im Grid (siehe
         // ShiftAssignment._check_no_absence_conflict im Backend) -- offene
@@ -202,7 +220,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeId, dateFrom, dateTo, canManage, ownEmployeeId, year]);
+  }, [nodeId, dateFrom, dateTo, canManage, ownEmployeeId, year, templateScopeIds]);
 
   // Beendet einen laufenden Ziehvorgang auch dann, wenn die Maustaste
   // ausserhalb einer Zelle losgelassen wird (z. B. nach dem Verlassen des
@@ -258,6 +276,15 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     for (const p of preferences) map.set(`${p.employee}:${p.date}`, p);
     return map;
   }, [preferences]);
+
+  // Stempel-Leiste zeigt nur die Schichttypen der tatsächlich markierten
+  // Zeilen (Team-Knoten aus dem dritten Teil jedes markedCells-Schlüssels,
+  // siehe startMark) -- sind Zellen aus mehreren Teams markiert, wird die
+  // Vereinigung ihrer jeweiligen Schichttypen angezeigt.
+  const stampTemplates = useMemo(() => {
+    const markedRowNodeIds = new Set(Array.from(markedCells, (key) => Number(key.split(":")[2])));
+    return templates.filter((t) => markedRowNodeIds.has(t.node));
+  }, [templates, markedCells]);
 
   async function handleSaveWish(date, existing, payload) {
     try {
@@ -566,7 +593,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
               <span className="multi-select-hint">
                 {markedCells.size} markiert -- Schichttyp zum Zuweisen anklicken:
               </span>
-              {templates.map((t) => (
+              {stampTemplates.map((t) => (
                 <button
                   key={t.id}
                   type="button"
@@ -655,6 +682,11 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
               const pctLabel = employment
                 ? `${employment.pensum_pct}%${employment.title ? ` ${employment.title}` : ""}`
                 : `${emp.employment_pct}%`;
+              // Nur die Schichttypen dieses konkreten Teams (bzw. der Station
+              // selbst im teamlosen Fall) stehen beim Zuweisen zur Auswahl --
+              // sonst würde z. B. "Nachtwache" auch in der Zeile eines
+              // Tagdienst-Teams auftauchen, obwohl sie dort nie zutrifft.
+              const rowAssignableTemplates = templates.filter((t) => t.node === rowNodeId);
               return (
                 <tr key={row.key}>
                   <th scope="row" className="col-employee">
@@ -712,6 +744,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                       >
                         <ShiftCell
                           templates={templates}
+                          assignableTemplates={rowAssignableTemplates}
                           selectedTemplateId={assignment?.template ?? null}
                           templateInfo={template}
                           employeeId={emp.id}

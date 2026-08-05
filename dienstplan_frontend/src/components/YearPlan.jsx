@@ -165,11 +165,13 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
     ])
       .then(([templatesRes, assignmentsRes, absencesRes, preferencesRes, holidaysRes]) => {
         if (cancelled) return;
-        // TimeTemplate.node ist immer stationsweit (README Punkt 17: "ein
-        // Team teilt sich den Schichttyp-Katalog der Station") -- nach
-        // selectedNode (der bei Team-Anstellungen die Team-Id ist) filtern
-        // würde hier immer eine leere Liste ergeben, siehe PlanGrid.jsx.
-        setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === nodeId));
+        // Nachbesserung: TimeTemplate.node kann sowohl die Station (geteilter
+        // Katalog) als auch ein einzelnes Team sein (siehe PlanGrid.jsx) --
+        // hier zeigt der Jahresplan ohnehin immer nur eine konkrete
+        // Anstellung, daher exakt nach selectedNode filtern (bei einer
+        // teamlosen Station ist das identisch mit der Station selbst, siehe
+        // employmentOptions-Fallback oben).
+        setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === selectedNode));
         const allAssignments = assignmentsRes.results ?? assignmentsRes;
         // README Punkt 17: nur die Zuweisungen dieser konkreten Anstellung
         // (Employee UND Node) -- bei Mehrfachanstellung liefert

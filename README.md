@@ -6,9 +6,9 @@ Multi-Tenancy per `tenant_id` (shared database), getestet inkl. Cross-Tenant-Sic
 
 **Zielgruppe**: kleine Kliniken, Arztpraxen und ähnliche Gesundheitsbetriebe in der Schweiz
 (typischerweise 5–50 Mitarbeitende, eine bis wenige Stationen/Standorte). Die Regel-Engine bildet
-bereits mehrere Kernpunkte des Schweizer Arbeitsgesetzes (ArG) ab (siehe nächster Abschnitt) --
-was für einen rechtssicheren Praxiseinsatz noch fehlt (u. a. automatische
-Ersatzruhetag-Kontrolle), steht im
+bereits mehrere Kernpunkte des Schweizer Arbeitsgesetzes (ArG) ab (siehe nächster Abschnitt,
+inkl. einer vereinfachten, rein informativen Ersatzruhetag-Kontrolle) -- was für einen
+rechtssicheren Praxiseinsatz noch fehlt, steht im
 [MVP-Fahrplan](#mvp-fahrplan-bis-zur-marktreife). **Kein Ersatz für eine arbeitsrechtliche
 Prüfung** — die hinterlegten Grenzwerte sind Standardwerte, kein Rechtsrat.
 
@@ -23,8 +23,14 @@ python manage.py runserver
 ```
 
 Admin unter `/admin/`, API unter `/api/` (Browsable API inkl. Login unter `/api-auth/login/`).
-`db.sqlite3` ist bewusst nicht (mehr) im Repo (siehe `.gitignore`) — jede Umgebung erzeugt sich
-ihre eigene per `migrate`.
+`db.sqlite3` steht trotz `.gitignore`-Eintrag **im Repo** (bereits vor dem `.gitignore`-Eintrag
+committet, ein `.gitignore`-Eintrag entfernt kein bereits getracktes File) und enthält echte,
+gepflegte Demo-/Testdaten des Tenants "Testheim" (Stationen, Teams, Mitarbeitende, Zuweisungen) --
+`migrate`/`createsuperuser` sind für ein frisches Setup trotzdem nötig, überschreiben die
+vorhandenen Daten aber nicht. Änderungen an dieser Datenbank (z. B. lokal zurückgesetzte
+Passwort-Hashes für Playwright-Tests) sollten vor jedem Commit per `git checkout -- db.sqlite3`
+verworfen werden, ausser die Datenänderung ist selbst der beabsichtigte Commit-Inhalt (z. B. eine
+Migration mit Backfill oder neue Beispieldaten).
 
 ## Architektur-Entscheidungen, die wichtig zu kennen sind
 
@@ -374,9 +380,9 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     und `Employee.weekly_hours_summary` verwenden `self.employee.<feld> or self.tenant.<feld>`.
     Bewusst als Override direkt auf `Employee` (nicht auf `Node`/als eigenes
     "Personalkategorie"-Modell), da die Grenze eine Eigenschaft der einzelnen Anstellung ist.
-    *Noch offen*: keine Frontend-Oberfläche zum Setzen (aktuell nur im Django-Admin unter
-    Employee editierbar, siehe Block 2.10); gleiche Überlegung gilt potenziell auch für
-    `minimum_rest_hours`, hier aber erst nachziehen, falls in der Praxis tatsächlich gebraucht.
+    Frontend-Oberfläche zum Setzen inzwischen vorhanden (`EmployeeSettings.jsx`, siehe Block 2.10).
+    *Noch offen*: gleiche Überlegung gilt potenziell auch für `minimum_rest_hours`, hier aber erst
+    nachziehen, falls in der Praxis tatsächlich gebraucht.
 
 **Noch offen**:
 
@@ -427,6 +433,15 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      adressierte Tauschanfragen (`target_employee` + `pending`). Aktualisiert sich ohne Reload
      über denselben Pub/Sub-Mechanismus wie der Saldo (`api.js: onTasksChanged`/`affectsTasks`,
      analog zu `onBalanceChanged`/`affectsBalance` aus Block 2.7).
+   - ✅ **Bugfix (2026-08): Abwesenheiten-Badge blieb dauerhaft hängen**: der Header-Badge zählt
+     PENDING-Absenzen tenant-weit (`core.views._task_counts`), `AbsencePanel.jsx` filterte die
+     angezeigte Liste aber client-seitig auf die im Topbar aktuell gewählte Station. Eine offene
+     Absenz aus einer **anderen** Station war dadurch nirgends sichtbar/genehmigbar -- der Badge
+     zeigte unabhängig von der gewählten Station immer "1" und liess sich nie auf 0 bringen. Fix:
+     Admin/Planer sehen jetzt wie im Diensttausch-Tab (`TradeRequestPanel.jsx`, der nie
+     stationsgescoped war) alle Absenzen tenant-weit, inkl. einer eigenen, unscoped
+     Mitarbeitenden-Liste für die Namensauflösung; Mitarbeitende bleiben weiterhin auf die eigene
+     Station beschränkt.
 5. **Export** (PDF/Excel) des Monatsplans — für Aushang in der Praxis und Übergabe an externe
    Lohnbuchhaltung, die selten direkt an die API angebunden ist.
 6. **Monatsauswertung Soll/Ist-Stunden pro Mitarbeiter** (inkl. Nacht-/Sonntagszuschläge,
@@ -769,6 +784,23 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     einer Person mit zwei Anstellungen (Schicht erscheint nur im richtigen Team-Block, nie doppelt),
     sowie zwei unterschiedliche Jahresplan-Kalender für dieselbe Person je nach gewählter Anstellung.
 
+    - **Zwei Nachbesserungen nach dem Rollout** (2026-08, Nutzer-Feedback anhand der echten
+      Testheim-Daten -- beide bereits behoben und verifiziert):
+      - **Teamleiter-Badge fehlte bei flachen (teamlosen) Abteilungen**: `PlanGrid.jsx`s
+        `rows`-Aufbau setzte im Zweig ohne Teams (`teamNodes.length === 0`) `employment` pauschal
+        auf `null`, obwohl für jede Zeile weiterhin eine echte `Employment` existiert -- Pensum-/
+        Rollen-Anzeige und `★`-Badge blieben dadurch für jede Person in einer teamlosen Abteilung
+        (z. B. "Therapie") unsichtbar, obwohl `is_team_lead` korrekt gesetzt war. Fix: auch der
+        Flach-Zweig sucht jetzt die zur aktuellen Station passende `Employment` aus
+        `emp.employments`, statt sie zu verwerfen.
+      - **Jahresplan zeigte keine Dienste für Team-Anstellungen**: `YearPlan.jsx` filterte
+        `TimeTemplate`s nach `selectedNode` (der Team-Id bei einer Employment), `TimeTemplate.node`
+        ist aber bewusst immer stationsweit (siehe oben, "ein Team teilt sich den
+        Schichttyp-Katalog der Station"). `templates` war dadurch für jede Team-Anstellung leer,
+        der Template-Lookup pro Tageszelle schlug folglich immer fehl und die Zelle zeigte "frei"
+        an, obwohl die zugrunde liegende `ShiftAssignment` korrekt geladen war. Fix: Filter wie in
+        `PlanGrid.jsx` nach der Station (`nodeId`), nicht nach dem Team.
+
     Zwei Fakten, die zusammen betrachtet werden müssen, weil sie dieselbe Modell-Lücke
     treffen:
     - **Mehrere Teams pro Station müssen sichtbar sein** (Beispiel ICT): eine Abteilung wie "ICT"
@@ -898,7 +930,7 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 5. **Automatisierte Frontend-Tests**: `dienstplan_frontend` hat aktuell keine persistierte
    Testsuite -- jedes Feature wurde bei der Entwicklung manuell per Playwright im Browser
    verifiziert, aber nichts davon liegt als wiederholbarer Test im Repo. Regressionen im
-   Frontend fallen damit nicht automatisch auf, anders als im Backend (155 Tests, `python
+   Frontend fallen damit nicht automatisch auf, anders als im Backend (255 Tests, `python
    manage.py test`).
 
 ### 5. Datenschutz (revDSG) & Rechtliches

@@ -81,11 +81,16 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // ShiftAssignment._check_node_has_no_children).
   const rows = useMemo(() => {
     if (teamNodes.length === 0) {
+      // Auch eine flache Station (kein Team-Kind) kann eine Employment-Zeile
+      // für genau diesen Knoten haben (Pensum/Titel/Teamleitung) -- die wird
+      // hier mitgenommen, statt immer auf emp.employment_pct zurückzufallen,
+      // damit z. B. eine Teamleitung auch ohne Unterteams als Badge sichtbar
+      // ist.
       return employees.map((emp) => ({
         type: "employee",
         key: String(emp.id),
         emp,
-        employment: null,
+        employment: (emp.employments ?? []).find((e) => e.node === nodeId) ?? null,
         rowNodeId: nodeId,
       }));
     }

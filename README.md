@@ -759,20 +759,44 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       mit Team-Namen zwischen den Blöcken (ähnlich der bestehenden `<th>`-Kopfzeile), statt separate
       Tabellen, damit eine abteilungsweite Zeile (z. B. Ferien-Überschneidungen über Teams hinweg)
       weiterhin auf einen Blick sichtbar bleibt.
-    - **Teamleiter-Highlighting**: dafür fehlt aktuell jedes Datenfeld -- am einfachsten ein neues
-      Boolean `is_team_lead` direkt auf `Employee` (analog zu den bestehenden Zusatzfeldern wie
-      `birth_date`) oder, falls eine Person in mehreren Teams unterschiedliche Rollen hat, ein
-      `through`-Modell auf `Employee.nodes` (`EmployeeNodeMembership` mit `is_lead`-Flag pro
-      Zuordnung) -- Letzteres sauberer, aber ein grösserer Umbau der bestehenden M2M-Beziehung.
-      Visuell im Planblatt z. B. als dezentes Badge/fette Schrift in der Mitarbeiter-Spalte
-      (`.employee-name`), konsistent mit der bestehenden Kennzeichnung von Pensum/Kopier-Button dort.
+    - **Mehrfachanstellungen berücksichtigen** (Nutzer-Hinweis, Spitalrealität): im Spital ist es
+      üblich, dass eine Person **mehrere gleichzeitige Anstellungen mit eigenem Pensum** hat, z. B.
+      40% Dozent + 60% Arzt -- typischerweise in unterschiedlichen Abteilungen/Teams. `Employee`
+      kennt aber nur ein einziges, globales `employment_pct`-Feld (z. B. "80%"), das für die ganze
+      Person gilt und direkt in `_daily_target_hours()`/`annual_target_hours()` (Block 2.7) als
+      pauschaler Faktor auf die Wochenstunden-Basis einfliesst -- es gibt keine Aufteilung "wie viel
+      Pensum entfällt auf welches Team/welche Rolle". Das ist für Punkt 17 relevant, weil es die
+      Annahme "eine Person gehört zu genau einem Team" widerlegt: so jemand müsste in **mehreren**
+      Team-Gruppierungen gleichzeitig auftauchen (nicht nur als Randfall, sondern als reguläres
+      Muster), und die einzelnen Anstellungen können fachlich/rechtlich unterschiedlich sein
+      (unterschiedliche Rolle, ggf. unterschiedliche Wochenstunden-Basis oder Skill-Anforderung pro
+      Anstellung). Das spricht dafür, das per-Team-Pensum direkt am `through`-Modell zu führen (s.
+      u.), statt am globalen `employment_pct` festzuhalten -- eine grössere, hier bewusst nicht
+      weiter ausgearbeitete Änderung an Saldo-/Jahressoll-Berechnung, die mitgedacht werden sollte,
+      sobald Punkt 17 angegangen wird, auch wenn der ICT-Ausgangsfall selbst keine Mehrfach-
+      anstellung war.
+    - **Teamleiter-Highlighting**: dafür fehlt aktuell jedes Datenfeld. Ein einfaches Boolean
+      `is_team_lead` direkt auf `Employee` (analog zu den bestehenden Zusatzfeldern wie
+      `birth_date`) würde nur für "eine Person = ein Team" reichen -- durch den Mehrfachanstellungs-
+      Fall oben ist ein `through`-Modell auf `Employee.nodes` (`EmployeeNodeMembership` mit
+      `is_lead`-Flag **pro Zuordnung**, plus idealerweise gleich das per-Team-Pensum aus dem
+      vorigen Punkt) die naheliegendere Wahl, auch wenn es ein grösserer Umbau der bestehenden
+      M2M-Beziehung ist: eine Person kann in Team A Teamleiterin sein und in Team B nicht. Visuell
+      im Planblatt z. B. als dezentes Badge/fette Schrift in der Mitarbeiter-Spalte
+      (`.employee-name`), konsistent mit der bestehenden Kennzeichnung von Pensum/Kopier-Button dort
+      -- bei einer Person mit mehreren Anstellungen müsste das Badge pro Team-Gruppe einzeln
+      erscheinen (in Team A als Leiterin markiert, in Team B nicht), nicht einmal pro Zeile.
     - **Bewusst offen/zu klären, sobald das umgesetzt wird**: gilt "inkl. Kind-Knoten" nur für
       Admin/Planer (volle Abteilungssicht) oder auch für Mitarbeitende (aktuell sehen sie laut
       Block 2.5 ohnehin nur ihre eigene(n) Station(en) -- eine Team-Gruppierung wäre für sie evtl.
       nur innerhalb der eigenen Team-Knoten relevant, nicht abteilungsweit); ob der Jahresplan
       (`YearPlan.jsx`, aktuell ebenfalls Ein-Knoten-Filter) dieselbe Gruppierung braucht; ob die
       Node-Auswahl (`NodeSelector`) Abteilungs- und Team-Knoten weiterhin gleichberechtigt aufführt
-      oder Teams optisch als Unterpunkte einrückt.
+      oder Teams optisch als Unterpunkte einrückt; wie eine Person mit Mehrfachanstellung in einer
+      **einzelnen** Zeile pro Team dargestellt wird, wenn sie an einem Tag nur für eine ihrer Rollen
+      eine Schicht hat (taucht sie in der anderen Team-Gruppe an dem Tag als "nicht eingeteilt" auf,
+      oder wird die Zeile dort ausgeblendet?) -- direkt verknüpft mit der offenen Frage, ob/wie
+      `ShiftAssignment` künftig pro Anstellung statt nur pro `Employee` unterschieden werden müsste.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

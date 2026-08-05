@@ -809,13 +809,40 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       Ein-Anstellungs-Fälle -- der Umbau betrifft strukturell vor allem Mehrfachanstellungen und
       Team-Gruppierung, nicht die Mehrheit der heutigen, einfachen Datensätze.
 
-    - **Bewusst offen/zu klären, sobald das umgesetzt wird**: ob `TimeRecord`/`Absence`/
-      `ShiftPreference` an `Employee` (personenweit) oder `Employment` (pro Anstellung) hängen
-      sollten -- vermutlich meist personenweit, ausser ggf. Zeiterfassung; ob der Jahresplan
-      (`YearPlan.jsx`, aktuell Ein-Knoten-Filter) dieselbe Team-Gruppierung und Mehrzeilen-Darstellung
-      pro Anstellung braucht; wie viele Ebenen tief Teams verschachtelt werden dürfen (nur Station →
-      Team, oder beliebig tief wie der `Node`-Baum es technisch zuliesse); ob `title` frei bleibt
-      oder an eine kontrollierte Liste/den bestehenden `Skill`-Katalog gekoppelt wird.
+    - **Entscheidungen** (aufgelöst, jeweils zugunsten des einfachsten mentalen Modells für die
+      Anwenderin/den Anwender -- nicht die technisch flexibelste Variante, sondern die, die am
+      wenigsten neue Konzepte auf einmal einführt):
+      - **`Absence`/`ShiftPreference` bleiben an `Employee`, nicht an `Employment`**: Ferien/Krankheit
+        und "ich will an dem Tag frei" sind in der Realität personenweit, nicht rollenweise -- niemand
+        ist "in der Dozentur krank, aber als Arzt gesund". Eine Absenz einer Person mit
+        Mehrfachanstellung blockiert dadurch automatisch **alle** ihre Teams gleichzeitig, ohne dass
+        sie sie zweimal erfassen muss -- das ist der intuitivere Normalfall und erspart eine sonst
+        verwirrende Rückfrage ("für welche meiner Anstellungen gilt das?"). `TimeRecord` braucht gar
+        keine eigene Entscheidung: es hängt bereits 1:1 an `ShiftAssignment` (`assignment`-FK), und
+        `ShiftAssignment` zeigt neu auf `Employment` -- die Zuordnung "welche Rolle wurde gearbeitet"
+        ergibt sich automatisch, ohne zusätzliches Feld.
+      - **Jahresplan zeigt weiterhin genau eine Kalenderansicht** -- keine Team-Trennzeilen (die
+        ergeben bei einer Einzelperson über 12 Monate keinen Sinn, anders als im Planblatt mit vielen
+        Personen nebeneinander). Bei Mehrfachanstellung wird die bestehende Mitarbeiter-Auswahl
+        (`YearPlan.jsx`) einfach um die zusätzlichen Anstellungen derselben Person ergänzt (z. B.
+        "Peter Meier -- 60% Arzt" und "Peter Meier -- 40% Dozent" als zwei Einträge im selben
+        Dropdown) -- wer nur eine Anstellung hat, sieht exakt dieselbe Auswahl wie heute. Bewusst so
+        gelöst, weil zusätzliche Komplexität nur dort auftaucht, wo sie gebraucht wird, statt für alle
+        sichtbar zu werden (progressive disclosure).
+      - **Team-Verschachtelung: genau eine Ebene unter der Station, nicht beliebig tief.** Der
+        `Node`-Baum könnte technisch beliebig tief verschachtelt werden, aber ein UI-Konzept
+        "Station → Team → Unterteam → ..." wäre für die tägliche Nutzung nicht mehr auf einen Blick
+        erfassbar. Die Planblatt-Gruppierung schaut deshalb bewusst nur auf die **direkten**
+        Kind-Knoten der gewählten Station -- ein einfaches, konstantes mentales Modell ("eine Station
+        hat Teams", nicht "eine Station hat eine Organisationshierarchie").
+      - **`title` bleibt Freitext, mit Autovervollständigung aus bereits im Tenant verwendeten
+        Bezeichnungen** -- keine neue, separat zu pflegende Stammdaten-Liste (das wäre ein weiterer
+        Einstellungen-Screen, den eine Klinik vor dem ersten Einsatz erst füllen müsste) und bewusst
+        nicht an `Skill` gekoppelt (das würde zwei unterschiedliche Konzepte -- Vertragsrolle vs.
+        schicht-relevante Qualifikation -- künstlich vermischen). Die Autovervollständigung sorgt
+        trotzdem für konsistente Schreibweisen ("Arzt" vs. "Ärztin" vs. "Arzt/Ärztin"), ohne eine
+        Vorab-Konfiguration zu erzwingen -- tippt man einen neuen Titel, wird er beim nächsten Mal
+        einfach mit vorgeschlagen.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

@@ -42,6 +42,7 @@ from .serializers import (
     AbsenceSerializer,
     EmployeeBalanceSerializer,
     EmployeeSerializer,
+    MonthlySummarySerializer,
     NightWorkSummarySerializer,
     NodeSerializer,
     ShiftAssignmentSerializer,
@@ -284,6 +285,43 @@ class EmployeeViewSet(TenantScopedViewSet):
             "vacation_remaining_days": vacation["remaining_days"],
         }
         return Response(EmployeeBalanceSerializer(data).data)
+
+    @action(detail=True, methods=["get"], url_path="monthly-summary")
+    def monthly_summary(self, request, pk=None):
+        """
+        Monatsauswertung Soll/Ist-Stunden inkl. Überzeit- und Nacht-/
+        Sonntagszuschlag (README Block 2.6, "Basis für den Lohnlauf").
+        ?year=YYYY&month=1-12 (Default aktueller Monat). Anders als
+        weekly_overtime/night_work/balance (bewusste Mitarbeiter-
+        Selbstauskunft, README Block 2.7) bewusst NICHT für alle Rollen
+        offen -- das hier ist Lohnlauf-Vorbereitung, kein Bedürfnis eines
+        einzelnen Mitarbeitenden, die eigenen Zahlen einzusehen, dafür
+        gelten balance()/weekly_overtime() weiterhin. Nur Admin/Planer.
+        """
+        if request.membership.role not in (Membership.Role.ADMIN, Membership.Role.PLANNER):
+            raise PermissionDenied("Nur Admin/Planer dürfen die Monatsauswertung einsehen.")
+        employee = self.get_object()
+        year_param = request.query_params.get("year")
+        month_param = request.query_params.get("month")
+        today = timezone.localdate()
+        if year_param:
+            try:
+                year = int(year_param)
+            except ValueError:
+                raise ValidationError({"year": "Ungültiges Jahr."})
+        else:
+            year = today.year
+        if month_param:
+            try:
+                month = int(month_param)
+            except ValueError:
+                raise ValidationError({"month": "Ungültiger Monat."})
+            if not 1 <= month <= 12:
+                raise ValidationError({"month": "Monat muss zwischen 1 und 12 liegen."})
+        else:
+            month = today.month
+        summary = employee.monthly_summary(year, month)
+        return Response(MonthlySummarySerializer(summary).data)
 
 
 class TimeTemplateViewSet(TenantScopedViewSet):

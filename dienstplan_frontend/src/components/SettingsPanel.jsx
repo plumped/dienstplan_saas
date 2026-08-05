@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
-import { isTenantAdmin } from "../roles.js";
+import { canManageSchedule, isTenantAdmin } from "../roles.js";
 import EmployeeSettings from "./EmployeeSettings.jsx";
+import MonthlySummaryPanel from "./MonthlySummaryPanel.jsx";
 import NodeSettings from "./NodeSettings.jsx";
 import SkillSettings from "./SkillSettings.jsx";
 import TenantSettings from "./TenantSettings.jsx";
@@ -24,6 +25,16 @@ const MODULES = [
     description: "Organisationsstruktur der Klinik/Praxis -- Standorte, Abteilungen, Teams.",
   },
   { id: "skills", label: "Skills", description: "Qualifikationen, die für einzelne Schichttypen vorausgesetzt werden können." },
+  // Block 2.6: bewusst KEINE Mitarbeiter-Selbstauskunft (anders als die
+  // Saldo-Badges), sondern Lohnlauf-Vorbereitung -- daher managerOnly statt
+  // für alle sichtbar, deckungsgleich mit der Backend-Berechtigung in
+  // EmployeeViewSet.monthly_summary.
+  {
+    id: "payroll",
+    label: "Monatsauswertung",
+    description: "Soll/Ist-Stunden, Überzeit sowie Nacht-/Sonntagszuschlag pro Monat -- Basis für den Lohnlauf.",
+    managerOnly: true,
+  },
   // Block 2.14: Admin-only, strenger als die übrigen Module (die auch
   // Planer sehen/bearbeiten dürfen) -- steuert Rechtssicherheit und
   // Lohnzuschläge, siehe README Architektur-Abschnitt.
@@ -46,7 +57,9 @@ const MODULES = [
 // lässt. Ein "← Übersicht"-Link führt aus jedem Modul zurück dorthin.
 export default function SettingsPanel({ me, onError }) {
   const [module, setModule] = useState(null);
-  const visibleModules = MODULES.filter((m) => !m.adminOnly || isTenantAdmin(me));
+  const visibleModules = MODULES.filter(
+    (m) => (!m.adminOnly || isTenantAdmin(me)) && (!m.managerOnly || canManageSchedule(me))
+  );
   const [nodes, setNodes] = useState([]);
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -128,6 +141,7 @@ export default function SettingsPanel({ me, onError }) {
           onError={onError}
         />
       )}
+      {module === "payroll" && canManageSchedule(me) && <MonthlySummaryPanel onError={onError} />}
       {module === "tenant" && isTenantAdmin(me) && <TenantSettings onError={onError} />}
     </div>
   );

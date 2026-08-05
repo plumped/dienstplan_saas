@@ -1053,6 +1053,29 @@ thead .col-employee {
   color: var(--ink-muted);
 }
 
+/* Block 2.6: Monatsauswertung (Lohnlauf-Basis) -- schlichte Kennzahlen-Tabelle. */
+.monthly-summary-table {
+  border-collapse: collapse;
+  margin: 4px 0 12px;
+}
+
+.monthly-summary-table th,
+.monthly-summary-table td {
+  padding: 6px 16px 6px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.monthly-summary-table th {
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+
+.monthly-summary-table td {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 /* Block 2.16: Fehler direkt am Feld statt nur im globalen Banner. */
 .field-error {
   margin-top: -8px;

@@ -1,3 +1,4 @@
+import calendar
 from datetime import date, datetime, time, timedelta
 
 from django.conf import settings
@@ -547,6 +548,123 @@ class Employee(TenantScopedModel):
             "entitlement_days": entitlement_days,
             "used_days": used_days,
             "remaining_days": entitlement_days - used_days,
+        }
+
+    def monthly_summary(self, year=None, month=None):
+        """
+        Monatsauswertung Soll/Ist-Stunden (README Block 2.6, "Basis für den
+        Lohnlauf"): Soll/Ist-Vergleich, Überzeit- sowie Nacht-/
+        Sonntagszuschlag für einen Kalendermonat. Ist-Stunden kommen pro
+        Schicht wie bei weekly_hours_summary()/time_account_summary()
+        bevorzugt aus TimeRecord, sobald erfasst, sonst aus der Planung
+        (ShiftAssignment._shift_hours) als bester verfügbarer Schätzwert
+        (README Punkt 13: "Anschluss der Ist-Arbeitszeiterfassung an Block
+        2.6").
+
+        Bewusst getrennt von weekly_hours_summary() (Block 1.11, strikt
+        Kalenderwoche für den Art.-13-ArG-Zuschlag): hier wird über den
+        ganzen Monat aggregiert, inkl. derselben soll-neutralen Behandlung
+        von Feiertagen und genehmigten Absenzen wie in time_account_summary()
+        (ein Ferientag zählt weder als Soll- noch als Ist-Zeit). Überzeit
+        wird dafür als einfacher Monats-Soll/Ist-Vergleich berechnet statt
+        als Summe der einzelnen Wochenwerte -- Kalenderwochen liegen selten
+        exakt in einem Monat, ein Aufsummieren würde an den Monatsgrenzen zu
+        Doppel-/Unterzählungen führen. Für die rechtlich massgebliche
+        wöchentliche Grenze bleibt Block 1.11 die Quelle der Wahrheit, dies
+        hier ist die monatliche Lohnlauf-Zusammenfassung.
+        """
+        year = year or timezone.localdate().year
+        month = month or timezone.localdate().month
+        month_start = date(year, month, 1)
+        month_end = date(year, month, calendar.monthrange(year, month)[1])
+        period_start = max(month_start, self.employment_start_date)
+
+        if period_start > month_end:
+            # Eintritt liegt erst nach diesem Monat -- weder Ist noch Soll
+            # sind in diesem Monat angefallen (analog time_account_summary).
+            return {
+                "year": year,
+                "month": month,
+                "month_start": month_start,
+                "month_end": month_end,
+                "soll_hours": 0.0,
+                "ist_hours": 0.0,
+                "overtime_hours": 0.0,
+                "overtime_surcharge_hours": 0.0,
+                "night_hours": 0.0,
+                "night_surcharge_hours": 0.0,
+                "sunday_hours": 0.0,
+                "sunday_surcharge_hours": 0.0,
+                "is_provisional": False,
+            }
+
+        workdays = _count_workdays(period_start, month_end)
+        absence_dates = self._approved_absence_dates(period_start, month_end)
+        absence_workdays = {d for d in absence_dates if d.weekday() < 5}
+        excused_days = self._public_holiday_workdays(period_start, month_end) | absence_workdays
+        daily = self._daily_target_hours()
+        soll_hours = round((workdays - len(excused_days)) * daily, 2)
+
+        # Zuweisungen an genehmigten Absenztagen zählen nicht als Ist-Zeit,
+        # siehe _approved_absence_dates-Docstring/time_account_summary().
+        assignments = (
+            ShiftAssignment.all_objects.filter(employee=self, date__gte=period_start, date__lte=month_end)
+            .exclude(date__in=absence_dates)
+            .select_related("template", "time_record")
+        )
+        ist_hours = 0.0
+        night_hours = 0.0
+        sunday_hours = 0.0
+        is_provisional = False
+        for assignment in assignments:
+            time_record = getattr(assignment, "time_record", None)
+            if time_record is not None:
+                ist_hours += time_record.actual_hours
+                if time_record.status != TimeRecord.Status.CONFIRMED:
+                    is_provisional = True
+            else:
+                ist_hours += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                is_provisional = True
+            # Nacht-/Sonntagszuschlag (Art. 17b/19 ArG) bewusst wie in
+            # weekly_hours_summary()/night_work_summary() auf den GEPLANTEN
+            # Stunden berechnet, nicht auf der Ist-Zeit -- die Erfassung
+            # bildet nur ab, WANN innerhalb der Schicht gearbeitet wurde,
+            # nicht ob diese Stunden in der Nacht/am Sonntag lagen.
+            night_hours += assignment.night_hours
+            if assignment.is_sunday:
+                sunday_hours += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+
+        ist_hours = round(ist_hours, 2)
+        overtime_hours = round(max(0.0, ist_hours - soll_hours), 2)
+        overtime_surcharge_hours = round(overtime_hours * self.tenant.overtime_surcharge_pct / 100, 2)
+
+        night_hours = round(night_hours, 2)
+        # Zeitgutschrift (Art. 17b ArG) nur bei regelmässiger Nachtarbeit --
+        # dieselbe jahresbezogene Schwelle wie night_work_summary(), nicht
+        # neu pro Monat ermittelt, da "regelmässig" sich per Definition auf
+        # das ganze Kalenderjahr bezieht.
+        is_regular_night_work = self.night_work_summary(year)["is_regular"]
+        night_surcharge_hours = (
+            round(night_hours * self.tenant.night_work_surcharge_pct / 100, 2) if is_regular_night_work else 0.0
+        )
+
+        sunday_hours = round(sunday_hours, 2)
+        sunday_surcharge_hours = round(sunday_hours * self.tenant.sunday_work_surcharge_pct / 100, 2)
+
+        return {
+            "year": year,
+            "month": month,
+            "month_start": month_start,
+            "month_end": month_end,
+            "soll_hours": soll_hours,
+            "ist_hours": ist_hours,
+            "overtime_hours": overtime_hours,
+            "overtime_surcharge_hours": overtime_surcharge_hours,
+            "night_hours": night_hours,
+            "night_surcharge_hours": night_surcharge_hours,
+            "sunday_hours": sunday_hours,
+            "sunday_surcharge_hours": sunday_surcharge_hours,
+            "is_provisional": is_provisional,
         }
 
 

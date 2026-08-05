@@ -181,6 +181,24 @@ class NightWorkSummarySerializer(serializers.Serializer):
     medical_exam_due = serializers.BooleanField()
 
 
+class MonthlySummarySerializer(serializers.Serializer):
+    """Read-only: Ergebnis von Employee.monthly_summary (Block 2.6, Lohnlauf-Basis)."""
+
+    year = serializers.IntegerField()
+    month = serializers.IntegerField()
+    month_start = serializers.DateField()
+    month_end = serializers.DateField()
+    soll_hours = serializers.FloatField()
+    ist_hours = serializers.FloatField()
+    overtime_hours = serializers.FloatField()
+    overtime_surcharge_hours = serializers.FloatField()
+    night_hours = serializers.FloatField()
+    night_surcharge_hours = serializers.FloatField()
+    sunday_hours = serializers.FloatField()
+    sunday_surcharge_hours = serializers.FloatField()
+    is_provisional = serializers.BooleanField()
+
+
 class TimeTemplateSegmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = TimeTemplateSegment

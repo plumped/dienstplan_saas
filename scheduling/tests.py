@@ -1822,6 +1822,205 @@ class EmployeeBalanceTests(APITestCase):
         self.assertEqual(before["annual_remaining_hours"], after["annual_remaining_hours"])
 
 
+class MonthlySummaryTests(APITestCase):
+    """
+    Monatsauswertung (README Block 2.6, "Basis für den Lohnlauf"):
+    Soll/Ist-Vergleich, Überzeit- sowie Nacht-/Sonntagszuschlag für einen
+    Kalendermonat. Juni 2026 hat 22 Mo-Fr-Arbeitstage, beginnt an einem
+    Montag und enthält 4 Sonntage (7./14./21./28.6.) -- gewählt, weil kein
+    Kanton gesetzt ist (kein Feiertagsabzug) und die Zahlen dadurch
+    handrechenbar bleiben.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        # 08:00-16:30, 30min Pause -> 8h Spanne netto pro Schicht (klare Zahlen).
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 30),
+            break_minutes=30,
+        )
+        self.night_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtdienst", start_time=time(23, 0), end_time=time(6, 0)
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="A",
+            employment_pct=100,
+            employment_start_date=date(2026, 1, 1),
+            standard_weekly_hours=40,  # Override fuer klare 8h/Tag (40/5), siehe Block 1.14
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        self.employee_user = User.objects.create_user(username="anna-user", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _assign(self, day, template=None):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=day, template=template or self.template
+        )
+
+    def _june_weekdays(self):
+        return [date(2026, 6, d) for d in range(1, 31) if date(2026, 6, d).weekday() < 5]
+
+    def test_no_shifts_means_full_soll_and_no_overtime(self):
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["month_start"], date(2026, 6, 1))
+        self.assertEqual(summary["month_end"], date(2026, 6, 30))
+        self.assertEqual(summary["soll_hours"], 176.0)  # 22 Arbeitstage * 8h
+        self.assertEqual(summary["ist_hours"], 0)
+        self.assertEqual(summary["overtime_hours"], 0)
+        self.assertEqual(summary["overtime_surcharge_hours"], 0)
+        self.assertFalse(summary["is_provisional"])
+
+    def test_full_month_worked_exactly_meets_soll(self):
+        for day in self._june_weekdays():
+            self._assign(day)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["ist_hours"], 176.0)
+        self.assertEqual(summary["overtime_hours"], 0)
+        self.assertEqual(summary["overtime_surcharge_hours"], 0)
+        self.assertTrue(summary["is_provisional"])  # keine Zeiterfassung erfasst
+
+    def test_extra_shift_yields_overtime_and_surcharge(self):
+        for day in self._june_weekdays():
+            self._assign(day)
+        self._assign(date(2026, 6, 6))  # Samstag, zusaetzliche 8h
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["ist_hours"], 184.0)
+        self.assertEqual(summary["overtime_hours"], 8.0)
+        self.assertEqual(summary["overtime_surcharge_hours"], 2.0)  # 25% Zuschlag (Tenant-Default)
+
+    def test_shifts_outside_month_are_excluded(self):
+        self._assign(date(2026, 6, 1))
+        self._assign(date(2026, 7, 1))  # ausserhalb Juni
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["ist_hours"], 8.0)
+
+    def test_time_record_overrides_planned_hours_and_clears_provisional(self):
+        assignment = self._assign(date(2026, 6, 1))
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=assignment,
+            actual_start=time(8, 0),
+            actual_end=time(17, 0),  # 9h brutto
+            actual_break_minutes=60,  # 8h netto statt geplanter 8h -- bewusst identisch
+            status=TimeRecord.Status.CONFIRMED,
+        )
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["ist_hours"], 8.0)
+        self.assertFalse(summary["is_provisional"])  # einzige Schicht ist CONFIRMED erfasst
+
+    def test_submitted_time_record_still_counts_as_provisional(self):
+        assignment = self._assign(date(2026, 6, 1))
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=assignment,
+            actual_start=time(8, 0),
+            actual_end=time(17, 0),
+            actual_break_minutes=60,
+            status=TimeRecord.Status.SUBMITTED,
+        )
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertTrue(summary["is_provisional"])
+
+    def test_approved_absence_is_soll_neutral(self):
+        # Ferien Mo-Fr 1.-5.6. -- 5 Arbeitstage weniger Soll, keine Ist-Zeit
+        # dafuer erwartet.
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 5),
+            type=Absence.Type.VACATION,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["soll_hours"], 136.0)  # (22 - 5) * 8h
+
+    def test_zero_before_employment_start(self):
+        self.employee.employment_start_date = date(2026, 7, 1)
+        self.employee.save(update_fields=["employment_start_date"])
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["soll_hours"], 0)
+        self.assertEqual(summary["ist_hours"], 0)
+        self.assertFalse(summary["is_provisional"])
+
+    def test_sunday_shift_adds_sunday_surcharge(self):
+        self._assign(date(2026, 6, 7))  # Sonntag
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["sunday_hours"], 8.0)
+        self.assertEqual(summary["sunday_surcharge_hours"], 4.0)  # 50% Zuschlag (Tenant-Default)
+
+    def test_few_night_shifts_in_month_have_no_surcharge(self):
+        # 5 Naechte im Jahr -- unter der Jahresschwelle (Tenant-Default 25)
+        # fuer "regelmaessige" Nachtarbeit -> keine Zeitgutschrift trotz
+        # vorhandener Nachtstunden.
+        for offset in range(5):
+            self._assign(date(2026, 6, 1) + timedelta(days=offset), template=self.night_template)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["night_hours"], 35.0)  # 5 * 7h
+        self.assertEqual(summary["night_surcharge_hours"], 0)
+
+    def test_25_night_shifts_in_year_yield_surcharge_for_month(self):
+        # Alle 25 Naechte liegen im Juni selbst (1.-25.6.) -> "regelmaessig"
+        # fuers ganze Jahr 2026, die Zeitgutschrift bezieht sich hier aber
+        # nur auf die Nachtstunden DIESES Monats.
+        for offset in range(25):
+            self._assign(date(2026, 6, 1) + timedelta(days=offset), template=self.night_template)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["night_hours"], 175.0)  # 25 * 7h
+        self.assertEqual(summary["night_surcharge_hours"], 17.5)  # 10% Zeitgutschrift (Tenant-Default)
+
+    # --- API ---
+
+    def test_api_returns_monthly_summary_for_planner(self):
+        for day in self._june_weekdays():
+            self._assign(day)
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=2026&month=6")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["ist_hours"], 176.0)
+        self.assertEqual(response.data["soll_hours"], 176.0)
+        self.assertEqual(response.data["month"], 6)
+
+    def test_api_defaults_to_current_year_and_month(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        today = timezone.localdate()
+        self.assertEqual(response.data["year"], today.year)
+        self.assertEqual(response.data["month"], today.month)
+
+    def test_api_rejects_invalid_month_param(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=2026&month=13")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_api_rejects_invalid_year_param(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=not-a-year")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_api_forbidden_for_employee_role(self):
+        # Anders als balance()/weekly-overtime()/night-work() bewusst KEINE
+        # Mitarbeiter-Selbstauskunft -- das hier ist Lohnlauf-Vorbereitung,
+        # nur Admin/Planer duerfen sie einsehen (siehe EmployeeViewSet.
+        # monthly_summary-Docstring).
+        self.auth_as(self.employee_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=2026&month=6")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
 class ShiftTradeRequestTests(TestCase):
     """Diensttausch: sowohl einfache Übernahme als auch echter Tausch, jeweils inkl. Regel-Engine."""
 

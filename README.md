@@ -371,8 +371,8 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     /api/employees/{id}/weekly-overtime/?week=YYYY-MM-DD`, Lesen für alle Rollen offen wie beim
     übrigen Planblatt. Frontend-Anzeige inzwischen vorhanden (als Pro-Schicht-Feedback nach dem
     Speichern einer Zeiterfassung, siehe Block 2.7). *Noch offen*: keine dauerhafte
-    Wochenübersicht ausserhalb dieses Feedbacks, keine Monats-/Jahres-Kumulierung (nur pro
-    Kalenderwoche einzeln abrufbar).
+    Wochenübersicht ausserhalb dieses Feedbacks, keine Jahres-Kumulierung (nur pro Kalenderwoche
+    einzeln abrufbar) -- die Monats-Kumulierung liefert inzwischen Block 2.6 (Punkt 13 unten).
 12. ✅ **Wochenstunden-Grenzwerte pro Personalkategorie statt nur pro Tenant**: ein einzelner
     Tenant-Wert reicht nicht, wenn z. B. Ärzteschaft vertraglich 50h und Büropersonal 42h hat.
     `Employee.maximum_weekly_hours`/`standard_weekly_hours` sind jetzt optionale
@@ -384,11 +384,12 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     *Noch offen*: gleiche Überlegung gilt potenziell auch für `minimum_rest_hours`, hier aber erst
     nachziehen, falls in der Praxis tatsächlich gebraucht.
 
+13. ✅ **Anschluss der Ist-Arbeitszeiterfassung an Block 2.6** (2026-08): Block 2.6
+    (Monatsauswertung, unten) wurde gebaut und nutzt von Anfang an `TimeRecord` statt nur der
+    Planung -- siehe dort für Details. Damit ist auch diese Notiz erledigt.
+
 **Noch offen**:
 
-13. **Anschluss der Ist-Arbeitszeiterfassung an Block 2.6**: die geplante Monatsauswertung
-    (Soll/Ist-Stunden, Überzeit, Nacht-/Sonntagszuschläge) sollte, sobald sie existiert, auf
-    `TimeRecord` statt nur auf der Planung (`ShiftAssignment`) basieren.
 14. **Aufbewahrung**: Ist-Daten (`TimeRecord`) fallen unter dieselbe Aufbewahrungspflicht wie
     Lohnunterlagen (siehe Block 5.3) — beim Löschkonzept mitdenken.
 
@@ -444,8 +445,34 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      Station beschränkt.
 5. **Export** (PDF/Excel) des Monatsplans — für Aushang in der Praxis und Übergabe an externe
    Lohnbuchhaltung, die selten direkt an die API angebunden ist.
-6. **Monatsauswertung Soll/Ist-Stunden pro Mitarbeiter** (inkl. Nacht-/Sonntagszuschläge,
-   Überzeit) als Basis für den Lohnlauf.
+6. ✅ **Monatsauswertung Soll/Ist-Stunden pro Mitarbeiter** (2026-08, inkl. Nacht-/
+   Sonntagszuschläge, Überzeit) als Basis für den Lohnlauf -- bewusst getrennt von Block 1.11
+   (strikt wöchentlich für den Art.-13-ArG-Zuschlag) und Block 2.7 (laufender Jahressaldo, für
+   alle Rollen offene Mitarbeiter-Selbstauskunft): hier wird über einen Kalendermonat aggregiert,
+   nur für Admin/Planer sichtbar.
+   - **Backend**: `Employee.monthly_summary(year, month)` (`scheduling/models.py`) -- Soll
+     (Tagessoll × Arbeitstage im Monat, abzüglich Feiertage/genehmigter Absenzen, exakt dieselbe
+     soll-neutrale Logik wie `time_account_summary()`), Ist (pro Schicht bevorzugt aus
+     `TimeRecord`, sonst aus der Planung als Schätzwert -- löst Punkt 13 oben ein), Überzeit +
+     Zuschlag (`Tenant.overtime_surcharge_pct`) als einfacher Monats-Soll/Ist-Vergleich (bewusst
+     NICHT die Summe der einzelnen `weekly_hours_summary()`-Wochenwerte, da Kalenderwochen selten
+     exakt in einen Monat passen und das an den Monatsgrenzen zu Doppel-/Unterzählungen führen
+     würde), Nachtstunden + Zeitgutschrift (`Tenant.night_work_surcharge_pct`, nur falls
+     `night_work_summary(year)["is_regular"]` fürs ganze Jahr zutrifft -- "regelmässig" bezieht
+     sich per Definition aufs Kalenderjahr, nicht auf den einzelnen Monat), Sonntagsstunden +
+     Zuschlag (`Tenant.sunday_work_surcharge_pct`). Kein neues Datenbankfeld, keine Migration.
+   - **API**: `GET /api/employees/{id}/monthly-summary/?year=YYYY&month=1-12` (Default aktueller
+     Monat), `MonthlySummarySerializer`. Anders als `weekly-overtime`/`night-work`/`balance`
+     bewusst NICHT für alle Rollen offen -- das hier ist Lohnlauf-Vorbereitung, keine
+     Mitarbeiter-Selbstauskunft, daher nur Admin/Planer (403 sonst).
+   - **Frontend**: neues Settings-Modul "Monatsauswertung" (`MonthlySummaryPanel.jsx`,
+     `managerOnly` in `SettingsPanel.jsx`, analog zum bestehenden `adminOnly`-Muster für
+     "Regel-Engine & Zuschläge") -- Mitarbeiter-/Monats-/Jahresauswahl, Kennzahlen-Tabelle,
+     "voraussichtlich"-Hinweis bei `is_provisional` (gleiche Formulierung wie `BalanceBadge.jsx`).
+   - Getestet: `MonthlySummaryTests` (`scheduling/tests.py`) -- Soll/Ist ohne bzw. mit Schichten,
+     Überzeit + Zuschlag, TimeRecord-Vorrang samt `is_provisional`-Flag, Absenz-Soll-Neutralität,
+     Eintritt nach Monatsende, Sonntagszuschlag, Nachtzuschlag nur bei jahresweise regelmässiger
+     Nachtarbeit, API-Berechtigung (403 für Mitarbeitende-Rolle).
 7. ✅ **Arbeitszeitmodell** (Überstunden-Saldo + Ferien) -- **komplett neu gebaut** (2026-08) nach
    Block 7 unten, weil das ursprüngliche Modell "zu schwammig" war (Nutzer-Feedback nach zwei
    vorangegangenen Bugfix-Runden): statt einer einzelnen, unscharf definierten Zahl jetzt zwei klar

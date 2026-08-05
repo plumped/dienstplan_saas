@@ -35,6 +35,17 @@ function weekdayIndex(year, month, day) {
   return jsDay === 0 ? 6 : jsDay - 1;
 }
 
+// Löst zu einem Knoten die zugehörige Station auf (sich selbst, falls er
+// bereits die Station ist) -- gleiches Muster wie stationScope() in
+// PlanGrid.jsx, hier aber nur der stationId-Teil, da YearPlan Assignments
+// ohnehin schon exakt scoped lädt (siehe getShiftAssignments(selectedNode)).
+function stationIdFor(nodes, nodeId) {
+  const selected = nodes.find((n) => n.id === nodeId);
+  if (!selected) return nodeId;
+  const parent = nodes.find((n) => n.depth === selected.depth - 1 && selected.path.startsWith(n.path));
+  return parent ? parent.id : selected.id;
+}
+
 function addDays(iso, delta) {
   const [y, m, d] = iso.split("-").map(Number);
   const date = new Date(y, m - 1, d);
@@ -138,6 +149,10 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
   const selectedOption = employmentOptions.find((o) => o.key === employmentKey) ?? null;
   const employeeId = selectedOption?.employeeId ?? null;
   const selectedNode = selectedOption?.node ?? null;
+  const selectedStationId = useMemo(
+    () => (selectedNode ? stationIdFor(nodes, selectedNode) : null),
+    [nodes, selectedNode]
+  );
   const isOwnEmployeeSelected = employeeId !== null && employeeId === ownEmployeeId;
 
   useEffect(() => {
@@ -166,12 +181,16 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
       .then(([templatesRes, assignmentsRes, absencesRes, preferencesRes, holidaysRes]) => {
         if (cancelled) return;
         // Nachbesserung: TimeTemplate.node kann sowohl die Station (geteilter
-        // Katalog) als auch ein einzelnes Team sein (siehe PlanGrid.jsx) --
-        // hier zeigt der Jahresplan ohnehin immer nur eine konkrete
-        // Anstellung, daher exakt nach selectedNode filtern (bei einer
-        // teamlosen Station ist das identisch mit der Station selbst, siehe
-        // employmentOptions-Fallback oben).
-        setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === selectedNode));
+        // Katalog, für JEDES Team der Station sichtbar) als auch ein
+        // einzelnes Team sein (exklusiv, siehe PlanGrid.jsx). Nur nach
+        // selectedNode zu filtern liess bei einer stationsweiten Vorlage
+        // (der Normalfall) den Jahresplan komplett leer -- daher zusätzlich
+        // Vorlagen der übergeordneten Station zulassen.
+        setTemplates(
+          (templatesRes.results ?? templatesRes).filter(
+            (t) => t.node === selectedNode || t.node === selectedStationId
+          )
+        );
         const allAssignments = assignmentsRes.results ?? assignmentsRes;
         // README Punkt 17: nur die Zuweisungen dieser konkreten Anstellung
         // (Employee UND Node) -- bei Mehrfachanstellung liefert
@@ -188,7 +207,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employeeId, selectedNode, year]);
+  }, [employeeId, selectedNode, selectedStationId, year]);
 
   const assignmentByDate = useMemo(() => {
     const map = new Map();

@@ -896,6 +896,27 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
         Nachtwache (weder im Einzel-Dropdown noch in der Stempelleiste mischen sich die Kataloge
         mehr); Jahresplan einer Team-Anstellung zeigt ebenfalls nur deren eigene Schichttypen.
 
+    - **Regressions-Fix (2026-08, unmittelbar danach): "geteilter Katalog"-Anspruch war real
+      kaputt** -- der obige Fix behauptete, ein Schichttyp bleibe auf der Station gültig und stehe
+      allen ihren Teams gemeinsam zur Verfügung; tatsächlich implementiert war das nicht.
+      `rowAssignableTemplates` (und analog `stampTemplates`) filterten mit `t.node === rowNodeId`
+      -- einem exakten Team-Treffer --, ohne je den stationsweiten Fall zu berücksichtigen. Bei
+      jedem Tenant, der (wie der reale Nutzer dieser Session) noch keinen einzigen Schichttyp
+      manuell auf Team-Ebene verschoben hatte -- also dem eigentlichen Normalfall --, blieben
+      dadurch sämtliche Team-Zeilen einer Station-mit-Teams komplett leer, sowohl im
+      Einzel-Dropdown als auch in der Mehrfachauswahl ("GAR KEINE Dienste mehr", reproduziert mit
+      genau den Live-Daten des Nutzers: alle `TimeTemplate.node` zeigten noch auf die Station,
+      nicht auf ein Team). Die vorherige Playwright-Verifikation hatte das nicht aufgedeckt, weil
+      dabei ausschliesslich mit bereits auf Team-Ebene verschobenen Testheim-Demodaten getestet
+      wurde -- der (weitaus häufigere) stationsweite Fall kam nie vor. Fix: `rowAssignableTemplates`
+      und `stampTemplates` (`PlanGrid.jsx`) sowie der Templates-Filter in `YearPlan.jsx` matchen
+      jetzt zusätzlich auf die aufgelöste Station-Id (`t.node === rowNodeId || t.node === stationId`
+      bzw. `t.node === selectedNode || t.node === selectedStationId`) -- ein Schichttyp direkt auf
+      einem Team bleibt exklusiv für dieses Team, einer auf der Station ist wie ursprünglich
+      versprochen für jede ihrer Team-Zeilen sichtbar. Mit Playwright gegen beide Datenlagen
+      verifiziert (stationsweit: alle Team-Zeilen sehen den Katalog; team-exklusiv: weiterhin nur
+      die eigene Zeile).
+
     Zwei Fakten, die zusammen betrachtet werden müssen, weil sie dieselbe Modell-Lücke
     treffen:
     - **Mehrere Teams pro Station müssen sichtbar sein** (Beispiel ICT): eine Abteilung wie "ICT"

@@ -111,7 +111,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   const dateFrom = isoDate(year, month, 1);
   const dateTo = isoDate(year, month, days.length);
 
-  const { scopeIds: templateScopeIds } = useMemo(() => stationScope(nodes, nodeId), [nodes, nodeId]);
+  const { stationId, scopeIds: templateScopeIds } = useMemo(() => stationScope(nodes, nodeId), [nodes, nodeId]);
 
   // README Punkt 17: eine Station mit Teams (direkte Kind-Knoten, genau eine
   // Ebene) zeigt das Planblatt als gemeinsame Tabelle mit Trennzeilen pro
@@ -280,11 +280,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // Stempel-Leiste zeigt nur die Schichttypen der tatsächlich markierten
   // Zeilen (Team-Knoten aus dem dritten Teil jedes markedCells-Schlüssels,
   // siehe startMark) -- sind Zellen aus mehreren Teams markiert, wird die
-  // Vereinigung ihrer jeweiligen Schichttypen angezeigt.
+  // Vereinigung ihrer jeweiligen Schichttypen angezeigt. Ein Schichttyp
+  // direkt auf der Station (t.node === stationId) gilt als geteilter
+  // Katalog für jede markierte Team-Zeile und zählt daher immer mit --
+  // sonst würde die Stempelleiste bei stationsweiten Schichttypen (der
+  // Normalfall, solange niemand manuell auf Team-Ebene umgestellt hat)
+  // komplett leer bleiben.
   const stampTemplates = useMemo(() => {
+    if (markedCells.size === 0) return [];
     const markedRowNodeIds = new Set(Array.from(markedCells, (key) => Number(key.split(":")[2])));
-    return templates.filter((t) => markedRowNodeIds.has(t.node));
-  }, [templates, markedCells]);
+    return templates.filter((t) => t.node === stationId || markedRowNodeIds.has(t.node));
+  }, [templates, markedCells, stationId]);
 
   async function handleSaveWish(date, existing, payload) {
     try {
@@ -682,11 +688,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
               const pctLabel = employment
                 ? `${employment.pensum_pct}%${employment.title ? ` ${employment.title}` : ""}`
                 : `${emp.employment_pct}%`;
-              // Nur die Schichttypen dieses konkreten Teams (bzw. der Station
-              // selbst im teamlosen Fall) stehen beim Zuweisen zur Auswahl --
-              // sonst würde z. B. "Nachtwache" auch in der Zeile eines
-              // Tagdienst-Teams auftauchen, obwohl sie dort nie zutrifft.
-              const rowAssignableTemplates = templates.filter((t) => t.node === rowNodeId);
+              // Schichttypen direkt auf diesem Team stehen exklusiv dieser
+              // Zeile zur Auswahl (z. B. "Nachtwache" nur beim Nacht-Team,
+              // nicht auch beim Tag-Team derselben Station); Schichttypen
+              // direkt auf der Station (t.node === stationId) gelten als
+              // geteilter Katalog und stehen JEDER Team-Zeile zusätzlich zur
+              // Verfügung -- das ist der Normalfall, solange niemand einen
+              // Schichttyp manuell auf eine einzelne Team-Ebene verschoben
+              // hat (siehe TimeTemplateSettings-Hinweistext).
+              const rowAssignableTemplates = templates.filter(
+                (t) => t.node === rowNodeId || t.node === stationId
+              );
               return (
                 <tr key={row.key}>
                   <th scope="row" className="col-employee">

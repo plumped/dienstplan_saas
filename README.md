@@ -739,64 +739,83 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       echten Nutzen.
     - Manuell im Browser verifiziert (Playwright): Kachel-Übersicht, Formular-Gliederung,
       Hint-Texte, Suchfilter (11 Testmitarbeitende, korrekt gefiltert), Rücksprung zur Übersicht.
-17. **Teams innerhalb einer gemeinsamen Station/Abteilung im Planblatt** -- Nutzer-Feedback
-    (2026-08, Beispiel ICT): eine Abteilung wie "ICT" hat oft mehrere Teams (z. B. Infrastruktur,
-    Applikationen, Support), die alle ein **gemeinsames Planblatt** teilen (dieselbe Station/derselbe
-    `Node`), aber im Alltag primär das **eigene Team** im Blick haben wollen, ohne den Überblick
-    über die ganze Abteilung zu verlieren. Aktuell zeigt das Planblatt pro Aufruf strikt genau
-    **einen** `Node` (`App.jsx`: `employees.filter(e => e.nodes.includes(nodeId))`, exakter
-    Treffer, keine Kind-Knoten) -- eine Abteilung mit Team-Aufteilung liesse sich also nur über
-    mehrere separate, flache Stationen abbilden, ohne die gewünschte "Gesamtansicht mit optischer
-    Gruppierung" in einer einzigen Tabelle.
-    - **Naheliegender Umsetzungsweg** (nicht implementiert, nur skizziert): `Node` ist bereits ein
-      Baum (`django-treebeard`/`MP_Node`, siehe `scheduling/models.py`), Teams liessen sich also
-      ohne neues Modell als **Kind-Knoten** unter der Abteilung abbilden (z. B. "ICT" →
-      "ICT/Infrastruktur", "ICT/Applikationen", "ICT/Support"), `Employee.nodes` (M2M) verweist wie
-      gehabt auf den konkreten Team-Knoten. Das Planblatt bräuchte dann für den Abteilungsknoten
-      einen Modus "inkl. Kind-Knoten anzeigen" (`node.get_descendants()`, treebeard bringt das
-      Baum-Tooling bereits mit), der die Mitarbeitendenliste weiterhin in einer gemeinsamen Tabelle
-      zeigt, aber nach Team-Zugehörigkeit gruppiert -- z. B. eine dezente Zwischenzeile/Trennlinie
-      mit Team-Namen zwischen den Blöcken (ähnlich der bestehenden `<th>`-Kopfzeile), statt separate
-      Tabellen, damit eine abteilungsweite Zeile (z. B. Ferien-Überschneidungen über Teams hinweg)
-      weiterhin auf einen Blick sichtbar bleibt.
-    - **Mehrfachanstellungen berücksichtigen** (Nutzer-Hinweis, Spitalrealität): im Spital ist es
-      üblich, dass eine Person **mehrere gleichzeitige Anstellungen mit eigenem Pensum** hat, z. B.
-      40% Dozent + 60% Arzt -- typischerweise in unterschiedlichen Abteilungen/Teams. `Employee`
-      kennt aber nur ein einziges, globales `employment_pct`-Feld (z. B. "80%"), das für die ganze
-      Person gilt und direkt in `_daily_target_hours()`/`annual_target_hours()` (Block 2.7) als
-      pauschaler Faktor auf die Wochenstunden-Basis einfliesst -- es gibt keine Aufteilung "wie viel
-      Pensum entfällt auf welches Team/welche Rolle". Das ist für Punkt 17 relevant, weil es die
-      Annahme "eine Person gehört zu genau einem Team" widerlegt: so jemand müsste in **mehreren**
-      Team-Gruppierungen gleichzeitig auftauchen (nicht nur als Randfall, sondern als reguläres
-      Muster), und die einzelnen Anstellungen können fachlich/rechtlich unterschiedlich sein
-      (unterschiedliche Rolle, ggf. unterschiedliche Wochenstunden-Basis oder Skill-Anforderung pro
-      Anstellung). Das spricht dafür, das per-Team-Pensum direkt am `through`-Modell zu führen (s.
-      u.), statt am globalen `employment_pct` festzuhalten -- eine grössere, hier bewusst nicht
-      weiter ausgearbeitete Änderung an Saldo-/Jahressoll-Berechnung, die mitgedacht werden sollte,
-      sobald Punkt 17 angegangen wird, auch wenn der ICT-Ausgangsfall selbst keine Mehrfach-
-      anstellung war.
-    - **Teamleiter-Highlighting**: dafür fehlt aktuell jedes Datenfeld. Ein einfaches Boolean
-      `is_team_lead` direkt auf `Employee` (analog zu den bestehenden Zusatzfeldern wie
-      `birth_date`) würde nur für "eine Person = ein Team" reichen -- durch den Mehrfachanstellungs-
-      Fall oben ist ein `through`-Modell auf `Employee.nodes` (`EmployeeNodeMembership` mit
-      `is_lead`-Flag **pro Zuordnung**, plus idealerweise gleich das per-Team-Pensum aus dem
-      vorigen Punkt) die naheliegendere Wahl, auch wenn es ein grösserer Umbau der bestehenden
-      M2M-Beziehung ist: eine Person kann in Team A Teamleiterin sein und in Team B nicht. Visuell
-      im Planblatt z. B. als dezentes Badge/fette Schrift in der Mitarbeiter-Spalte
-      (`.employee-name`), konsistent mit der bestehenden Kennzeichnung von Pensum/Kopier-Button dort
-      -- bei einer Person mit mehreren Anstellungen müsste das Badge pro Team-Gruppe einzeln
-      erscheinen (in Team A als Leiterin markiert, in Team B nicht), nicht einmal pro Zeile.
-    - **Bewusst offen/zu klären, sobald das umgesetzt wird**: gilt "inkl. Kind-Knoten" nur für
-      Admin/Planer (volle Abteilungssicht) oder auch für Mitarbeitende (aktuell sehen sie laut
-      Block 2.5 ohnehin nur ihre eigene(n) Station(en) -- eine Team-Gruppierung wäre für sie evtl.
-      nur innerhalb der eigenen Team-Knoten relevant, nicht abteilungsweit); ob der Jahresplan
-      (`YearPlan.jsx`, aktuell ebenfalls Ein-Knoten-Filter) dieselbe Gruppierung braucht; ob die
-      Node-Auswahl (`NodeSelector`) Abteilungs- und Team-Knoten weiterhin gleichberechtigt aufführt
-      oder Teams optisch als Unterpunkte einrückt; wie eine Person mit Mehrfachanstellung in einer
-      **einzelnen** Zeile pro Team dargestellt wird, wenn sie an einem Tag nur für eine ihrer Rollen
-      eine Schicht hat (taucht sie in der anderen Team-Gruppe an dem Tag als "nicht eingeteilt" auf,
-      oder wird die Zeile dort ausgeblendet?) -- direkt verknüpft mit der offenen Frage, ob/wie
-      `ShiftAssignment` künftig pro Anstellung statt nur pro `Employee` unterschieden werden müsste.
+17. **Teams pro Station + Mehrfachanstellungen -- Anstellung statt Person als Planungseinheit**
+    (2026-08, Nutzer-Feedback + Neuentwurf; ersetzt eine erste, unvollständige Fassung dieses
+    Punkts). Zwei Fakten, die zusammen betrachtet werden müssen, weil sie dieselbe Modell-Lücke
+    treffen:
+    - **Mehrere Teams pro Station müssen sichtbar sein** (Beispiel ICT): eine Abteilung wie "ICT"
+      hat oft mehrere Teams (Infrastruktur, Applikationen, Support), die ein **gemeinsames
+      Planblatt** teilen, aber im Alltag primär das eigene Team im Blick haben wollen, ohne den
+      Abteilungs-Überblick zu verlieren.
+    - **Mehrfachanstellungen sind im Spital üblich**: eine Person kann gleichzeitig mehrere
+      Anstellungen mit je eigenem Pensum haben, z. B. 40% Dozent + 60% Arzt, typischerweise in
+      unterschiedlichen Teams/Abteilungen.
+
+    Der gemeinsame Nenner: das heutige Modell geht von **"eine Person = eine Stelle = ein Team"**
+    aus (`Employee.nodes` ist ein einfaches M2M, `Employee.employment_pct` ein einziges globales
+    Feld, `ShiftAssignment` referenziert direkt `Employee`). Beide Fakten oben widerlegen genau
+    diese Annahme -- Teams brauchen eine Gruppierungsebene *unterhalb* der Station, und
+    Mehrfachanstellungen brauchen eine Aufteilungsebene *oberhalb* der einzelnen Schicht. Statt zwei
+    separate Sonderfälle zu flicken, deshalb ein einziger, state-of-the-art Neuentwurf: die
+    **Anstellung (`Employment`) wird die eigentliche Planungseinheit**, nicht mehr die Person direkt
+    -- analog dazu, wie reale Spital-HR-Systeme "Person" und "Beschäftigungsverhältnis" trennen.
+
+    - **Datenmodell (neu, nicht implementiert)**: `Employment` als eigenständiges Modell zwischen
+      `Employee` (die reale Person, bleibt Login/Stammdaten-Träger) und `Node` (jetzt konsequent als
+      Team-Ebene genutzt, dank `django-treebeard` bereits ein Baum -- eine Station wie "ICT" bekommt
+      Kind-Knoten "ICT/Infrastruktur", "ICT/Applikationen", "ICT/Support"). Felder: `employee` (FK),
+      `node` (FK, das konkrete Team), `pensum_pct` (statt des heutigen globalen
+      `Employee.employment_pct`), `title` (Freitext-Bezeichnung der Rolle, z. B. "Arzt"/"Dozent" --
+      bewusst getrennt von `Skill`, das weiterhin die schicht-relevante Qualifikation abbildet, nicht
+      den Vertragstitel), `is_team_lead` (Boolean, **pro Anstellung**, nicht pro Person -- so kann
+      dieselbe Person in Team A Teamleiterin sein und in Team B nicht), `active` (für Ein-/Austritt
+      einzelner Anstellungen, unabhängig von den anderen). `ShiftAssignment` referenziert künftig
+      `Employment` statt `Employee` -- eine Schicht ist damit von Anfang an eindeutig einer Rolle
+      zugeordnet, ohne Sonderfall-Logik zur Laufzeit zu brauchen ("in welcher Rolle war die Person an
+      diesem Tag tätig"). Grössere Migration (u. a. `TimeRecord`/`Absence`/`ShiftPreference` hängen
+      aktuell an `Employee` und müssten geprüft werden, ob sie an `Employment` oder weiterhin an
+      `Employee` bleiben -- z. B. Ferienanspruch/Absenzen sind vermutlich personenweit sinnvoller
+      als pro Anstellung), deshalb hier bewusst nur als Zielbild skizziert.
+
+    - **Planblatt-UX (intuitiv, ein Blick genügt)**: Stations-Auswahl (`NodeSelector`) zeigt weiterhin
+      Stationen, aber eine Station mit Kind-Knoten (Teams) öffnet **eine gemeinsame Tabelle mit
+      eingebetteten Team-Trennzeilen** (dezente, ggf. einklappbare Zwischenzeile mit Team-Namen
+      zwischen den Blöcken, ähnlich der bestehenden `<th>`-Kopfzeile) statt separater Tabellen pro
+      Team -- damit bleiben abteilungsweite Muster (z. B. Ferien-Überschneidungen über Teams hinweg)
+      auf einen Blick sichtbar, während der Alltag (das eigene Team) weiterhin klar gruppiert bleibt.
+      Jede Zeile im Grid repräsentiert eine **Anstellung**, nicht mehr zwingend eine Person: die
+      Dozentin/der Arzt mit Doppelanstellung erscheint als zwei Zeilen in zwei Team-Blöcken, je mit
+      einem kleinen Pensum-/Rollen-Badge ("60% Arzt" / "40% Dozent") statt als eine mehrdeutige Zeile
+      -- intuitiver als eine einzelne Zeile, die rät, in welcher Rolle die Person an einem Tag
+      arbeitet. Teamleiter-Highlighting (fette Schrift/Badge in `.employee-name`) hängt konsequent an
+      der jeweiligen `Employment`-Zeile, nicht an der Person, und erscheint deshalb korrekt nur im
+      Team-Block, in dem die Anstellung tatsächlich die Leitung ist. Mitarbeitende (Rolle `EMPLOYEE`)
+      sehen weiterhin nur ihre eigenen Team-Zeilen (ggf. mehrere, bei eigener Mehrfachanstellung),
+      Admin/Planer die volle, gruppierte Stationsansicht.
+
+    - **Saldo/ArG-Auswirkungen**: das Jahressoll (Block 2.7) müsste pro `Employment` einzeln geführt
+      werden (60% Arzt und 40% Dozent haben unterschiedliche Soll-Basis, ggf. sogar unterschiedliche
+      Ferienregelungen je nach Anstellungsvertrag), aber die **ArG-Grenzwerte für Ruhezeit und
+      Höchstarbeitszeit gelten personenbezogen über alle Anstellungen desselben Tenants hinweg** --
+      rechtlich zählt die tatsächlich geleistete Gesamtzeit einer Person, nicht die einzelne Rolle.
+      Die bestehenden Prüfungen (`ShiftAssignment._check_maximum_weekly_hours`,
+      Ruhezeit-Check) müssten also weiterhin über `Employee` (alle Anstellungen zusammen) laufen,
+      während Soll/Saldo pro `Employment` getrennt bleibt -- zwei unterschiedliche
+      Aggregationsebenen im selben Datenmodell, die beim Umbau nicht verwechselt werden dürfen.
+
+    - **Migrationspfad**: bestehende `Employee.nodes`-Einträge liessen sich 1:1 in je eine
+      `Employment`-Zeile mit `pensum_pct = Employee.employment_pct` überführen (Default: eine
+      Anstellung pro bisher zugeordnetem Node), rückwärtskompatibel für alle heutigen
+      Ein-Anstellungs-Fälle -- der Umbau betrifft strukturell vor allem Mehrfachanstellungen und
+      Team-Gruppierung, nicht die Mehrheit der heutigen, einfachen Datensätze.
+
+    - **Bewusst offen/zu klären, sobald das umgesetzt wird**: ob `TimeRecord`/`Absence`/
+      `ShiftPreference` an `Employee` (personenweit) oder `Employment` (pro Anstellung) hängen
+      sollten -- vermutlich meist personenweit, ausser ggf. Zeiterfassung; ob der Jahresplan
+      (`YearPlan.jsx`, aktuell Ein-Knoten-Filter) dieselbe Team-Gruppierung und Mehrzeilen-Darstellung
+      pro Anstellung braucht; wie viele Ebenen tief Teams verschachtelt werden dürfen (nur Station →
+      Team, oder beliebig tief wie der `Node`-Baum es technisch zuliesse); ob `title` frei bleibt
+      oder an eine kontrollierte Liste/den bestehenden `Skill`-Katalog gekoppelt wird.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

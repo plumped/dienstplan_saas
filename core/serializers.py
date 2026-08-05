@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from core.models import Tenant
+from core.models import Tenant, TenantHolidayOverride
 
 
 class TenantSerializer(serializers.ModelSerializer):
@@ -29,5 +29,17 @@ class TenantSerializer(serializers.ModelSerializer):
             "night_work_regular_threshold_nights",
             "night_work_permit_confirmed",
             "sunday_work_surcharge_pct",
+            "canton",
         ]
         read_only_fields = ["id", "name"]
+
+
+class TenantHolidayOverrideSerializer(serializers.ModelSerializer):
+    """
+    Manuelle Ausnahme zum kantonalen Feiertagskalender (Arbeitszeitmodell,
+    README Block 2.7 Punkt 7) -- siehe Tenant.public_holidays().
+    """
+
+    class Meta:
+        model = TenantHolidayOverride
+        fields = ["id", "date", "name", "kind"]

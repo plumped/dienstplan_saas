@@ -3,7 +3,7 @@ from django.contrib.auth.admin import UserAdmin
 
 from core.context import get_current_tenant
 
-from .models import Membership, Tenant, User
+from .models import Membership, Tenant, TenantHolidayOverride, User
 
 
 class TenantScopedAdminMixin:
@@ -125,6 +125,14 @@ class TenantAdmin(admin.ModelAdmin):
             {"fields": ("default_vacation_days_per_year",)},
         ),
         (
+            "Feiertagskalender (Arbeitszeitmodell)",
+            {
+                "fields": ("canton",),
+                "description": "Grundlage für Employee.annual_target_hours()/time_account_summary(). "
+                "Lokale Sonderfälle über TenantHolidayOverride pflegen.",
+            },
+        ),
+        (
             "Nacht-/Sonntagsarbeit (Art. 17b/17c/19/20 ArG)",
             {
                 "fields": (
@@ -144,3 +152,9 @@ class TenantAdmin(admin.ModelAdmin):
 class MembershipAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["user", "tenant", "role"]
     list_filter = ["tenant", "role"]
+
+
+@admin.register(TenantHolidayOverride)
+class TenantHolidayOverrideAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
+    list_display = ["date", "name", "kind", "tenant"]
+    list_filter = ["tenant", "kind"]

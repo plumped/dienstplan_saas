@@ -50,6 +50,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "last_name",
             "birth_date",
             "employment_pct",
+            "employment_start_date",
             "nodes",
             "skills",
             "is_active",
@@ -62,14 +63,20 @@ class EmployeeSerializer(serializers.ModelSerializer):
 
 
 class EmployeeBalanceSerializer(serializers.Serializer):
-    """Read-only: kombiniert Employee.overtime_balance()/vacation_balance() (Block 2.7)."""
+    """
+    Read-only: Arbeitszeitmodell (README Block 2.7 Punkt 7) -- kombiniert
+    Employee.time_account_summary() (laufender Saldo + Jahresrestsoll) mit
+    Employee.vacation_balance() (Feriensaldo, unverändertes älteres Modell).
+    """
 
     as_of = serializers.DateField()
-    overtime_balance_hours = serializers.FloatField()
-    # Block 2.7 UX-Nachbesserung: True, solange der Saldo mindestens eine
-    # Schicht ohne geprüfte (CONFIRMED) Zeiterfassung enthält -- siehe
-    # Employee.overtime_summary(). Der Saldo ist trotzdem schon aktuell.
-    overtime_is_provisional = serializers.BooleanField()
+    saldo_hours = serializers.FloatField()
+    annual_target_hours = serializers.FloatField()
+    annual_remaining_hours = serializers.FloatField()
+    # True, solange der Saldo mindestens eine Schicht ohne geprüfte
+    # (CONFIRMED) Zeiterfassung enthält -- siehe Employee.time_account_summary().
+    # Der Saldo ist trotzdem schon aktuell.
+    is_provisional = serializers.BooleanField()
     vacation_year = serializers.IntegerField()
     vacation_entitlement_days = serializers.IntegerField()
     vacation_used_days = serializers.IntegerField()

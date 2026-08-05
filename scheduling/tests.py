@@ -1456,7 +1456,11 @@ class NightAndSundayWorkTests(APITestCase):
 
 
 class EmployeeBalanceTests(APITestCase):
-    """Saldo-Übersicht (MVP-Fahrplan Block 2.7): Überstunden-Saldo + Feriensaldo."""
+    """
+    Arbeitszeitmodell (README Block 2.7 Punkt 7): Jahressoll
+    (annual_target_hours), laufender Saldo + Jahresrestsoll
+    (time_account_summary) + Feriensaldo (vacation_balance, unverändert).
+    """
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
@@ -1470,7 +1474,11 @@ class EmployeeBalanceTests(APITestCase):
             break_minutes=60,  # 9h Spanne - 1h Pause = 8h netto pro Schicht
         )
         self.employee = Employee.objects.create(
-            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="A",
+            employment_pct=100,
+            employment_start_date=date(2026, 1, 1),
         )
         self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
         Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
@@ -1484,65 +1492,125 @@ class EmployeeBalanceTests(APITestCase):
             tenant=self.tenant, employee=employee, node=self.node, date=day, template=template or self.template
         )
 
-    # --- Überstunden-Saldo ---
+    # --- Jahressoll (annual_target_hours) ---
 
-    def test_overtime_balance_defaults_to_carryover_without_assignments(self):
-        self.assertEqual(self.employee.overtime_balance(date(2026, 8, 10)), 0)
+    def test_annual_target_hours_without_canton(self):
+        # 261 Mo-Fr-Arbeitstage 2026 * 8.4h Tagessoll (42h/5) - 20 Ferientage
+        # * 8.4h = 2024.4h. Kein Kanton -> kein Feiertagsabzug.
+        self.assertEqual(self.employee.annual_target_hours(2026), 2024.4)
+
+    def test_annual_target_hours_deducts_canton_holidays(self):
+        self.tenant.canton = "ZH"
+        self.tenant.save(update_fields=["canton"])
+        # Wie oben, aber 7 der 9 ZH-Feiertage 2026 fallen auf Mo-Fr -> 254
+        # Arbeitstage * 8.4h - 20*8.4h Ferien = 1965.6h.
+        self.assertEqual(self.employee.annual_target_hours(2026), 1965.6)
+
+    def test_annual_target_hours_prorated_for_midyear_employment_start(self):
+        self.employee.employment_start_date = date(2026, 6, 1)  # Montag
+        self.employee.save(update_fields=["employment_start_date"])
+        # 154 Mo-Fr-Arbeitstage Jun-Dez 2026 * 8.4h - voller Ferienanspruch
+        # (bewusst NICHT anteilig gekürzt, siehe Docstring) = 1125.6h.
+        self.assertEqual(self.employee.annual_target_hours(2026), 1125.6)
+
+    def test_annual_target_hours_zero_before_employment_start(self):
+        self.employee.employment_start_date = date(2027, 1, 1)
+        self.employee.save(update_fields=["employment_start_date"])
+        self.assertEqual(self.employee.annual_target_hours(2026), 0.0)
+
+    # --- Laufender Saldo + Jahresrestsoll (time_account_summary) ---
+
+    def test_saldo_after_full_workweek(self):
+        for offset in range(5):  # Mo-Fr 2026-01-05..09, je 8h
+            self._assign(self.employee, date(2026, 1, 5) + timedelta(days=offset))
+        summary = self.employee.time_account_summary(date(2026, 1, 9))
+        # Soll bis 9.1. (Fr): 7 Mo-Fr-Tage seit 1.1. (Do) * 8.4h = 58.8h.
+        # Ist: 5*8h = 40h. Saldo = 40 - 58.8 = -18.8h.
+        self.assertEqual(summary["saldo_hours"], -18.8)
+        self.assertEqual(summary["annual_target_hours"], 2024.4)
+        self.assertEqual(summary["annual_remaining_hours"], 1984.4)  # 2024.4 - 40
+
+    def test_saldo_strictly_ignores_assignments_after_as_of_date(self):
+        # Kernentscheidung des neuen Modells (Rücksprache mit Nutzer): Ist_kumuliert(t)
+        # und Soll_kumuliert(t) zählen NUR bis (inkl.) as_of_date -- eine künftig
+        # eingeplante Schicht wirkt sich erst aus, sobald ihr Datum erreicht ist
+        # (klassisches Gleitzeitkonto, im Gegensatz zum alten Modell).
+        self._assign(self.employee, date(2026, 1, 2))  # Fr, vor as_of
+        without_future = self.employee.time_account_summary(date(2026, 1, 2))
+        self._assign(self.employee, date(2026, 6, 15))  # weit in der Zukunft
+        with_future = self.employee.time_account_summary(date(2026, 1, 2))
+        self.assertEqual(without_future["saldo_hours"], with_future["saldo_hours"])
+        self.assertEqual(without_future["annual_remaining_hours"], with_future["annual_remaining_hours"])
+
+    def test_saldo_approved_absence_is_soll_neutral(self):
+        # Krankheit Di+Mi (6./7.1.) -- diese 2 Tage duerfen NICHT als
+        # verpasste Sollzeit zaehlen, nur Mo/Do/Fr (5./8./9.1.) sind
+        # tatsaechlich Arbeitstage im Soll.
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 1, 6),
+            end_date=date(2026, 1, 7),
+            type=Absence.Type.SICK,
+            status=Absence.Status.APPROVED,
+        )
+        for d in (date(2026, 1, 5), date(2026, 1, 8), date(2026, 1, 9)):
+            self._assign(self.employee, d)
+        summary = self.employee.time_account_summary(date(2026, 1, 9))
+        # Soll: (7 Mo-Fr-Tage - 2 Krankheitstage) * 8.4h = 42h. Ist: 3*8h=24h.
+        self.assertEqual(summary["saldo_hours"], -18.0)
+
+    def test_saldo_pending_absence_does_not_reduce_soll(self):
+        # Nur GENEHMIGTE Absenzen sind Soll-neutral -- eine offene Anfrage
+        # darf den Saldo nicht schon beeinflussen.
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 1, 6),
+            end_date=date(2026, 1, 7),
+            type=Absence.Type.SICK,
+            status=Absence.Status.PENDING,
+        )
+        self._assign(self.employee, date(2026, 1, 5))
+        summary = self.employee.time_account_summary(date(2026, 1, 9))
+        # Soll: 7 Mo-Fr-Tage * 8.4h = 58.8h (keine Absenz-Kuerzung). Ist: 8h.
+        self.assertEqual(summary["saldo_hours"], -50.8)
+
+    def test_saldo_canton_holiday_is_soll_neutral(self):
+        self.tenant.canton = "ZH"
+        self.tenant.save(update_fields=["canton"])
+        self._assign(self.employee, date(2026, 1, 2))  # Fr, einziger Arbeitstag
+        summary = self.employee.time_account_summary(date(2026, 1, 2))
+        # Soll: (2 Mo-Fr-Tage [1./2.1.] - 1 Feiertag [Neujahr]) * 8.4h = 8.4h.
+        # Ist: 8h. Saldo = 8 - 8.4 = -0.4h.
+        self.assertEqual(summary["saldo_hours"], -0.4)
+
+    def test_saldo_zero_before_employment_start_in_year(self):
+        self.employee.employment_start_date = date(2026, 6, 1)
+        self.employee.save(update_fields=["employment_start_date"])
+        summary = self.employee.time_account_summary(date(2026, 3, 1))
+        self.assertEqual(summary["saldo_hours"], 0.0)
+        self.assertEqual(summary["annual_remaining_hours"], summary["annual_target_hours"])
+
+    def test_saldo_includes_carryover_as_starting_offset(self):
         self.employee.overtime_balance_carryover_hours = 15.5
         self.employee.save(update_fields=["overtime_balance_carryover_hours"])
-        self.assertEqual(self.employee.overtime_balance(date(2026, 8, 10)), 15.5)
+        summary = self.employee.time_account_summary(date(2026, 1, 1))
+        # Kein Arbeitstag verplant -> Soll = 0 (1.1. ist selbst der einzige
+        # Tag und ohne Kanton kein Feiertag) - Soll (1 Tag * 8.4h) + Ist (0h)
+        # + Carryover.
+        self.assertEqual(summary["saldo_hours"], round(15.5 - 8.4, 2))
 
-    def test_overtime_balance_sums_signed_difference_across_weeks(self):
-        # Woche 1 (ab Mo 2026-08-03): 6 Schichten a 8h = 48h ist, an 6 Tagen
-        # verplant -> Soll bleibt bei vollen 42h gedeckelt -> +6h.
-        for offset in range(6):
-            self._assign(self.employee, date(2026, 8, 3) + timedelta(days=offset))
-        # Woche 2 (ab Mo 2026-08-10): nur 3 Schichten a 8h = 24h ist, an 3
-        # Tagen verplant -> anteiliger Soll 42h * 3/5 = 25.2h -> -1.2h.
-        for offset in range(3):
-            self._assign(self.employee, date(2026, 8, 10) + timedelta(days=offset))
-        # Woche dazwischen/danach ohne jede Zuweisung darf NICHT als -42h zählen.
-        balance = self.employee.overtime_balance(date(2026, 8, 20))
-        self.assertEqual(balance, 4.8)  # +6 - 1.2
+    # --- is_provisional (Saldo ist rechnerisch sofort aktuell, auch vor der Prüfung --
+    # das Flag macht das im Frontend nur transparent) ---
 
-    def test_overtime_balance_ignores_assignments_after_as_of_date(self):
-        self._assign(self.employee, date(2026, 8, 3))  # 1 Tag -> Soll 42h*1/5=8.4h -> -0.4h
-        self._assign(self.employee, date(2026, 8, 24))  # spätere Woche, soll nicht mitzählen
-        balance = self.employee.overtime_balance(date(2026, 8, 10))
-        self.assertEqual(balance, -0.4)
-
-    def test_overtime_balance_without_as_of_includes_future_assignments(self):
-        # Bugfix: eine für einen künftigen Monat verplante Schicht muss sofort
-        # in den Saldo einfliessen (wie is_provisional/weekly_hours_summary es
-        # vorsehen), nicht erst, sobald "heute" ihr Datum erreicht.
-        self._assign(self.employee, date(2026, 8, 3))  # 1 Tag -> -0.4h
-        self._assign(self.employee, date(2027, 3, 15))  # weit in der Zukunft, 1 Tag -> -0.4h
-        balance = self.employee.overtime_balance()
-        self.assertEqual(balance, -0.8)
-
-    def test_overtime_balance_prorates_soll_by_days_scheduled_in_week(self):
-        # Regression: eine einzelne, gerade erst eingeplante Schicht in einer
-        # frischen Woche darf nicht sofort mit dem vollen Wochensoll (42h)
-        # verrechnet werden (das liesse den Saldo bei jeder neu begonnenen
-        # Planungswoche um fast eine ganze Wochenarbeitszeit einbrechen).
-        self._assign(self.employee, date(2026, 8, 3))  # Mo, 1. Tag der Woche
-        self.assertEqual(self.employee.overtime_balance(), -0.4)  # 8h - 8.4h
-        self._assign(self.employee, date(2026, 8, 4))  # Di, 2. Tag
-        self.assertEqual(self.employee.overtime_balance(), -0.8)  # 16h - 16.8h
-        for offset in range(2, 5):  # Mi-Fr auffüllen -> volle 5-Tage-Woche
-            self._assign(self.employee, date(2026, 8, 3) + timedelta(days=offset))
-        self.assertEqual(self.employee.overtime_balance(), -2.0)  # 40h - 42h, wie eine normale Woche
-
-    # --- is_provisional (UX-Nachbesserung: Saldo ist rechnerisch sofort aktuell, auch vor
-    # der Prüfung -- das Flag macht das im Frontend nur transparent) ---
-
-    def test_overtime_summary_is_provisional_when_based_on_planned_hours_only(self):
-        self._assign(self.employee, date(2026, 8, 3))  # keine Zeiterfassung -> Schätzung aus Planung
-        summary = self.employee.overtime_summary(date(2026, 8, 3))
+    def test_saldo_is_provisional_when_based_on_planned_hours_only(self):
+        self._assign(self.employee, date(2026, 1, 5))  # keine Zeiterfassung -> Schätzung aus Planung
+        summary = self.employee.time_account_summary(date(2026, 1, 5))
         self.assertTrue(summary["is_provisional"])
 
-    def test_overtime_summary_is_provisional_when_time_record_not_confirmed(self):
-        assignment = self._assign(self.employee, date(2026, 8, 3))
+    def test_saldo_is_provisional_when_time_record_not_confirmed(self):
+        assignment = self._assign(self.employee, date(2026, 1, 5))
         TimeRecord.objects.create(
             tenant=self.tenant,
             assignment=assignment,
@@ -1550,11 +1618,11 @@ class EmployeeBalanceTests(APITestCase):
             actual_end=time(17, 0),
             actual_break_minutes=60,
         )  # Status bleibt SUBMITTED
-        summary = self.employee.overtime_summary(date(2026, 8, 3))
+        summary = self.employee.time_account_summary(date(2026, 1, 5))
         self.assertTrue(summary["is_provisional"])
 
-    def test_overtime_summary_not_provisional_once_all_shifts_confirmed(self):
-        assignment = self._assign(self.employee, date(2026, 8, 3))
+    def test_saldo_not_provisional_once_all_shifts_confirmed(self):
+        assignment = self._assign(self.employee, date(2026, 1, 5))
         record = TimeRecord.objects.create(
             tenant=self.tenant,
             assignment=assignment,
@@ -1563,11 +1631,11 @@ class EmployeeBalanceTests(APITestCase):
             actual_break_minutes=60,
         )
         record.confirm()
-        summary = self.employee.overtime_summary(date(2026, 8, 3))
+        summary = self.employee.time_account_summary(date(2026, 1, 5))
         self.assertFalse(summary["is_provisional"])
 
-    def test_overtime_summary_without_any_assignment_is_not_provisional(self):
-        summary = self.employee.overtime_summary(date(2026, 8, 3))
+    def test_saldo_without_any_assignment_is_not_provisional(self):
+        summary = self.employee.time_account_summary(date(2026, 1, 5))
         self.assertFalse(summary["is_provisional"])
 
     # --- Feriensaldo ---
@@ -1632,21 +1700,23 @@ class EmployeeBalanceTests(APITestCase):
     # --- API ---
 
     def test_api_returns_combined_balance(self):
-        for offset in range(6):
-            self._assign(self.employee, date(2026, 8, 3) + timedelta(days=offset))
-        Absence.objects.create(
+        for offset in range(5):  # Mo-Fr 2026-01-05..09
+            self._assign(self.employee, date(2026, 1, 5) + timedelta(days=offset))
+        Absence.objects.create(  # nicht überlappend mit den Diensten oben
             tenant=self.tenant,
             employee=self.employee,
-            start_date=date(2026, 8, 3),
-            end_date=date(2026, 8, 7),
+            start_date=date(2026, 1, 12),
+            end_date=date(2026, 1, 16),
             type=Absence.Type.VACATION,
             status=Absence.Status.APPROVED,
         )
         self.auth_as(self.planner_user)
-        response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=2026-08-10")
+        response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=2026-01-09")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["overtime_balance_hours"], 6.0)
-        self.assertTrue(response.data["overtime_is_provisional"])  # keine Zeiterfassung erfasst
+        self.assertEqual(response.data["saldo_hours"], -18.8)
+        self.assertEqual(response.data["annual_target_hours"], 2024.4)
+        self.assertEqual(response.data["annual_remaining_hours"], 1984.4)
+        self.assertTrue(response.data["is_provisional"])  # keine Zeiterfassung erfasst
         self.assertEqual(response.data["vacation_year"], 2026)
         self.assertEqual(response.data["vacation_entitlement_days"], 20)
         self.assertEqual(response.data["vacation_used_days"], 5)
@@ -1657,16 +1727,17 @@ class EmployeeBalanceTests(APITestCase):
         response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=not-a-date")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_api_without_as_of_includes_future_assignments(self):
-        # Bugfix: das Frontend ruft balance/ nie mit ?as_of= auf -- ohne den
-        # Parameter muss eine für einen künftigen Monat verplante Schicht
-        # trotzdem sofort im Saldo auftauchen.
-        self._assign(self.employee, date(2026, 8, 3))  # 1 Tag -> -0.4h
-        self._assign(self.employee, date(2027, 3, 15))  # weit in der Zukunft, 1 Tag -> -0.4h
+    def test_api_without_as_of_ignores_future_assignments(self):
+        # Kernentscheidung des neuen Modells: ohne ?as_of= nutzt die API
+        # "heute" als Stichtag -- eine weit in der Zukunft eingeplante
+        # Schicht darf den Saldo nicht vorzeitig verändern (Gleitzeitkonto,
+        # siehe Employee.time_account_summary()).
         self.auth_as(self.planner_user)
-        response = self.client.get(f"/api/employees/{self.employee.id}/balance/")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data["overtime_balance_hours"], -0.8)
+        before = self.client.get(f"/api/employees/{self.employee.id}/balance/").data
+        self._assign(self.employee, date(2030, 1, 7))  # weit in der Zukunft
+        after = self.client.get(f"/api/employees/{self.employee.id}/balance/").data
+        self.assertEqual(before["saldo_hours"], after["saldo_hours"])
+        self.assertEqual(before["annual_remaining_hours"], after["annual_remaining_hours"])
 
 
 class ShiftTradeRequestTests(TestCase):

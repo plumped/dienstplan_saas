@@ -12,6 +12,7 @@ urlpatterns = [
     path('admin/tenant-switch/', tenant_switch, name='admin-tenant-switch'),
     path('admin/', admin.site.urls),
     path('api/', include('scheduling.urls')),
+    path('api/', include('core.urls')),
     path('api/me/', MeView.as_view()),
     path('api/tenant/', TenantView.as_view()),
     path('api/auth/token/', obtain_auth_token),

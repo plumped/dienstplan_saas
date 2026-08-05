@@ -1,11 +1,12 @@
+from rest_framework import viewsets
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.models import Membership
+from core.models import Membership, TenantHolidayOverride
 from core.permissions import IsTenantAdmin
-from core.serializers import TenantSerializer
+from core.serializers import TenantHolidayOverrideSerializer, TenantSerializer
 from core.tenancy import resolve_membership_for_user
 
 _EMPTY_TASK_COUNTS = {"absences": 0, "trades": 0, "time_records": 0}
@@ -140,3 +141,48 @@ class TenantView(APIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+class TenantHolidayOverrideViewSet(viewsets.ModelViewSet):
+    """
+    Manuelle Feiertags-Ausnahmen zum kantonalen Kalender (Arbeitszeitmodell,
+    README Block 2.7 Punkt 7, siehe Tenant.public_holidays()). Selbe
+    initial()/Berechtigungs-Struktur wie TenantView, da Teil derselben
+    Tenant-Konfiguration -- Lesen für alle vier Rollen offen, Schreiben nur
+    Admin (IsTenantAdmin).
+
+    Absichtlich kein scheduling.views.TenantScopedViewSet als Basis: core
+    bleibt die "unterste" App, die scheduling NICHT importiert (siehe
+    MeView-Docstring) -- deshalb hier derselbe initial()-Aufbau wie in
+    TenantView dupliziert statt eine Abhängigkeit in die andere Richtung zu
+    schaffen.
+    """
+
+    serializer_class = TenantHolidayOverrideSerializer
+    permission_classes = [IsAuthenticated, IsTenantAdmin]
+
+    def initial(self, request, *args, **kwargs):
+        self.format_kwarg = self.get_format_suffix(**kwargs)
+        neg = self.perform_content_negotiation(request)
+        request.accepted_renderer, request.accepted_media_type = neg
+        version, scheme = self.determine_version(request, *args, **kwargs)
+        request.version, request.versioning_scheme = version, scheme
+
+        self.perform_authentication(request)
+        membership = resolve_membership_for_user(request.user)
+        request.membership = membership
+        request.tenant = membership.tenant if membership else None
+
+        self.check_permissions(request)
+        self.check_throttles(request)
+
+    def get_queryset(self):
+        # Explizit über all_objects + request.tenant statt ContextVar-Manager
+        # (dieselbe "explizite Filterung ist die echte Grenze"-Philosophie
+        # wie in scheduling.views.TenantScopedViewSet).
+        if not self.request.tenant:
+            return TenantHolidayOverride.all_objects.none()
+        return TenantHolidayOverride.all_objects.filter(tenant=self.request.tenant)
+
+    def perform_create(self, serializer):
+        serializer.save(tenant=self.request.tenant)

@@ -431,92 +431,82 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Lohnbuchhaltung, die selten direkt an die API angebunden ist.
 6. **Monatsauswertung Soll/Ist-Stunden pro Mitarbeiter** (inkl. Nacht-/Sonntagszuschläge,
    Überzeit) als Basis für den Lohnlauf.
-7. ✅ **Saldo-Übersicht für Mitarbeitende** (Überstunden + Ferien): Mitarbeitende sehen jetzt auf
-   einen Blick, ob sie gesamthaft im Plus oder im Minus sind und wie viele Ferientage noch übrig
-   sind. Bewusst getrennt von Block 1.11 (wöchentliche Über-/Unterzeit für den Zuschlag) und
-   Block 2.6 (Monatsauswertung/Lohnbuchhaltung), weil es hier um die **Mitarbeiter-
-   Selbstauskunft** geht:
-   - **Überstunden-Saldo** (`Employee.overtime_balance()`): vorzeichenbehaftete Summe aus
-     Ist minus Soll über **alle Kalenderwochen, in denen der Mitarbeiter mindestens eine
-     Zuweisung hatte** (Wochen ganz ohne Zuweisung zählen bewusst nicht als "-Soll", das würde
-     Zeit vor Anstellungsbeginn/Lücken fälschlich als Minusstunden werten), plus
-     `Employee.overtime_balance_carryover_hours` als Startsaldo beim Systemeinstieg.
-   - **Feriensaldo** (`Employee.vacation_balance()`): Anspruch (`Tenant.
+7. ✅ **Arbeitszeitmodell** (Überstunden-Saldo + Ferien) -- **komplett neu gebaut** (2026-08) nach
+   Block 7 unten, weil das ursprüngliche Modell "zu schwammig" war (Nutzer-Feedback nach zwei
+   vorangegangenen Bugfix-Runden): statt einer einzelnen, unscharf definierten Zahl jetzt zwei klar
+   getrennte, kalenderjahresbezogene Kennzahlen, dazu ein echter Feiertagskalender. Bewusst getrennt
+   von Block 1.11 (wöchentliche Über-/Unterzeit für den Art.-13-ArG-Zuschlag, unverändert) und Block
+   2.6 (Monatsauswertung/Lohnbuchhaltung), weil es hier um die **Mitarbeiter-Selbstauskunft** geht:
+   - **Laufender Saldo** (`Employee.time_account_summary()["saldo_hours"]`): `Ist_kumuliert(t) -
+     Soll_kumuliert(t)` im laufenden Kalenderjahr (ab `max(1. Januar, employment_start_date)`) bis
+     einschliesslich `t` (Default: heute), plus `overtime_balance_carryover_hours` als Startwert.
+     `Soll_kumuliert(t)` ist das anteilige Soll bis heute (Anzahl Mo-Fr-Arbeitstage seit
+     Jahres-/Anstellungsbeginn × Tagessoll), abzüglich bereits vergangener Feiertage und genehmigter
+     Absenzen (Ferien, Krankheit, Sonstiges) -- diese Tage sind **Soll-neutral**, keine "verpasste
+     Sollzeit". Klassisches Gleitzeitkonto-Verhalten: sowohl Ist als auch Soll zählen bewusst nur
+     bis `t` -- eine künftig eingeplante Schicht wirkt sich erst aus, sobald ihr Datum erreicht ist
+     (bewusste Design-Entscheidung nach Rücksprache, siehe unten "Von Cliff-Edges zum
+     Gleitzeitkonto").
+   - **Jahressoll/Jahresrestsoll** (`annual_target_hours()`/`time_account_summary()
+     ["annual_remaining_hours"]`): `Jahressoll = Wochensoll_effektiv × Pensum% × Mo-Fr-Arbeitstage/
+     Jahr (ab employment_start_date) - Feiertage_auf_Arbeitstage - voller Ferienanspruch(Std)` --
+     ein fixes Jahresziel, unabhängig davon, wann im Jahr die Ferien tatsächlich bezogen werden
+     (Ferienanspruch wird bewusst NICHT anteilig für unterjährigen Eintritt gekürzt, bekannte
+     Vereinfachung). `Jahresrestsoll = Jahressoll - Ist_kumuliert(t)` -- die Planungsgrösse "wie
+     viel ist bis Silvester noch zu leisten".
+   - **Feriensaldo** (`Employee.vacation_balance()`, unverändert): Anspruch (`Tenant.
      default_vacation_days_per_year`, Default 20 Tage nach Art. 329a Abs. 1 OR, oder
      `Employee.vacation_days_per_year` als Override) minus genehmigte Ferien-Absenzen im
-     jeweiligen Kalenderjahr, gezählt in Mo-Fr-Werktagen (`_count_workdays`). *Noch offen*: kein
-     Feiertagskalender (Feiertage zählen fälschlich als Arbeitstag) und kein Übertrag von
-     Resturlaub zwischen Kalenderjahren -- beides bewusst nicht gelöst, siehe Block 5.3 fürs
+     jeweiligen Kalenderjahr, gezählt in Mo-Fr-Werktagen (`_count_workdays`, bewusst weiterhin ohne
+     Feiertagsabzug -- eine ältere, unveränderte Kennzahl, siehe unten zum neuen Kalender). *Noch
+     offen*: kein Übertrag von Resturlaub zwischen Kalenderjahren, siehe Block 5.3 fürs
      Löschkonzept, sobald ein Übertragsmechanismus feststeht.
-   - **API**: `GET /api/employees/{id}/balance/` (`?as_of=`/`?year=`), Lesen für alle Rollen
-     offen wie beim übrigen Planblatt.
-   - **Frontend**: `BalanceBadge.jsx` -- im Topbar für den eigenen Account (nur wenn `me.
-     employee` gesetzt ist, Variante `pill`) und pro Zeile in der Mitarbeitenden-Verwaltung
-     (Block 2.10, ebenfalls `pill`). Der Topbar musste dafür umgebaut werden (`flex-wrap` statt
-     fixer Zeile), sonst wäre er bei normaler Fensterbreite abgeschnitten worden. Im Planblatt-Grid
-     (nur für Admin/Planer via `canManage`) steht der Saldo in einer eigenen, am rechten Rand
-     sticky fixierten Spalte "Saldo" ganz am Ende jeder Mitarbeiterzeile (`variant="cell"`, Format
-     z. B. "-33.72 h / 19 Ferientage"), analog zur Mitarbeiter-Spalte links `position: sticky;
-     right: 0` fixiert, damit der Saldo unabhängig von der horizontalen Scroll-Position sichtbar
-     bleibt (nicht in der ohnehin schon vollen Mitarbeiter-Zelle selbst, die dadurch überladen
-     wirken würde).
-   - ✅ **UX-Nachbesserung**: der Saldo war rechnerisch schon immer sofort aktuell
-     (`weekly_hours_summary()` nimmt die geplante Schichtdauer, solange keine Zeiterfassung
-     existiert, und jede erfasste Ist-Zeit zählt unabhängig vom `TimeRecord.status` sofort mit) --
-     **wirkte** aber verzögert, weil `BalanceBadge.jsx` ihn nur einmal beim Mounten geladen hat.
-     Drei Verbesserungen dagegen:
-     - **Reaktives Neuladen**: `api.js` feuert nach jeder saldorelevanten Mutation (Zuweisung,
-       Zeiterfassung, Absenz-Genehmigung, Diensttausch-Freigabe, Employee-Update) ein einfaches
-       Pub/Sub-Event (`onBalanceChanged`), das `BalanceBadge` abonniert und daraufhin neu lädt --
-       Topbar, Mitarbeitenden-Verwaltung und Planblatt-Grid-Spalte aktualisieren sich jetzt alle
-       innerhalb derselben Session, ohne Reload.
-     - **"Voraussichtlich" vs. "bestätigt" sichtbar machen**: `Employee.overtime_summary()` liefert
-       zusätzlich `is_provisional` (True, sobald mindestens eine eingerechnete Schicht nicht auf
-       einer geprüften Zeiterfassung beruht) über den `balance`-Endpoint
-       (`overtime_is_provisional`) sowie `weekly_hours_summary()`/`weekly-overtime`-Endpoint
-       (`is_provisional`). `BalanceBadge` zeigt in diesem Fall ein dezentes `~` vor dem
-       Überstunden-Wert (Tooltip erklärt den Unterschied), statt stillschweigend so zu tun, als sei
-       alles bereits geprüft.
-     - **Direktes Feedback pro Schicht**: `TimeRecordPanel.jsx` (Zeiterfassung-Tab) zeigt nach dem
-       Speichern einer Ist-Zeit sofort eine kurze, farblich neutrale Zeile mit der Wochenbilanz der
-       betroffenen Kalenderwoche (Ist/Soll/Delta, via `GET /api/employees/{id}/weekly-overtime/`),
-       statt den Effekt nur indirekt über den Topbar erahnen zu lassen.
-   - ✅ **Bugfix (2026-08)**: `Employee.overtime_summary()` schloss Zuweisungen, die nach dem
-     Stichtag liegen, implizit über den Query-Filter `date__lte=as_of_date` aus -- und
-     `EmployeeViewSet.balance()` löste `as_of_date` *immer* auf ein konkretes Datum auf
-     (`?as_of=` fehlt → "heute"), selbst wenn die Anfrage gar keinen Stichtag verlangt hatte. Das
-     Frontend ruft `balance/` nirgends mit `?as_of=` auf (`api.js: getEmployeeBalance`), also griff
-     dieser Default in der Praxis immer -- eine für einen künftigen Monat verplante Schicht (z. B.
-     bei der Diensteinplanung für den nächsten Monat) fehlte dadurch komplett im Saldo (Topbar,
-     Mitarbeitenden-Verwaltung, Planblatt-Grid-Spalte), bis "heute" ihr Datum erreichte. Das
-     widersprach sowohl der oben dokumentierten Definition ("alle Kalenderwochen, in denen der
-     Mitarbeiter mindestens eine Zuweisung hatte", ohne Stichtag-Einschränkung) als auch dem
-     `is_provisional`-Designziel, dass auch ungeprüfte/künftige Zuweisungen sofort mitzählen sollen.
-     Fix: `overtime_summary(as_of_date=None)` filtert nur noch, wenn `as_of_date` **explizit**
-     übergeben wird (z. B. für eine historische Stichtag-Momentaufnahme) -- der API-Default lässt
-     `as_of_date` jetzt `None`, sodass ohne `?as_of=` wirklich alle Wochen einbezogen werden, auch
-     künftige. Das Antwortfeld `as_of` in der API zeigt weiterhin das heutige Datum (nur der
-     interne Berechnungs-Stichtag wurde entkoppelt). Siehe `test_overtime_balance_without_as_of_
-     includes_future_assignments` (Modell) und `test_api_without_as_of_includes_future_assignments`
-     (API) in `scheduling/tests.py`.
-   - ✅ **Bugfix #2 (2026-08, direkte Folge von Bugfix #1)**: sobald künftige Wochen sofort zählen
-     (siehe oben), wurde ein zweites, vorher kaum sichtbares Problem offensichtlich: `overtime_
-     summary()` hat pro Woche mit **mindestens einer** Zuweisung immer den **vollen** Wochensoll
-     (z. B. 42h) angerechnet -- unabhängig davon, ob 1 oder 6 Schichten in dieser Woche standen. Das
-     liess den Saldo bei jeder frisch begonnenen Planungswoche um fast eine ganze Wochenarbeitszeit
-     einbrechen, sobald die erste Schicht gesetzt wurde, und sich beim Auffüllen der Woche wieder
-     erholen -- exakt das vom Nutzer beobachtete "sinkt, dann steigt wieder je nachdem wo ich sie
-     eingebe". Fix (nach Rücksprache, da eine Änderung an dieser Kernrechnung): der Wochensoll wird
-     jetzt **anteilig auf die tatsächlich verplanten Tage** dieser Woche angerechnet (`min(verplante
-     Tage, 5) / 5 * Wochensoll`, dieselbe Mo-Fr-Konvention wie `_count_workdays` beim Feriensaldo,
-     gedeckelt auf den vollen Wochensoll ab 5 Tagen, damit Mehrarbeit an zusätzlichen Tagen weiterhin
-     voll als Überstunden zählt). Eine einzelne 8h-Schicht in einer neuen Woche zählt dadurch nur
-     noch mit ca. -0.4h statt -34h; eine vollständige 5-Tage-Woche mit je 8h ergibt weiterhin die
-     erwarteten -2h (40h Ist vs. 42h Soll), unverändert gegenüber vorher. Bewusst **nicht** verändert:
-     `weekly_hours_summary()` selbst (Block 1.11, Art. 13 ArG Überzeit/Zuschlag für eine einzelne,
-     konkret abgefragte Woche) rechnet weiterhin mit dem vollen Wochensoll -- das ist dort korrekt,
-     weil die gesetzliche Normalarbeitszeit pro Woche gilt, nicht pro Tag. Siehe
-     `test_overtime_balance_prorates_soll_by_days_scheduled_in_week` in `scheduling/tests.py`.
+   - **Feiertagskalender** (`Tenant.canton` + `TenantHolidayOverride` + `Tenant.public_holidays()`):
+     über die gepflegte Python-Bibliothek `holidays` (vacanza/holidays) statt eigenem Kalender --
+     die Schweiz hat nicht nur pro Kanton, sondern in GR/LU/SZ/SO teils sogar pro Gemeinde
+     unterschiedliche Feiertage (Patrozinien) inkl. beweglicher Feste (Ostern-Formel), das selbst zu
+     pflegen wäre erheblicher Aufwand. Bewusst offline/library-basiert statt einer REST-API (Nager.
+     Date, openholidaysapi.org): keine Laufzeit-Netzwerkabhängigkeit für eine Kernberechnung, die
+     laufend abgerufen wird, kein zusätzlicher Cache-Layer nötig, passt zum bestehenden
+     Testmuster (deterministisch, ohne Netzwerk-Mocking). `TenantHolidayOverride` (ADD/REMOVE, pro
+     Tenant max. 1-2 Einträge in der Praxis) deckt die verbleibenden Gemeinde-Sonderfälle ab, die
+     die Bibliothek nicht kennt. Verwaltung im Settings-Tab (`TenantSettings.jsx`: Kanton-Dropdown +
+     Ausnahme-Liste), API unter `/api/tenant-holiday-overrides/` (Lesen alle Rollen, Schreiben
+     Admin-only wie `/api/tenant/`).
+   - **Eintrittsdatum** (`Employee.employment_start_date`, neues Pflichtfeld): Startpunkt für das
+     Jahressoll -- Wochen davor zählen weder als Soll noch als Ist, auch wenn sie im laufenden
+     Kalenderjahr liegen (wichtig für unterjährig Eingestellte). Migration setzt bei Bestandsdaten
+     den 1. Januar des Migrations-Jahres als Default, im Settings-Formular editierbar.
+   - **API**: `GET /api/employees/{id}/balance/` (`?as_of=`/`?year=`), Lesen für alle Rollen offen
+     wie beim übrigen Planblatt. Response-Felder: `saldo_hours`, `annual_target_hours`,
+     `annual_remaining_hours`, `is_provisional`, `vacation_*`.
+   - **Frontend** (`BalanceBadge.jsx`): Topbar (eigener Account) und Mitarbeitenden-Verwaltung
+     (`variant="pill"`) zeigen den Saldo farbcodiert (`--primary`/"blau" bei positiv = vor Plan,
+     `--warn`/"rot" bei negativ = hinter Plan, wie im Block-7-Vorschlag gefordert) plus einen
+     schmalen Fortschrittsbalken zum Jahressoll (`annual_remaining_hours` wird NICHT als rohe Zahl
+     angezeigt -- die wäre v. a. am 1. Januar mit fast dem vollen Jahressoll erschreckend, siehe
+     Block 7 unten -- sondern nur als Prozent-Balken plus Kontext im Tooltip). Planblatt-Grid
+     (`variant="cell"`, nur Admin/Planer) zeigt weiterhin den kompakten Saldo ohne Balken (zu wenig
+     Platz in der Tabellenzeile). `is_provisional` (True, sobald mindestens eine eingerechnete
+     Schicht bis `t` nicht auf einer geprüften Zeiterfassung beruht) weiterhin als dezentes `~` vor
+     dem Wert. Reaktives Neuladen nach jeder saldorelevanten Mutation via `onBalanceChanged`
+     (unverändert aus der vorherigen UX-Nachbesserung).
+   - **Bewusst nicht umgesetzt** (Scope-Abgrenzung zu Block 7 unten, für später): ein eigenes
+     Personalkategorie-/Vertragstyp-Modell (die bestehenden Employee-Overrides für Wochenstunden/
+     Ferienanspruch decken den praktischen Bedarf für den MVP bereits ab, ohne ein neues Modell
+     einzuführen); "offizielle Überzeit" mit Schwellenwert + Genehmigungsworkflow (das wäre eine
+     eigene Workflow-Funktion, keine reine Rechenkorrektur); Prognose ("Jahresziel voraussichtlich
+     am 3. Dezember erreicht") -- die Datenbasis (`annual_remaining_hours` + geplante künftige
+     Zuweisungen) ist vorhanden, die Extrapolation selbst ist ein separates UI-Feature.
+   - **Von Cliff-Edges zum Gleitzeitkonto** (Entwicklungsgeschichte, zum Verständnis der jetzigen
+     Design-Entscheidungen): das ursprüngliche Modell zählte nur Kalenderwochen mit mindestens einer
+     Zuweisung, was zwei Bugs erzeugte -- künftig eingeplante Schichten fehlten komplett im Saldo
+     (erster Fix: künftige Wochen sofort einbeziehen), und danach riss eine einzelne neu eingeplante
+     Schicht den Saldo um fast einen vollen Wochensoll ein, bis die Woche aufgefüllt war (zweiter
+     Fix: Soll anteilig auf verplante Tage). Die Rücksprache über den zweiten Fix führte zur
+     grundsätzlichen Frage, ob Zukunft überhaupt sofort zählen soll -- das jetzige Modell beantwortet
+     das bewusst mit "nein" (striktes Gleitzeitkonto, siehe "Laufender Saldo" oben), well-defined
+     statt der Cliff-Edge-Heuristik der Vorgängerversionen.
 8. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
    eine belegte Zelle wird abgelehnt statt getauscht).
 9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn
@@ -754,6 +744,14 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 2. Trial-Phase und Plan-/Mitarbeiterlimits pro Tenant.
 
 ### 7. Zeitmanagement
+
+✅ **Umgesetzt (2026-08)** -- vollständig implementiert wie unten spezifiziert, siehe Block 2 Punkt
+7 ("Arbeitszeitmodell") für die technische Umsetzung inkl. API/Frontend/Tests. Scope-Abgrenzungen
+(bewusst nicht Teil dieser Runde, für später): Personalkategorie-Modell als eigenständiges Konzept
+(Employee-Overrides decken den MVP-Bedarf ab), offizielle Überzeit mit Schwellenwert +
+Genehmigungsworkflow, Prognose-Extrapolation im Frontend. Die ursprüngliche Spezifikation bleibt
+unten als Referenz stehen.
+
 Die intuitivste Lösung: zwei Zahlen statt einer
 
 Laufender Saldo — das, was der Mitarbeitende täglich sieht:

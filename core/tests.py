@@ -1,3 +1,5 @@
+from datetime import date
+
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import RequestFactory, TestCase
@@ -6,7 +8,7 @@ from rest_framework.test import APITestCase
 
 from core.context import get_current_tenant, set_current_tenant
 from core.middleware import ADMIN_TENANT_SESSION_KEY, TenantContextCleanupMiddleware
-from core.models import Membership, Tenant
+from core.models import Membership, Tenant, TenantHolidayOverride
 from core.tenancy import resolve_tenant_for_user
 from scheduling.models import Employee, Node, Skill
 
@@ -253,6 +255,110 @@ class TenantConfigAPITests(APITestCase):
         self.auth_as(user)
         response = self.client.get("/api/tenant/")
         self.assertEqual(response.status_code, 404)
+
+    def test_canton_field_is_part_of_config(self):
+        self.auth_as(self._membership("admin", Membership.Role.ADMIN))
+        response = self.client.patch("/api/tenant/", {"canton": "ZH"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.canton, "ZH")
+
+
+class TenantPublicHolidaysTests(TestCase):
+    """
+    Tenant.public_holidays() (Arbeitszeitmodell, README Block 2.7 Punkt 7):
+    kantonaler Kalender (holidays-Bibliothek) kombiniert mit manuellen
+    TenantHolidayOverride-Einträgen.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+
+    def test_empty_without_canton(self):
+        self.assertEqual(self.tenant.public_holidays(2026), set())
+
+    def test_uses_canton_calendar(self):
+        self.tenant.canton = "ZH"
+        self.tenant.save(update_fields=["canton"])
+        holidays = self.tenant.public_holidays(2026)
+        self.assertIn(date(2026, 1, 1), holidays)  # Neujahr
+        self.assertIn(date(2026, 8, 1), holidays)  # Nationalfeiertag
+        # LU-spezifischer Feiertag (Fronleichnam) darf in ZH nicht auftauchen.
+        self.assertNotIn(date(2026, 6, 4), holidays)
+
+    def test_different_cantons_have_different_holidays(self):
+        self.tenant.canton = "LU"
+        self.tenant.save(update_fields=["canton"])
+        self.assertIn(date(2026, 6, 4), self.tenant.public_holidays(2026))  # Fronleichnam
+
+    def test_add_override_extends_calendar(self):
+        TenantHolidayOverride.objects.create(
+            tenant=self.tenant, date=date(2026, 11, 20), name="Lokale Kirchweih", kind="add"
+        )
+        self.assertIn(date(2026, 11, 20), self.tenant.public_holidays(2026))
+
+    def test_remove_override_excludes_canton_holiday(self):
+        self.tenant.canton = "ZH"
+        self.tenant.save(update_fields=["canton"])
+        TenantHolidayOverride.objects.create(tenant=self.tenant, date=date(2026, 1, 1), kind="remove")
+        self.assertNotIn(date(2026, 1, 1), self.tenant.public_holidays(2026))
+
+    def test_override_from_other_tenant_is_ignored(self):
+        other = Tenant.objects.create(name="Klinik B", slug="klinik-b", canton="ZH")
+        TenantHolidayOverride.objects.create(tenant=other, date=date(2026, 11, 20), kind="add")
+        self.assertNotIn(date(2026, 11, 20), self.tenant.public_holidays(2026))
+
+
+class TenantHolidayOverrideAPITests(APITestCase):
+    """
+    /api/tenant-holiday-overrides/ (Arbeitszeitmodell, README Block 2.7
+    Punkt 7): dieselbe Admin-only-Schreiben/alle-lesen-Berechtigung wie
+    /api/tenant/, da Teil derselben Tenant-Konfiguration.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b")
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _membership(self, username, role, tenant=None):
+        user = User.objects.create_user(username=username, password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=tenant or self.tenant, role=role)
+        return user
+
+    def test_admin_can_create_override(self):
+        self.auth_as(self._membership("admin", Membership.Role.ADMIN))
+        response = self.client.post(
+            "/api/tenant-holiday-overrides/",
+            {"date": "2026-11-20", "name": "Kirchweih Musterdorf", "kind": "add"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(TenantHolidayOverride.objects.get().tenant, self.tenant)
+
+    def test_planner_cannot_create_override(self):
+        self.auth_as(self._membership("planner", Membership.Role.PLANNER))
+        response = self.client.post(
+            "/api/tenant-holiday-overrides/", {"date": "2026-11-20", "kind": "add"}, format="json"
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_employee_can_read_overrides(self):
+        TenantHolidayOverride.objects.create(tenant=self.tenant, date=date(2026, 11, 20), kind="add")
+        self.auth_as(self._membership("employee", Membership.Role.EMPLOYEE))
+        response = self.client.get("/api/tenant-holiday-overrides/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_overrides_are_tenant_scoped(self):
+        TenantHolidayOverride.objects.create(tenant=self.other_tenant, date=date(2026, 11, 20), kind="add")
+        self.auth_as(self._membership("admin", Membership.Role.ADMIN))
+        response = self.client.get("/api/tenant-holiday-overrides/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"], [])
 
 
 class AdminTenantScopingTests(TestCase):

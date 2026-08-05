@@ -221,13 +221,31 @@ button {
 }
 
 .balance-badge .is-positive {
-  color: #2e7d32;
+  color: var(--primary);
   font-weight: 700;
 }
 
 .balance-badge .is-negative {
   color: var(--warn);
   font-weight: 700;
+}
+
+/* Arbeitszeitmodell (Block 2.7 Punkt 7): schmaler Fortschrittsbalken zum
+   Jahressoll statt einer rohen Jahresrestsoll-Zahl -- siehe BalanceBadge.jsx. */
+.balance-progress {
+  display: inline-block;
+  width: 36px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  overflow: hidden;
+}
+
+.balance-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  border-radius: 999px;
 }
 
 /* UX-Nachbesserung Block 2.7: Tilde vor dem Überstunden-Wert, solange der
@@ -595,7 +613,7 @@ thead .col-balance {
 }
 
 .balance-cell .is-positive {
-  color: #2e7d32;
+  color: var(--primary);
   font-weight: 700;
 }
 

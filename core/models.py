@@ -1,11 +1,46 @@
 import uuid
 
+import holidays
 from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
 from django.db import models
 
 from core.context import get_current_tenant
+
+# Kantone der Schweiz, wie von der "holidays"-Bibliothek unterstützt
+# (vacanza/holidays, siehe README Architektur-Entscheidungen zum
+# Feiertagskalender) -- bewusst ohne den Sonderfall "Stadt Zurich" aus
+# holidays.Switzerland.subdivisions, der eine Gemeinde statt eines Kantons
+# ist und hier zu Verwirrung führen würde.
+SWISS_CANTON_CHOICES = [
+    ("AG", "Aargau"),
+    ("AI", "Appenzell Innerrhoden"),
+    ("AR", "Appenzell Ausserrhoden"),
+    ("BE", "Bern"),
+    ("BL", "Basel-Landschaft"),
+    ("BS", "Basel-Stadt"),
+    ("FR", "Freiburg"),
+    ("GE", "Genf"),
+    ("GL", "Glarus"),
+    ("GR", "Graubünden"),
+    ("JU", "Jura"),
+    ("LU", "Luzern"),
+    ("NE", "Neuenburg"),
+    ("NW", "Nidwalden"),
+    ("OW", "Obwalden"),
+    ("SG", "St. Gallen"),
+    ("SH", "Schaffhausen"),
+    ("SO", "Solothurn"),
+    ("SZ", "Schwyz"),
+    ("TG", "Thurgau"),
+    ("TI", "Tessin"),
+    ("UR", "Uri"),
+    ("VD", "Waadt"),
+    ("VS", "Wallis"),
+    ("ZG", "Zug"),
+    ("ZH", "Zürich"),
+]
 
 
 class User(AbstractUser):
@@ -133,11 +168,53 @@ class Tenant(models.Model):
         "Ausnahmen gelten -- auf 0 setzen, falls nicht zutreffend).",
     )
 
+    # Feiertagskalender (Arbeitszeitmodell Block 2.7 Punkt 7): Grundlage für
+    # die Jahressoll-/Saldo-Berechnung in scheduling.models.Employee
+    # (annual_target_hours/time_account_summary) -- Feiertage reduzieren das
+    # Soll wie ein arbeitsfreier Tag. Bewusst über die gepflegte Bibliothek
+    # "holidays" (vacanza/holidays) statt eigenem Kalender: die Schweiz hat
+    # nicht nur pro Kanton, sondern in GR/LU/SZ/SO teils sogar pro Gemeinde
+    # unterschiedliche Feiertage (Patrozinien) inkl. beweglicher Feste
+    # (Ostern-Formel) -- das selbst zu pflegen wäre erheblicher Aufwand und
+    # fehleranfällig. Für die verbleibenden lokalen Sonderfälle siehe
+    # TenantHolidayOverride.
+    canton = models.CharField(
+        max_length=2,
+        choices=SWISS_CANTON_CHOICES,
+        blank=True,
+        help_text="Kanton für den kantonalen Feiertagskalender (holidays-Bibliothek). Leer = kein "
+        "automatischer Feiertagsabzug im Arbeitszeitmodell.",
+    )
+
     class Meta:
         ordering = ["name"]
 
     def __str__(self):
         return self.name
+
+    def public_holidays(self, year):
+        """
+        Menge der Feiertagsdaten (set[date]) für ein Kalenderjahr: kantonaler
+        Kalender (falls `canton` gesetzt) kombiniert mit den manuell
+        gepflegten TenantHolidayOverride-Einträgen (ADD/REMOVE) für lokale
+        Sonderfälle (z. B. eine Gemeinde-Patrozinie, die die Bibliothek nicht
+        kennt, oder ein kantonaler Feiertag, der für diesen Betrieb nicht
+        gilt). Ohne gesetzten Kanton nur die Overrides selbst.
+        """
+        base = set(holidays.Switzerland(subdiv=self.canton, years=year)) if self.canton else set()
+        # Explizit über all_objects statt der reverse-Accessor-Default-Manager
+        # (TenantScopedManager, ContextVar-gefiltert) -- self ist hier schon
+        # eine konkrete Tenant-Instanz, das explizite tenant=self-Filter ist
+        # unabhängig vom (evtl. nicht gesetzten) Kontext korrekt, siehe
+        # README-Abschnitt zur "explizite Filterung ist die echte Grenze"-
+        # Philosophie.
+        overrides = TenantHolidayOverride.all_objects.filter(tenant=self, date__year=year)
+        for override in overrides:
+            if override.kind == TenantHolidayOverride.Kind.ADD:
+                base.add(override.date)
+            else:
+                base.discard(override.date)
+        return base
 
 
 class Membership(models.Model):
@@ -209,3 +286,30 @@ class TenantScopedModel(models.Model):
 
     class Meta:
         abstract = True
+
+
+class TenantHolidayOverride(TenantScopedModel):
+    """
+    Manuelle Ausnahme zum kantonalen Feiertagskalender (Tenant.canton, siehe
+    Tenant.public_holidays) für lokale Sonderfälle, die die "holidays"-
+    Bibliothek nicht kennt -- v. a. Gemeinde-Patrozinien in GR/LU/SZ/SO. Ein
+    Spital hat i. d. R. höchstens 1-2 solche Fälle für seinen festen
+    Standort, deshalb bewusst als dünne Ausnahme-Tabelle statt als
+    eigenständiges Feiertagsmodell.
+    """
+
+    class Kind(models.TextChoices):
+        ADD = "add", "Zusätzlicher Feiertag"
+        REMOVE = "remove", "Kein Feiertag (Ausnahme vom Kantonskalender)"
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="holiday_overrides")
+    date = models.DateField()
+    name = models.CharField(max_length=100, blank=True)
+    kind = models.CharField(max_length=10, choices=Kind.choices, default=Kind.ADD)
+
+    class Meta:
+        unique_together = ("tenant", "date")
+        ordering = ["date"]
+
+    def __str__(self):
+        return f"{self.date} ({self.get_kind_display()})"

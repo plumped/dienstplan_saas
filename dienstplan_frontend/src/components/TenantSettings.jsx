@@ -1,6 +1,38 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 
+// Dieselbe Kantons-Liste wie core.models.SWISS_CANTON_CHOICES (Backend) --
+// hier dupliziert, weil die Auswahl fürs <select> im Frontend gebraucht
+// wird und kein eigener API-Roundtrip dafür lohnt (26 statische Einträge).
+const SWISS_CANTONS = [
+  ["AG", "Aargau"],
+  ["AI", "Appenzell Innerrhoden"],
+  ["AR", "Appenzell Ausserrhoden"],
+  ["BE", "Bern"],
+  ["BL", "Basel-Landschaft"],
+  ["BS", "Basel-Stadt"],
+  ["FR", "Freiburg"],
+  ["GE", "Genf"],
+  ["GL", "Glarus"],
+  ["GR", "Graubünden"],
+  ["JU", "Jura"],
+  ["LU", "Luzern"],
+  ["NE", "Neuenburg"],
+  ["NW", "Nidwalden"],
+  ["OW", "Obwalden"],
+  ["SG", "St. Gallen"],
+  ["SH", "Schaffhausen"],
+  ["SO", "Solothurn"],
+  ["SZ", "Schwyz"],
+  ["TG", "Thurgau"],
+  ["TI", "Tessin"],
+  ["UR", "Uri"],
+  ["VD", "Waadt"],
+  ["VS", "Wallis"],
+  ["ZG", "Zug"],
+  ["ZH", "Zürich"],
+];
+
 const FIELD_GROUPS = [
   {
     title: "Ruhezeit & Höchstarbeitszeit",
@@ -83,6 +115,18 @@ const FIELD_GROUPS = [
       },
     ],
   },
+  {
+    title: "Feiertagskalender (Arbeitszeitmodell)",
+    fields: [
+      {
+        key: "canton",
+        label: "Kanton",
+        hint: "Grundlage für den automatischen Feiertagskalender im Saldo (Jahressoll/laufender Saldo). Leer = kein Feiertagsabzug. Lokale Sonderfälle unten als Ausnahme pflegen.",
+        type: "select",
+        options: [["", "-- kein Kanton --"], ...SWISS_CANTONS],
+      },
+    ],
+  },
 ];
 
 // Block 2.14: bislang waren diese Werte nur im Django-Admin editierbar --
@@ -139,8 +183,9 @@ export default function TenantSettings({ onError }) {
       const payload = {};
       for (const group of FIELD_GROUPS) {
         for (const field of group.fields) {
-          payload[field.key] =
-            field.type === "checkbox" ? Boolean(form[field.key]) : Number(form[field.key]);
+          if (field.type === "checkbox") payload[field.key] = Boolean(form[field.key]);
+          else if (field.type === "select") payload[field.key] = form[field.key];
+          else payload[field.key] = Number(form[field.key]);
         }
       }
       const updated = await api.updateTenant(payload);
@@ -183,6 +228,19 @@ export default function TenantSettings({ onError }) {
                 <span className="panel-hint">{field.hint}</span>
                 {fieldError(field.key)}
               </div>
+            ) : field.type === "select" ? (
+              <label key={field.key}>
+                {field.label}
+                <select value={form[field.key] ?? ""} onChange={handleChange(field.key)}>
+                  {field.options.map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <span className="panel-hint">{field.hint}</span>
+                {fieldError(field.key)}
+              </label>
             ) : (
               <label key={field.key}>
                 {field.label}
@@ -201,9 +259,123 @@ export default function TenantSettings({ onError }) {
         </fieldset>
       ))}
 
+      <HolidayOverridesEditor onError={onError} />
+
       <button type="submit" disabled={saving}>
         {saving ? "Speichert …" : saved ? "Gespeichert ✓" : "Speichern"}
       </button>
     </form>
+  );
+}
+
+// Eigenständige Ausnahme-Liste zum kantonalen Kalender (Gemeinde-Sonderfälle
+// wie Patrozinien in GR/LU/SZ/SO) -- bewusst NICHT Teil des generischen
+// FIELD_GROUPS-Formulars oben, weil es eine eigene Liste mit Add/Delete ist,
+// kein einzelnes Tenant-Feld. Eigener State/Save-Zyklus, unabhängig vom
+// umgebenden <form onSubmit>, deshalb type="button" für "Hinzufügen".
+function HolidayOverridesEditor({ onError }) {
+  const [overrides, setOverrides] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [newEntry, setNewEntry] = useState({ date: "", name: "", kind: "add" });
+  const [adding, setAdding] = useState(false);
+
+  function load() {
+    api
+      .getTenantHolidayOverrides()
+      .then((data) => setOverrides(data.results ?? data))
+      .catch((e) => onError(e.message))
+      .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleAdd(event) {
+    event.preventDefault();
+    if (!newEntry.date) {
+      onError("Datum ist ein Pflichtfeld.");
+      return;
+    }
+    setAdding(true);
+    try {
+      await api.createTenantHolidayOverride(newEntry);
+      setNewEntry({ date: "", name: "", kind: "add" });
+      load();
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function handleDelete(id) {
+    try {
+      await api.deleteTenantHolidayOverride(id);
+      setOverrides((prev) => prev.filter((o) => o.id !== id));
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
+  return (
+    <fieldset className="panel-form-group">
+      <h3>Lokale Feiertags-Ausnahmen</h3>
+      <p className="panel-hint">
+        Ergänzt oder überschreibt den kantonalen Kalender oben für Gemeinde-Sonderfälle (z. B.
+        Patrozinien in GR/LU/SZ/SO), die die automatische Zuordnung nicht kennt.
+      </p>
+      {loading ? (
+        <p className="loading-state">Lädt …</p>
+      ) : overrides.length === 0 ? (
+        <p className="panel-hint">Keine Ausnahmen hinterlegt.</p>
+      ) : (
+        <ul className="entry-list">
+          {overrides.map((o) => (
+            <li key={o.id} className="entry-list-item">
+              <span>
+                {o.date} -- {o.kind === "add" ? "zusätzlicher Feiertag" : "kein Feiertag"}
+                {o.name ? ` (${o.name})` : ""}
+              </span>
+              <button type="button" className="btn-ghost" onClick={() => handleDelete(o.id)}>
+                Entfernen
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="panel-form-row">
+        <label>
+          Datum
+          <input
+            type="date"
+            value={newEntry.date}
+            onChange={(e) => setNewEntry((prev) => ({ ...prev, date: e.target.value }))}
+          />
+        </label>
+        <label>
+          Bezeichnung (optional)
+          <input
+            type="text"
+            value={newEntry.name}
+            onChange={(e) => setNewEntry((prev) => ({ ...prev, name: e.target.value }))}
+          />
+        </label>
+        <label>
+          Art
+          <select
+            value={newEntry.kind}
+            onChange={(e) => setNewEntry((prev) => ({ ...prev, kind: e.target.value }))}
+          >
+            <option value="add">Zusätzlicher Feiertag</option>
+            <option value="remove">Kein Feiertag (Ausnahme)</option>
+          </select>
+        </label>
+      </div>
+      <button type="button" onClick={handleAdd} disabled={adding}>
+        {adding ? "Speichert …" : "Hinzufügen"}
+      </button>
+    </fieldset>
   );
 }

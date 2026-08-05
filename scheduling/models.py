@@ -1,4 +1,3 @@
-from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
 from django.conf import settings
@@ -59,9 +58,12 @@ def _segment_datetimes(reference_date, segments):
 def _count_workdays(start_date, end_date):
     """
     Anzahl Mo-Fr-Tage zwischen start_date und end_date (inklusive). Für den
-    Feriensaldo (Block 2.7) -- Feiertage werden bewusst nicht berücksichtigt
-    (kein kantonaler Feiertagskalender hinterlegt), das ist eine bekannte
-    Vereinfachung.
+    Feriensaldo (vacation_balance(), Block 2.7) -- bewusst weiterhin ohne
+    Feiertagsabzug (bekannte, unveränderte Vereinfachung dieser älteren
+    Kennzahl). Das neuere Arbeitszeitmodell (annual_target_hours()/
+    time_account_summary()) nutzt diese Funktion ebenfalls als reinen
+    Wochentag-Zähler, zieht Feiertage/Absenzen aber dort selbst zusätzlich ab
+    (siehe Tenant.public_holidays).
     """
     total_days = (end_date - start_date).days + 1
     full_weeks, remainder = divmod(total_days, 7)
@@ -70,6 +72,11 @@ def _count_workdays(start_date, end_date):
         if (start_date + timedelta(days=full_weeks * 7 + i)).weekday() < 5:
             count += 1
     return count
+
+
+def _default_employment_start_date():
+    """Default für Employee.employment_start_date: 1. Januar des laufenden Jahres."""
+    return date(timezone.localdate().year, 1, 1)
 
 
 class Node(MP_Node, TenantScopedModel):
@@ -121,6 +128,13 @@ class Employee(TenantScopedModel):
         "unter 18 Jahren -- ohne Angabe wird der Mitarbeiter als volljährig behandelt.",
     )
     employment_pct = models.PositiveSmallIntegerField(help_text="Pensum in %, z. B. 80")
+    employment_start_date = models.DateField(
+        default=_default_employment_start_date,
+        help_text="Eintrittsdatum -- Startpunkt für das Jahressoll im Arbeitszeitmodell "
+        "(annual_target_hours()/time_account_summary()): Wochen vor diesem Datum zählen weder "
+        "als Soll noch als Ist, auch wenn sie im laufenden Kalenderjahr liegen (z. B. bei "
+        "unterjährigem Eintritt).",
+    )
     nodes = models.ManyToManyField(Node, related_name="employees", blank=True)
     skills = models.ManyToManyField(Skill, related_name="employees", blank=True)
     is_active = models.BooleanField(default=True)
@@ -338,73 +352,151 @@ class Employee(TenantScopedModel):
         next_due = self.last_night_work_medical_exam_date + timedelta(days=interval_years * 365)
         return as_of_date >= next_due
 
-    def overtime_balance(self, as_of_date=None):
+    def _effective_weekly_hours(self):
+        """Wochensoll bei 100% Pensum: Employee-Override oder Tenant-Default."""
+        return self.standard_weekly_hours or self.tenant.standard_weekly_hours
+
+    def _effective_vacation_days(self):
+        """Ferienanspruch in Arbeitstagen/Jahr: Employee-Override oder Tenant-Default."""
+        return self.vacation_days_per_year or self.tenant.default_vacation_days_per_year
+
+    def _daily_target_hours(self):
+        """Tagessoll: Wochensoll * Pensum% / 5 Arbeitstage (Mo-Fr-Konvention, wie _count_workdays)."""
+        weekly = self._effective_weekly_hours() * self.employment_pct / 100
+        return weekly / 5
+
+    def _approved_absence_workdays(self, start_date, end_date):
         """
-        Kumulierter Überstunden-Saldo als Zahl -- Kurzform von
-        overtime_summary()["balance_hours"] für Aufrufer, die das
-        is_provisional-Flag nicht brauchen (siehe dort für Details/Tests).
+        Menge der Mo-Fr-Tage in [start_date, end_date], die durch mindestens
+        eine genehmigte Absenz (Ferien/Krankheit/Sonstiges) abgedeckt sind --
+        fürs Arbeitszeitmodell (time_account_summary): diese Tage sind
+        Soll-neutral, siehe dort.
         """
-        return self.overtime_summary(as_of_date)["balance_hours"]
+        if start_date > end_date:
+            return set()
+        absences = Absence.all_objects.filter(
+            employee=self,
+            status=Absence.Status.APPROVED,
+            start_date__lte=end_date,
+            end_date__gte=start_date,
+        )
+        covered = set()
+        for absence in absences:
+            cursor = max(absence.start_date, start_date)
+            stop = min(absence.end_date, end_date)
+            while cursor <= stop:
+                if cursor.weekday() < 5:
+                    covered.add(cursor)
+                cursor += timedelta(days=1)
+        return covered
 
-    def overtime_summary(self, as_of_date=None):
+    def _public_holiday_workdays(self, start_date, end_date):
+        """Menge der Feiertage (Tenant.public_holidays) in [start_date, end_date], die auf Mo-Fr fallen."""
+        if start_date > end_date:
+            return set()
+        result = set()
+        for year in range(start_date.year, end_date.year + 1):
+            for day in self.tenant.public_holidays(year):
+                if start_date <= day <= end_date and day.weekday() < 5:
+                    result.add(day)
+        return result
+
+    def annual_target_hours(self, year=None):
         """
-        Kumulierter Überstunden-Saldo (MVP-Fahrplan Block 2.7) -- im
-        Gegensatz zu weekly_hours_summary()["overtime_hours"] (auf 0 nach
-        unten begrenzt, Basis für den Zuschlag) hier die **vorzeichenbehaftete**
-        Differenz Ist-Soll je Woche, aufsummiert über alle Wochen, in denen
-        der Mitarbeiter mindestens eine Zuweisung hatte (plus
-        overtime_balance_carryover_hours als Startwert). Wochen ohne jede
-        Zuweisung tragen bewusst nichts bei -- sie würden sonst so behandelt,
-        als hätte der Mitarbeiter in einer Woche vor Anstellungsbeginn oder
-        in einer Lücke die volle Sollzeit verpasst.
-
-        Anders als weekly_hours_summary() (dort zählt für Art. 13 ArG immer
-        der volle vertragliche Wochensoll, unabhängig davon, an wie vielen
-        Tagen gearbeitet wurde) wird der Wochensoll hier **anteilig auf die
-        tatsächlich verplanten Tage der Woche** angerechnet (min(verplante
-        Tage, 5) / 5 * Wochensoll, dieselbe Mo-Fr-Konvention wie
-        _count_workdays beim Feriensaldo) -- sonst würde eine einzelne, gerade
-        erst eingeplante Schicht in einer neuen Woche sofort mit dem vollen
-        Wochensoll (z. B. 42h) verrechnet und den Saldo um fast eine ganze
-        Wochenarbeitszeit einbrechen lassen, obwohl die Woche erst zu einem
-        Fünftel verplant ist. Bei 5 oder mehr verplanten Tagen (auch über eine
-        klassische Mo-Fr-Woche hinaus, z. B. inkl. Wochenende) bleibt der
-        volle Wochensoll die Obergrenze, damit Mehrarbeit an zusätzlichen
-        Tagen weiterhin voll als Überstunden zählt statt künstlich einen noch
-        höheren Soll zu erzeugen.
-
-        as_of_date=None (Normalfall, z.B. Topbar-Badge/Settings-Liste) bezieht
-        *alle* Wochen mit Zuweisung ein, auch künftig geplante -- Zuweisungen
-        zählen laut is_provisional/weekly_hours_summary bewusst sofort, nicht
-        erst ab ihrem Datum. Wird as_of_date dagegen explizit übergeben (z.B.
-        eine Saldo-Momentaufnahme "Stand <Datum>"), begrenzt das die
-        einbezogenen Wochen auf date__lte=as_of_date, wie von Aufrufern
-        erwartet, die bewusst einen historischen/zukünftigen Stichtag angeben.
-
-        `is_provisional` (Block 2.7 UX-Nachbesserung): True, wenn der Saldo
-        mindestens eine ungeprüfte Schicht enthält (siehe
-        weekly_hours_summary). Der Saldo selbst ist trotzdem schon jetzt
-        korrekt und aktuell -- er wartet nicht auf die Prüfung --, das Flag
-        dient nur dazu, das im Frontend transparent zu machen, statt den
-        falschen Eindruck zu erwecken, ungeprüfte Erfassungen zählten noch
-        nicht mit.
+        Jahressoll (Arbeitszeitmodell, README Block 2.7 Punkt 7): fixes
+        Jahresziel in Stunden -- Wochensoll * Pensum% über alle Mo-Fr-
+        Arbeitstage des Jahres ab employment_start_date, abzüglich Feiertage
+        auf Arbeitstage und dem vollen Ferienanspruch in Stunden. Der
+        Ferienanspruch wird bewusst NICHT anteilig für unterjährigen Eintritt
+        gekürzt (bekannte Vereinfachung) -- unabhängig davon, WANN im Jahr die
+        Ferien tatsächlich bezogen werden; time_account_summary() zieht nur
+        die bereits VERGANGENEN Ferientage vom laufenden Saldo ab.
         """
-        assignment_qs = ShiftAssignment.all_objects.filter(employee=self)
-        if as_of_date is not None:
-            assignment_qs = assignment_qs.filter(date__lte=as_of_date)
-        assignment_dates = assignment_qs.values_list("date", flat=True)
-        days_by_week = defaultdict(set)
-        for d in assignment_dates:
-            days_by_week[d - timedelta(days=d.weekday())].add(d)
+        year = year or timezone.localdate().year
+        year_start = date(year, 1, 1)
+        year_end = date(year, 12, 31)
+        period_start = max(year_start, self.employment_start_date)
+        if period_start > year_end:
+            return 0.0
+        workdays = _count_workdays(period_start, year_end)
+        holiday_days = len(self._public_holiday_workdays(period_start, year_end))
+        daily = self._daily_target_hours()
+        vacation_hours = self._effective_vacation_days() * daily
+        target = (workdays - holiday_days) * daily - vacation_hours
+        return round(max(target, 0.0), 2)
 
-        balance = self.overtime_balance_carryover_hours
+    def time_account_summary(self, as_of_date=None):
+        """
+        Arbeitszeitmodell (README Block 2.7 Punkt 7): zwei getrennte
+        Kennzahlen statt einer.
+
+        - saldo_hours: laufender Saldo = Ist_kumuliert(t) - Soll_kumuliert(t)
+          im LAUFENDEN Kalenderjahr (ab max(1. Januar, employment_start_date))
+          bis (inkl.) as_of_date, plus overtime_balance_carryover_hours als
+          Startwert. Soll_kumuliert(t) ist das anteilige Soll bis heute
+          (Anzahl Mo-Fr-Arbeitstage seit Jahres-/Anstellungsbeginn *
+          Tagessoll), abzüglich bereits vergangener Feiertage und genehmigter
+          Absenzen (Ferien, Krankheit, Sonstiges) -- diese Tage sind
+          Soll-neutral, keine "verpasste Sollzeit". Sowohl Ist_kumuliert(t)
+          als auch Soll_kumuliert(t) zählen bewusst nur bis (inkl.)
+          as_of_date -- eine künftig eingeplante Schicht wirkt sich erst aus,
+          sobald ihr Datum erreicht ist (klassisches Gleitzeitkonto-
+          Verhalten).
+        - annual_target_hours / annual_remaining_hours: Jahressoll (fix fürs
+          ganze Jahr, siehe annual_target_hours()) und was davon laut
+          bisherigem Ist_kumuliert(t) noch offen ist -- die Planungsgrösse
+          für den Rest des Jahres, unabhängig vom laufenden Saldo.
+        - is_provisional: True, sobald mindestens eine der bis as_of_date
+          eingerechneten Schichten nicht auf einer geprüften (CONFIRMED)
+          Zeiterfassung beruht.
+        """
+        as_of_date = as_of_date or timezone.localdate()
+        year = as_of_date.year
+        year_start = date(year, 1, 1)
+        period_start = max(year_start, self.employment_start_date)
+        annual_target = self.annual_target_hours(year)
+
+        if period_start > as_of_date:
+            # Eintritt liegt erst später in diesem Jahr -- weder Ist noch
+            # Soll sind bislang angefallen.
+            return {
+                "saldo_hours": round(self.overtime_balance_carryover_hours, 2),
+                "annual_target_hours": annual_target,
+                "annual_remaining_hours": annual_target,
+                "is_provisional": False,
+            }
+
+        workdays_elapsed = _count_workdays(period_start, as_of_date)
+        excused_days = self._public_holiday_workdays(
+            period_start, as_of_date
+        ) | self._approved_absence_workdays(period_start, as_of_date)
+        daily = self._daily_target_hours()
+        soll_kumuliert = (workdays_elapsed - len(excused_days)) * daily
+
+        assignments = ShiftAssignment.all_objects.filter(
+            employee=self, date__gte=period_start, date__lte=as_of_date
+        ).select_related("template", "time_record")
+        ist_kumuliert = 0.0
         is_provisional = False
-        for week_start, assigned_days in days_by_week.items():
-            summary = self.weekly_hours_summary(week_start)
-            prorated_soll = round(summary["soll_hours"] * min(len(assigned_days), 5) / 5, 2)
-            balance += summary["ist_hours"] - prorated_soll
-            is_provisional = is_provisional or summary["is_provisional"]
-        return {"balance_hours": round(balance, 2), "is_provisional": is_provisional}
+        for assignment in assignments:
+            time_record = getattr(assignment, "time_record", None)
+            if time_record is not None:
+                ist_kumuliert += time_record.actual_hours
+                if time_record.status != TimeRecord.Status.CONFIRMED:
+                    is_provisional = True
+            else:
+                ist_kumuliert += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                is_provisional = True
+
+        saldo = self.overtime_balance_carryover_hours + ist_kumuliert - soll_kumuliert
+        remaining = annual_target - ist_kumuliert
+
+        return {
+            "saldo_hours": round(saldo, 2),
+            "annual_target_hours": annual_target,
+            "annual_remaining_hours": round(remaining, 2),
+            "is_provisional": is_provisional,
+        }
 
     def vacation_balance(self, year=None):
         """

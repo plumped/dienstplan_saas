@@ -8,6 +8,7 @@ function emptyForm() {
     last_name: "",
     birth_date: "",
     employment_pct: 100,
+    employment_start_date: new Date().toISOString().slice(0, 10),
     nodes: [],
     skills: [],
     is_active: true,
@@ -25,6 +26,7 @@ function toFormValues(employee) {
     last_name: employee.last_name,
     birth_date: employee.birth_date ?? "",
     employment_pct: employee.employment_pct,
+    employment_start_date: employee.employment_start_date,
     nodes: employee.nodes,
     skills: employee.skills,
     is_active: employee.is_active,
@@ -103,6 +105,7 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
       last_name: form.last_name.trim(),
       birth_date: form.birth_date || null,
       employment_pct: Number(form.employment_pct),
+      employment_start_date: form.employment_start_date,
       nodes: form.nodes,
       skills: form.skills,
       is_active: form.is_active,
@@ -258,6 +261,20 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
 
         <fieldset className="panel-form-group">
           <h3>Saldo & Zeiterfassung (Block 2.7 / 1.5)</h3>
+          <label>
+            Eintrittsdatum
+            <input
+              type="date"
+              value={form.employment_start_date}
+              onChange={updateField("employment_start_date")}
+              required
+            />
+            <span className="panel-hint">
+              Startpunkt für das Jahressoll im Arbeitszeitmodell -- Wochen vor diesem Datum zählen weder
+              als Soll noch als Ist, auch wenn sie im laufenden Kalenderjahr liegen.
+            </span>
+            {fieldError("employment_start_date")}
+          </label>
           <div className="panel-form-row">
             <label>
               Ferienanspruch/Jahr, Tage

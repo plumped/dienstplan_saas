@@ -226,15 +226,14 @@ class EmployeeViewSet(TenantScopedViewSet):
     @action(detail=True, methods=["get"])
     def balance(self, request, pk=None):
         """
-        Saldo-Übersicht (MVP-Fahrplan Block 2.7): kumulierter Überstunden-
-        Saldo inkl. overtime_is_provisional-Flag (Employee.overtime_summary)
-        + Feriensaldo für ein Kalenderjahr (Employee.vacation_balance).
-        ?as_of=YYYY-MM-DD (Default heute)
-        bestimmt sowohl den Stichtag für den Überstunden-Saldo als auch,
-        falls ?year nicht gesetzt ist, das Ferienjahr. Lesen wie bei
-        weekly_overtime für alle Rollen offen, nicht nur für den betroffenen
-        Mitarbeiter selbst -- Admin/Planer sollen dieselbe Ansicht auch für
-        andere Mitarbeitende sehen können.
+        Arbeitszeitmodell (README Block 2.7 Punkt 7): laufender Saldo +
+        Jahresrestsoll (Employee.time_account_summary) + Feriensaldo für ein
+        Kalenderjahr (Employee.vacation_balance). ?as_of=YYYY-MM-DD (Default
+        heute) bestimmt sowohl den Stichtag für den laufenden Saldo als auch,
+        falls ?year nicht gesetzt ist, das Jahr für Jahressoll/Ferienjahr.
+        Lesen wie bei weekly_overtime für alle Rollen offen, nicht nur für
+        den betroffenen Mitarbeiter selbst -- Admin/Planer sollen dieselbe
+        Ansicht auch für andere Mitarbeitende sehen können.
         """
         employee = self.get_object()
         as_of_param = request.query_params.get("as_of")
@@ -244,9 +243,7 @@ class EmployeeViewSet(TenantScopedViewSet):
             except ValueError:
                 raise ValidationError({"as_of": "Ungültiges Datum, erwartet YYYY-MM-DD."})
         else:
-            as_of_date = None
-
-        response_date = as_of_date or timezone.localdate()
+            as_of_date = timezone.localdate()
 
         year_param = request.query_params.get("year")
         if year_param:
@@ -255,17 +252,16 @@ class EmployeeViewSet(TenantScopedViewSet):
             except ValueError:
                 raise ValidationError({"year": "Ungültiges Jahr."})
         else:
-            year = response_date.year
+            year = as_of_date.year
 
-        # as_of_date bewusst nur weiterreichen, wenn die Anfrage explizit einen
-        # Stichtag angibt -- ohne ?as_of= soll der Saldo alle Wochen inkl.
-        # künftig geplanter Zuweisungen umfassen (siehe Employee.overtime_summary).
-        overtime = employee.overtime_summary(as_of_date)
+        time_account = employee.time_account_summary(as_of_date)
         vacation = employee.vacation_balance(year)
         data = {
-            "as_of": response_date,
-            "overtime_balance_hours": overtime["balance_hours"],
-            "overtime_is_provisional": overtime["is_provisional"],
+            "as_of": as_of_date,
+            "saldo_hours": time_account["saldo_hours"],
+            "annual_target_hours": time_account["annual_target_hours"],
+            "annual_remaining_hours": time_account["annual_remaining_hours"],
+            "is_provisional": time_account["is_provisional"],
             "vacation_year": vacation["year"],
             "vacation_entitlement_days": vacation["entitlement_days"],
             "vacation_used_days": vacation["used_days"],

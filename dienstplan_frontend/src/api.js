@@ -106,6 +106,13 @@ export const api = {
   getTenant: () => request("/tenant/"),
   updateTenant: (payload) => request("/tenant/", { method: "PATCH", body: payload }),
 
+  // Feiertags-Overrides (Arbeitszeitmodell, Block 2.7 Punkt 7): Ausnahmen
+  // zum kantonalen Kalender, siehe core.views.TenantHolidayOverrideViewSet.
+  getTenantHolidayOverrides: () => request("/tenant-holiday-overrides/"),
+  createTenantHolidayOverride: (payload) =>
+    request("/tenant-holiday-overrides/", { method: "POST", body: payload }),
+  deleteTenantHolidayOverride: (id) => request(`/tenant-holiday-overrides/${id}/`, { method: "DELETE" }),
+
   getNodes: () => request("/nodes/"),
   createNode: (payload) => request("/nodes/", { method: "POST", body: payload }),
   updateNode: (id, payload) => request(`/nodes/${id}/`, { method: "PATCH", body: payload }),

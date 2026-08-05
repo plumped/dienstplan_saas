@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { api, onBalanceChanged } from "../api.js";
 
-// Block 2.7: Saldo-Anzeige (Überstunden ± X h, Ferienguthaben). Zwei
-// Varianten je nach Einsatzort:
+// Arbeitszeitmodell (README Block 2.7 Punkt 7): Saldo-Anzeige mit zwei
+// Kennzahlen -- laufender Saldo (± X h, Farbcodierung blau/vor Plan vs.
+// rot/hinter Plan) und Jahresrestsoll (als Fortschrittsbalken zum
+// Jahressoll, nicht als rohe grosse Zahl -- die wäre v. a. am Jahresanfang
+// erschreckend). Zwei Varianten je nach Einsatzort:
 // - "pill" (Default): abgerundetes Badge für Topbar und Mitarbeitenden-
-//   Verwaltung (Block 2.10), dort ist genug Platz für eine eigene Zeile.
+//   Verwaltung (Block 2.10) inkl. Fortschrittsbalken, dort ist Platz dafür.
 // - "cell": schlichter Zelleninhalt für die Saldo-Spalte im Planblatt-Grid
-//   (Block 2.7) -- kein Badge-Rahmen, passt sich in eine normale Tabellenzelle
-//   ein statt wie ein Fremdkörper darin zu sitzen.
+//   (Block 2.7) -- kein Badge-Rahmen, kein Balken (zu wenig Platz in der
+//   Tabellenzeile), nur Saldo + Ferientage.
 export default function BalanceBadge({ employeeId, variant = "pill" }) {
   const [balance, setBalance] = useState(null);
 
@@ -27,11 +30,10 @@ export default function BalanceBadge({ employeeId, variant = "pill" }) {
     setBalance(null);
     load();
     // UX-Nachbesserung: der Saldo ist im Backend nach jeder Mutation sofort
-    // aktuell (auch aus geplanten, noch ungeprüften Schichten) -- ohne
-    // dieses Abo würde die Badge das aber nur einmal beim Mounten laden und
-    // erst nach einem Seiten-Reload nachziehen. onBalanceChanged() feuert,
-    // sobald irgendwo eine Zuweisung/Zeiterfassung/Absenz gespeichert wurde
-    // (siehe affectsBalance in api.js).
+    // aktuell -- ohne dieses Abo würde die Badge das aber nur einmal beim
+    // Mounten laden und erst nach einem Seiten-Reload nachziehen.
+    // onBalanceChanged() feuert, sobald irgendwo eine Zuweisung/
+    // Zeiterfassung/Absenz gespeichert wurde (siehe affectsBalance in api.js).
     const unsubscribe = onBalanceChanged(load);
     return () => {
       cancelled = true;
@@ -41,18 +43,23 @@ export default function BalanceBadge({ employeeId, variant = "pill" }) {
 
   if (!balance) return null;
 
-  const hours = balance.overtime_balance_hours;
+  const hours = balance.saldo_hours;
   const sign = hours > 0 ? "+" : "";
-  const overtimeClass = hours < 0 ? "is-negative" : hours > 0 ? "is-positive" : "";
-  const provisional = balance.overtime_is_provisional;
+  const saldoClass = hours < 0 ? "is-negative" : hours > 0 ? "is-positive" : "";
+  const provisional = balance.is_provisional;
+  const target = balance.annual_target_hours;
+  const worked = target - balance.annual_remaining_hours;
+  const progressPct = target > 0 ? Math.max(0, Math.min(100, Math.round((worked / target) * 100))) : 0;
   const title =
-    `Überstunden-Saldo seit der ersten erfassten Schicht, Feriensaldo ${balance.vacation_year} -- Stand ${balance.as_of}. ` +
+    `Laufender Saldo (Ist minus Soll seit Jahresbeginn bzw. Eintritt, Stand ${balance.as_of}): ` +
+    `${sign}${hours} h. Jahressoll ${target} h, davon ${progressPct}% erreicht -- ` +
+    `noch ${balance.annual_remaining_hours} h bis Jahresende. Feriensaldo ${balance.vacation_year}. ` +
     (provisional
-      ? "Enthält geplante und/oder noch nicht geprüfte Schichten -- die Zahl ist bereits aktuell, kann sich aber noch leicht ändern, bis alle Schichten erfasst und geprüft sind."
+      ? "Enthält Schichten ohne geprüfte Zeiterfassung -- die Zahl ist bereits aktuell, kann sich aber noch leicht ändern."
       : "Beruht vollständig auf geprüften Zeiterfassungen.");
 
-  const overtimeValue = (
-    <span className={overtimeClass}>
+  const saldoValue = (
+    <span className={saldoClass}>
       {provisional && <span className="balance-provisional-marker">~</span>}
       {sign}
       {hours} h
@@ -62,7 +69,7 @@ export default function BalanceBadge({ employeeId, variant = "pill" }) {
   if (variant === "cell") {
     return (
       <span className="balance-cell" title={title}>
-        {overtimeValue}
+        {saldoValue}
         <span className="balance-cell-sep">/</span>
         <span>{balance.vacation_remaining_days} Ferientage</span>
       </span>
@@ -71,7 +78,10 @@ export default function BalanceBadge({ employeeId, variant = "pill" }) {
 
   return (
     <span className="balance-badge" title={title}>
-      {overtimeValue}
+      {saldoValue}
+      <span className="balance-progress" aria-hidden="true">
+        <span className="balance-progress-fill" style={{ width: `${progressPct}%` }} />
+      </span>
       <span className="balance-badge-sep">·</span>
       <span>{balance.vacation_remaining_days} Ferientage</span>
     </span>

@@ -23,7 +23,7 @@ function weekdayLabel(year, month, day) {
   return WEEKDAYS_SHORT[jsDay === 0 ? 6 : jsDay - 1];
 }
 
-export default function PlanGrid({ nodeId, year, month, employees, me, onError }) {
+export default function PlanGrid({ nodeId, nodes, year, month, employees, me, onError }) {
   const [templates, setTemplates] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [absences, setAbsences] = useState([]);
@@ -56,6 +56,68 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
   );
   const dateFrom = isoDate(year, month, 1);
   const dateTo = isoDate(year, month, days.length);
+
+  // README Punkt 17: eine Station mit Teams (direkte Kind-Knoten, genau eine
+  // Ebene) zeigt das Planblatt als gemeinsame Tabelle mit Trennzeilen pro
+  // Team statt einer flachen Mitarbeiterliste. Eine Station ohne Teams
+  // (heutiger Normalfall) hat hier immer ein leeres Array -- dann verhält
+  // sich das Rendering weiter unten exakt wie vorher.
+  const teamNodes = useMemo(() => {
+    const selected = nodes.find((n) => n.id === nodeId);
+    if (!selected) return [];
+    return nodes
+      .filter((n) => n.depth === selected.depth + 1 && n.path.startsWith(selected.path))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }, [nodes, nodeId]);
+
+  // Baut die tatsächlich zu rendernden Zeilen: ohne Teams eine Zeile pro
+  // Mitarbeiter (Backwards-kompatibel, rowNodeId = die Station selbst).
+  // Mit Teams: pro Team eine Trennzeile + eine Zeile pro Employment in
+  // diesem Team (eine Person mit mehreren Anstellungen erscheint entsprechend
+  // mehrfach, je einmal pro Team) -- Mitarbeitende ohne passende Employment
+  // in einem der sichtbaren Teams landen in einem eigenen, schreibgeschützten
+  // Block ("Kein Team zugeordnet"), weil Direktbuchung auf die Station bei
+  // vorhandenen Teams serverseitig abgelehnt wird (siehe
+  // ShiftAssignment._check_node_has_no_children).
+  const rows = useMemo(() => {
+    if (teamNodes.length === 0) {
+      return employees.map((emp) => ({
+        type: "employee",
+        key: String(emp.id),
+        emp,
+        employment: null,
+        rowNodeId: nodeId,
+      }));
+    }
+    const teamNodeIds = teamNodes.map((n) => n.id);
+    const result = [];
+    const unassigned = employees.filter(
+      (emp) => !(emp.employments ?? []).some((e) => teamNodeIds.includes(e.node))
+    );
+    if (unassigned.length) {
+      result.push({ type: "divider", key: "divider:unassigned", label: "Kein Team zugeordnet" });
+      for (const emp of unassigned) {
+        result.push({ type: "unassigned", key: `unassigned:${emp.id}`, emp });
+      }
+    }
+    for (const team of teamNodes) {
+      const teamRows = employees.flatMap((emp) =>
+        (emp.employments ?? [])
+          .filter((e) => e.node === team.id)
+          .map((employment) => ({
+            type: "employee",
+            key: `${emp.id}:${team.id}`,
+            emp,
+            employment,
+            rowNodeId: team.id,
+          }))
+      );
+      if (!teamRows.length) continue;
+      result.push({ type: "divider", key: `divider:${team.id}`, label: team.name });
+      result.push(...teamRows);
+    }
+    return result;
+  }, [teamNodes, employees, nodeId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -183,7 +245,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
     );
   }
 
-  async function handleAssign(employeeId, date, templateId) {
+  async function handleAssign(employeeId, date, templateId, rowNodeId) {
     const key = `${employeeId}:${date}`;
     const existing = assignmentMap.get(key);
     try {
@@ -197,9 +259,14 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
         const updated = await api.updateShiftAssignment(existing.id, { template: templateId });
         setAssignments((prev) => prev.map((a) => (a.id === existing.id ? updated : a)));
       } else {
+        // README Punkt 17: rowNodeId ist bei einer Station mit Teams die
+        // Team-Id der Zeile, sonst (keine Teams) die Station selbst -- eine
+        // Zuweisung landet also nie mehr direkt auf einer Station mit Teams
+        // (das würde das Backend ohnehin ablehnen, siehe
+        // ShiftAssignment._check_node_has_no_children).
         const created = await api.createShiftAssignment({
           employee: employeeId,
-          node: nodeId,
+          node: rowNodeId ?? nodeId,
           date,
           template: templateId,
         });
@@ -231,7 +298,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
     }
   }
 
-  async function handleCopyWeekPattern(employeeId) {
+  async function handleCopyWeekPattern(employeeId, rowNodeId) {
     const sourceDays = days.filter((d) => d <= 7);
     const hasSourceShift = sourceDays.some((d) =>
       assignmentMap.has(`${employeeId}:${isoDate(year, month, d)}`)
@@ -253,7 +320,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
       try {
         const createdAssignment = await api.createShiftAssignment({
           employee: employeeId,
-          node: nodeId,
+          node: rowNodeId ?? nodeId,
           date: targetDate,
           template: source.template,
         });
@@ -294,17 +361,20 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
   // oder entmarkieren, je nachdem, ob die Zelle schon markiert war) und wendet
   // ihn gleich auf diese Zelle an. Bei einem einfachen Klick ohne Ziehen ist
   // das schlicht ein Toggle; beim Ziehen wenden nachfolgende continueMark()-
-  // Aufrufe denselben Modus auf weitere Zellen an.
-  function startMark(employeeId, date) {
-    const key = `${employeeId}:${date}`;
+  // Aufrufe denselben Modus auf weitere Zellen an. Der Schlüssel trägt die
+  // Zeilen-Node-Id mit (README Punkt 17) -- bei Teams braucht handleStampAssign
+  // sonst keine Möglichkeit zu wissen, auf welches Team eine markierte Zelle
+  // gehört.
+  function startMark(employeeId, date, rowNodeId) {
+    const key = `${employeeId}:${date}:${rowNodeId}`;
     const shouldMark = !markedCells.has(key);
     dragMarkModeRef.current = shouldMark ? "mark" : "unmark";
     applyMark(key, shouldMark);
   }
 
-  function continueMark(employeeId, date) {
+  function continueMark(employeeId, date, rowNodeId) {
     if (!dragMarkModeRef.current) return;
-    applyMark(`${employeeId}:${date}`, dragMarkModeRef.current === "mark");
+    applyMark(`${employeeId}:${date}:${rowNodeId}`, dragMarkModeRef.current === "mark");
   }
 
   // Stempel-Leiste: weist templateId (oder null zum Leeren) allen markierten
@@ -318,9 +388,11 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
     let skipped = 0;
 
     for (const key of keys) {
-      const [employeeIdStr, date] = key.split(":");
+      const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
       const employeeId = Number(employeeIdStr);
-      const existing = assignmentMap.get(key);
+      const rowNodeId = Number(rowNodeIdStr);
+      const assignmentKey = `${employeeId}:${date}`;
+      const existing = assignmentMap.get(assignmentKey);
       try {
         if (templateId === null) {
           if (existing) {
@@ -333,7 +405,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
         } else {
           const created = await api.createShiftAssignment({
             employee: employeeId,
-            node: nodeId,
+            node: rowNodeId,
             date,
             template: templateId,
           });
@@ -465,88 +537,133 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
             </tr>
           </thead>
           <tbody>
-            {employees.map((emp) => (
-              <tr key={emp.id}>
-                <th scope="row" className="col-employee">
-                  <span className="employee-row-inner">
-                    <span className="employee-name">
-                      {emp.first_name} {emp.last_name}
-                    </span>
-                    <span className="pct">{emp.employment_pct}%</span>
-                    {canManage && (
-                      <button
-                        type="button"
-                        className="btn-copy-week"
-                        title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
-                        onClick={() => handleCopyWeekPattern(emp.id)}
-                      >
-                        ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
-                      </button>
-                    )}
-                  </span>
-                </th>
-                {days.map((d) => {
-                  const date = isoDate(year, month, d);
-                  const assignment = assignmentMap.get(`${emp.id}:${date}`);
-                  const template = templates.find((t) => t.id === assignment?.template);
-                  const absence = findAbsence(emp.id, date);
-                  const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
-                  const holidayName = holidays.get(date);
-                  const canOfferTrade = canManage || me?.employee?.id === emp.id;
-                  // Block 1.13: Ist-Zeit-Badge nur auf der eigenen, bereits
-                  // stattgefundenen Schicht -- unabhängig von canManage, damit
-                  // auch ein Admin/Planer mit eigenem Employee-Profil seine
-                  // eigenen Schichten erfassen kann.
-                  const canRecordTime = Boolean(assignment) && date <= todayIso && ownEmployeeId === emp.id;
-                  const timeRecord = assignment ? timeRecordByAssignment.get(assignment.id) : undefined;
-                  // Block 2.13: höchstpersönlich -- nur die eigene Person darf
-                  // für einen heutigen/zukünftigen Tag einen Wunsch äussern.
-                  const preference = preferenceMap.get(`${emp.id}:${date}`);
-                  const canEditOwnWish = ownEmployeeId === emp.id && date >= todayIso;
-                  return (
+            {rows.map((row) => {
+              if (row.type === "divider") {
+                return (
+                  <tr key={row.key} className="team-divider">
+                    <td colSpan={days.length + 1 + (canManage ? 1 : 0)}>{row.label}</td>
+                  </tr>
+                );
+              }
+              if (row.type === "unassigned") {
+                const emp = row.emp;
+                return (
+                  <tr key={row.key} className="employment-unassigned-row">
+                    <th scope="row" className="col-employee">
+                      <span className="employee-row-inner">
+                        <span className="employee-name">
+                          {emp.first_name} {emp.last_name}
+                        </span>
+                      </span>
+                    </th>
                     <td
-                      key={d}
-                      className={[weekend && "is-weekend", holidayName && "is-holiday"].filter(Boolean).join(" ")}
-                      title={holidayName || undefined}
+                      colSpan={days.length + (canManage ? 1 : 0)}
+                      title="Diese Person hat kein Team an dieser Station -- Zuweisung erst möglich, nachdem ihr im Mitarbeiter-Formular eine Anstellung für ein Team dieser Station zugewiesen wurde."
                     >
-                      <ShiftCell
-                        templates={templates}
-                        selectedTemplateId={assignment?.template ?? null}
-                        templateInfo={template}
-                        employeeId={emp.id}
-                        date={date}
-                        absence={absence}
-                        colleagues={employees.filter((e) => e.id !== emp.id)}
-                        canEdit={canManage}
-                        canOfferTrade={canOfferTrade}
-                        onChange={(templateId) => handleAssign(emp.id, date, templateId)}
-                        onMove={handleMove}
-                        onOfferTrade={(targetEmployeeId) =>
-                          handleOfferTrade(emp.id, date, targetEmployeeId)
-                        }
-                        timeRecord={timeRecord}
-                        canRecordTime={canRecordTime}
-                        onSaveTimeRecord={(payload) => handleSaveTimeRecord(assignment.id, timeRecord, payload)}
-                        onDeleteTimeRecord={() => handleDeleteTimeRecord(timeRecord)}
-                        preference={preference}
-                        canEditOwnWish={canEditOwnWish}
-                        onSaveWish={(payload) => handleSaveWish(date, preference, payload)}
-                        onDeleteWish={() => handleDeleteWish(preference)}
-                        selectionMode={multiSelectMode}
-                        marked={markedCells.has(`${emp.id}:${date}`)}
-                        onMarkStart={() => startMark(emp.id, date)}
-                        onMarkEnter={() => continueMark(emp.id, date)}
-                      />
+                      Kein Team zugeordnet
                     </td>
-                  );
-                })}
-                {canManage && (
-                  <td className="col-balance">
-                    <BalanceBadge employeeId={emp.id} variant="cell" />
-                  </td>
-                )}
-              </tr>
-            ))}
+                  </tr>
+                );
+              }
+
+              const { emp, employment, rowNodeId } = row;
+              const pctLabel = employment
+                ? `${employment.pensum_pct}%${employment.title ? ` ${employment.title}` : ""}`
+                : `${emp.employment_pct}%`;
+              return (
+                <tr key={row.key}>
+                  <th scope="row" className="col-employee">
+                    <span className="employee-row-inner">
+                      <span className="employee-name">
+                        {emp.first_name} {emp.last_name}
+                      </span>
+                      {employment?.is_team_lead && (
+                        <span className="lead-badge" title="Teamleitung">
+                          ★
+                        </span>
+                      )}
+                      <span className="pct">{pctLabel}</span>
+                      {canManage && (
+                        <button
+                          type="button"
+                          className="btn-copy-week"
+                          title="Muster der ersten Woche auf die restlichen Wochen dieses Monats kopieren (belegte Tage bleiben unverändert)"
+                          onClick={() => handleCopyWeekPattern(emp.id, rowNodeId)}
+                        >
+                          ⧉<span className="visually-hidden"> Wochenmuster kopieren für {emp.first_name} {emp.last_name}</span>
+                        </button>
+                      )}
+                    </span>
+                  </th>
+                  {days.map((d) => {
+                    const date = isoDate(year, month, d);
+                    const rawAssignment = assignmentMap.get(`${emp.id}:${date}`);
+                    // README Punkt 17: bei mehreren Anstellungen derselben
+                    // Person in unterschiedlichen Teams zeigt eine Zeile nur
+                    // die Zuweisung, die tatsächlich zu ihrem eigenen Team
+                    // gehört (assignment.node) -- die Schicht der jeweils
+                    // anderen Rolle bleibt in dieser Zeile korrekt leer.
+                    const assignment = rawAssignment && rawAssignment.node === rowNodeId ? rawAssignment : undefined;
+                    const template = templates.find((t) => t.id === assignment?.template);
+                    const absence = findAbsence(emp.id, date);
+                    const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
+                    const holidayName = holidays.get(date);
+                    const canOfferTrade = canManage || me?.employee?.id === emp.id;
+                    // Block 1.13: Ist-Zeit-Badge nur auf der eigenen, bereits
+                    // stattgefundenen Schicht -- unabhängig von canManage, damit
+                    // auch ein Admin/Planer mit eigenem Employee-Profil seine
+                    // eigenen Schichten erfassen kann.
+                    const canRecordTime = Boolean(assignment) && date <= todayIso && ownEmployeeId === emp.id;
+                    const timeRecord = assignment ? timeRecordByAssignment.get(assignment.id) : undefined;
+                    // Block 2.13: höchstpersönlich -- nur die eigene Person darf
+                    // für einen heutigen/zukünftigen Tag einen Wunsch äussern.
+                    const preference = preferenceMap.get(`${emp.id}:${date}`);
+                    const canEditOwnWish = ownEmployeeId === emp.id && date >= todayIso;
+                    return (
+                      <td
+                        key={d}
+                        className={[weekend && "is-weekend", holidayName && "is-holiday"].filter(Boolean).join(" ")}
+                        title={holidayName || undefined}
+                      >
+                        <ShiftCell
+                          templates={templates}
+                          selectedTemplateId={assignment?.template ?? null}
+                          templateInfo={template}
+                          employeeId={emp.id}
+                          date={date}
+                          absence={absence}
+                          colleagues={employees.filter((e) => e.id !== emp.id)}
+                          canEdit={canManage}
+                          canOfferTrade={canOfferTrade}
+                          onChange={(templateId) => handleAssign(emp.id, date, templateId, rowNodeId)}
+                          onMove={handleMove}
+                          onOfferTrade={(targetEmployeeId) =>
+                            handleOfferTrade(emp.id, date, targetEmployeeId)
+                          }
+                          timeRecord={timeRecord}
+                          canRecordTime={canRecordTime}
+                          onSaveTimeRecord={(payload) => handleSaveTimeRecord(assignment.id, timeRecord, payload)}
+                          onDeleteTimeRecord={() => handleDeleteTimeRecord(timeRecord)}
+                          preference={preference}
+                          canEditOwnWish={canEditOwnWish}
+                          onSaveWish={(payload) => handleSaveWish(date, preference, payload)}
+                          onDeleteWish={() => handleDeleteWish(preference)}
+                          selectionMode={multiSelectMode}
+                          marked={markedCells.has(`${emp.id}:${date}:${rowNodeId}`)}
+                          onMarkStart={() => startMark(emp.id, date, rowNodeId)}
+                          onMarkEnter={() => continueMark(emp.id, date, rowNodeId)}
+                        />
+                      </td>
+                    );
+                  })}
+                  {canManage && (
+                    <td className="col-balance">
+                      <BalanceBadge employeeId={emp.id} variant="cell" />
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>

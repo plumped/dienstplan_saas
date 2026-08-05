@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import BalanceBadge from "./BalanceBadge.jsx";
+import EmploymentEditor from "./EmploymentEditor.jsx";
 
 function emptyForm() {
   return {
@@ -9,7 +10,7 @@ function emptyForm() {
     birth_date: "",
     employment_pct: 100,
     employment_start_date: new Date().toISOString().slice(0, 10),
-    nodes: [],
+    employments: [],
     skills: [],
     is_active: true,
     maximum_weekly_hours: "",
@@ -27,7 +28,16 @@ function toFormValues(employee) {
     birth_date: employee.birth_date ?? "",
     employment_pct: employee.employment_pct,
     employment_start_date: employee.employment_start_date,
-    nodes: employee.nodes,
+    // README Punkt 17: employments statt nodes -- siehe EmploymentEditor.jsx.
+    // node/pensum_pct/title/is_team_lead werden 1:1 aus der API übernommen,
+    // die id lassen wir bewusst weg (wird beim Speichern ohnehin komplett
+    // ersetzt, siehe EmployeeSerializer._sync_employments).
+    employments: employee.employments.map((e) => ({
+      node: e.node,
+      pensum_pct: e.pensum_pct,
+      title: e.title,
+      is_team_lead: e.is_team_lead,
+    })),
     skills: employee.skills,
     is_active: employee.is_active,
     maximum_weekly_hours: employee.maximum_weekly_hours ?? "",
@@ -106,7 +116,7 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
       birth_date: form.birth_date || null,
       employment_pct: Number(form.employment_pct),
       employment_start_date: form.employment_start_date,
-      nodes: form.nodes,
+      employments: form.employments,
       skills: form.skills,
       is_active: form.is_active,
       maximum_weekly_hours: form.maximum_weekly_hours === "" ? null : Number(form.maximum_weekly_hours),
@@ -137,6 +147,13 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
   function nodeNames(ids) {
     return ids.map((id) => nodes.find((n) => n.id === id)?.name ?? `#${id}`).join(", ") || "—";
   }
+
+  // README Punkt 17: Freitext-Autovervollständigung statt eigener
+  // Stammdaten-Liste -- Vorschläge kommen aus bereits im Tenant verwendeten
+  // Rollentiteln, ohne dass dafür ein neuer Endpoint nötig ist.
+  const existingTitles = [
+    ...new Set(employees.flatMap((emp) => emp.employments.map((e) => e.title)).filter(Boolean)),
+  ];
 
   function fieldError(key) {
     const message = fieldErrors[key]?.[0];
@@ -186,41 +203,44 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
                 onChange={updateField("employment_pct")}
                 required
               />
+              <span className="panel-hint">
+                Gesamtpensum für die Saldo-Berechnung -- sollte ungefähr der Summe der Anstellungen
+                unten entsprechen (wird nicht automatisch geprüft).
+              </span>
               {fieldError("employment_pct")}
             </label>
           </div>
-          <div className="panel-form-row">
-            <label>
-              Stationen
-              <select
-                multiple
-                value={form.nodes}
-                onChange={(e) => setForm((prev) => ({ ...prev, nodes: selectedOptions(e.target) }))}
-              >
-                {nodes.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.name}
-                  </option>
-                ))}
-              </select>
-              {fieldError("nodes")}
-            </label>
-            <label>
-              Skills
-              <select
-                multiple
-                value={form.skills}
-                onChange={(e) => setForm((prev) => ({ ...prev, skills: selectedOptions(e.target) }))}
-              >
-                {skills.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-              {fieldError("skills")}
-            </label>
-          </div>
+          <label>
+            Skills
+            <select
+              multiple
+              value={form.skills}
+              onChange={(e) => setForm((prev) => ({ ...prev, skills: selectedOptions(e.target) }))}
+            >
+              {skills.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            {fieldError("skills")}
+          </label>
+        </fieldset>
+
+        <fieldset className="panel-form-group">
+          <h3>Anstellungen (Teams)</h3>
+          <p className="panel-hint">
+            Ein Eintrag pro Team/Station, in dem diese Person tätig ist -- mehrere Einträge bilden eine
+            Mehrfachanstellung ab (z. B. 40% Dozent + 60% Arzt in unterschiedlichen Teams). Ohne
+            Anstellung ist die Person im Planblatt nicht einteilbar.
+          </p>
+          <EmploymentEditor
+            employments={form.employments}
+            nodes={nodes}
+            existingTitles={existingTitles}
+            onChange={(employments) => setForm((prev) => ({ ...prev, employments }))}
+          />
+          {fieldError("employments")}
         </fieldset>
 
         <fieldset className="panel-form-group">

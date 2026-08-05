@@ -663,6 +663,40 @@ thead .col-employee {
   color: var(--ink-muted);
 }
 
+/* README Punkt 17: Teamleitung-Badge neben .employee-name -- bewusst dezent
+   (nur ein kleiner Stern in --primary), weil es nicht auf jeder Zeile
+   erscheint wie .pct, sondern nur bei der jeweiligen Team-Anstellung. */
+.lead-badge {
+  font-size: 11px;
+  color: var(--primary);
+}
+
+/* README Punkt 17: Trennzeile pro Team, wenn die gewählte Station Teams
+   (Kind-Knoten) hat -- spannt die ganze Tabellenbreite, dezenter
+   Abschnitts-Header analog zur .col-balance-Kopfzeile (uppercase,
+   --ink-muted), statt separate Tabellen pro Team zu rendern. */
+.plan-grid tr.team-divider td {
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-muted);
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+/* README Punkt 17: Personen ohne passende Team-Anstellung an einer Station
+   mit Teams -- sichtbar (kein stillschweigendes Verschwinden aus dem
+   Planblatt), aber ohne editierbare Zellen, da eine Direktbuchung auf die
+   Station bei vorhandenen Teams serverseitig abgelehnt wird. */
+.plan-grid tr.employment-unassigned-row td {
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-style: italic;
+  padding: 0 14px;
+}
+
 .plan-grid td.is-weekend {
   background: #fbfcfb;
 }
@@ -1253,6 +1287,47 @@ thead .col-employee {
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 12.5px;
+}
+
+/* README Punkt 17: EmploymentEditor.jsx -- ein Add/Remove-Zeilen-Editor wie
+   .segment-editor oben, hier für Team + Pensum + Rolle + Teamleitung pro
+   Anstellung statt Uhrzeiten-Segmenten. */
+.employment-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.employment-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.employment-editor-row select,
+.employment-editor-row input[type="text"] {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+.employment-editor-pensum {
+  width: 56px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.employment-editor-lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ink-muted);
 }
 
 /* Block 1.13: Badge auf der eigenen vergangenen Schicht-Zelle im Planblatt

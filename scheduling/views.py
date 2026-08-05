@@ -122,6 +122,15 @@ def _employee_scoped_node_ids(request):
     kein Employee-Profil existiert). Von NodeViewSet, TimeTemplateViewSet und
     ShiftAssignmentViewSet gleich ausgewertet, damit alle drei
     node-bezogenen Ressourcen konsistent eingeschränkt sind.
+
+    README Punkt 17: employee_profile.nodes enthält bei Team-Anstellungen
+    Team- statt Stations-Ids. Damit TimeTemplates (die bewusst stationsweit
+    bleiben, siehe ShiftAssignmentViewSet-Docstring) und die Station selbst
+    im NodeViewSet weiterhin sichtbar sind, wird hier zusätzlich der direkte
+    Elternknoten jedes eigenen Knotens aufgenommen (eine Ebene, konsistent
+    mit der "genau ein Team-Level"-Entscheidung). Für jede heutige, flache
+    Station ohne Eltern-Knoten ist das ein No-Op -- identisches Verhalten zu
+    vorher.
     """
     membership = request.membership
     if not membership or membership.role != Membership.Role.EMPLOYEE:
@@ -129,7 +138,13 @@ def _employee_scoped_node_ids(request):
     employee_profile = request.employee_profile
     if not employee_profile:
         return []
-    return list(employee_profile.nodes.values_list("id", flat=True))
+    own_nodes = list(employee_profile.nodes.all())
+    node_ids = {n.id for n in own_nodes}
+    for n in own_nodes:
+        parent = n.get_parent()
+        if parent is not None:
+            node_ids.add(parent.id)
+    return list(node_ids)
 
 
 class NodeViewSet(TenantScopedViewSet):
@@ -308,7 +323,18 @@ class ShiftAssignmentViewSet(TenantScopedViewSet):
         date_from = self.request.query_params.get("date_from")
         date_to = self.request.query_params.get("date_to")
         if node:
-            qs = qs.filter(node_id=node)
+            # README Punkt 17: eine Station mit Teams speichert Zuweisungen
+            # auf den Team-Knoten, nicht auf der Station selbst (siehe
+            # ShiftAssignment._check_node_has_no_children) -- ein exakter
+            # Treffer auf die Stations-Id würde bei einer Station mit Teams
+            # daher immer leer bleiben. Ein Knoten ohne Kinder (heutiger
+            # Normalfall) verhält sich weiterhin identisch (nur sein eigenes
+            # Ergebnis).
+            target = Node.all_objects.filter(tenant=self.request.tenant, pk=node).first()
+            if target:
+                qs = qs.filter(node_id__in=[target.id] + [c.id for c in target.get_children()])
+            else:
+                qs = qs.none()
         if date_from:
             qs = qs.filter(date__gte=date_from)
         if date_to:

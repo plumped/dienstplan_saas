@@ -31,6 +31,20 @@ function currentPeriod() {
   return { year: now.getFullYear(), month: now.getMonth() + 1 };
 }
 
+// README Punkt 17 ("Teams pro Station + Mehrfachanstellungen"): eine Station
+// mit Teams (direkte Kind-Knoten) zeigt im Planblatt/Jahresplan ein
+// gemeinsames Bild -- Mitarbeitende werden deshalb nicht mehr nur exakt auf
+// die gewählte Station gefiltert, sondern auf die Station + ihre direkten
+// Team-Kinder (bewusst nur eine Ebene, siehe README). Nodes tragen bereits
+// depth/path aus der treebeard-Baumstruktur (NodeSerializer), das reicht für
+// den Vergleich, ohne einen zweiten Request zu brauchen.
+export function relevantNodeIds(nodes, nodeId) {
+  const selected = nodes.find((n) => n.id === nodeId);
+  if (!selected) return [nodeId];
+  const children = nodes.filter((n) => n.depth === selected.depth + 1 && n.path.startsWith(selected.path));
+  return [nodeId, ...children.map((n) => n.id)];
+}
+
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(api.isLoggedIn());
   const [me, setMe] = useState(null);
@@ -88,13 +102,14 @@ export default function App() {
       .getEmployees()
       .then((data) => {
         const list = data.results ?? data;
-        setEmployees(list.filter((e) => e.nodes.includes(nodeId)));
+        const scopedIds = relevantNodeIds(nodes, nodeId);
+        setEmployees(list.filter((e) => e.nodes.some((id) => scopedIds.includes(id))));
       })
       .catch((e) => {
         if (e.message === "unauthorized") setLoggedIn(false);
         else setError(e.message);
       });
-  }, [loggedIn, nodeId]);
+  }, [loggedIn, nodeId, nodes]);
 
   if (!loggedIn) {
     return <LoginForm onSuccess={() => setLoggedIn(true)} />;
@@ -185,6 +200,7 @@ export default function App() {
             {tab === "grid" && (
               <PlanGrid
                 nodeId={nodeId}
+                nodes={nodes}
                 year={period.year}
                 month={period.month}
                 employees={employees}
@@ -193,7 +209,7 @@ export default function App() {
               />
             )}
             {tab === "yearplan" && (
-              <YearPlan nodeId={nodeId} employees={employees} me={me} onError={setError} />
+              <YearPlan nodeId={nodeId} nodes={nodes} employees={employees} me={me} onError={setError} />
             )}
             {tab === "absences" && <AbsencePanel employees={employees} me={me} onError={setError} />}
             {tab === "trades" && <TradeRequestPanel me={me} onError={setError} />}

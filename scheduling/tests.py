@@ -3,7 +3,10 @@ from datetime import date, time, timedelta
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.exceptions import ValidationError
-from django.test import TestCase
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.db.utils import IntegrityError
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.authtoken.models import Token
@@ -14,6 +17,7 @@ from core.models import Membership, Tenant
 from .models import (
     Absence,
     Employee,
+    Employment,
     Node,
     ShiftAssignment,
     ShiftPreference,
@@ -2609,6 +2613,277 @@ class RoleBasedPermissionTests(APITestCase):
         ids = {t["id"] for t in response.data["results"]}
         self.assertIn(self.template.id, ids)
         self.assertNotIn(other_template.id, ids)
+
+
+class EmploymentModelTests(TestCase):
+    """README Punkt 17: Employment als additive Team-/Pensum-/Rollen-Ebene."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+
+    def test_unique_together_employee_node(self):
+        Employment.objects.create(tenant=self.tenant, employee=self.employee, node=self.node, pensum_pct=60)
+        with self.assertRaises(IntegrityError):
+            Employment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node, pensum_pct=40
+            )
+
+    def test_pensum_pct_range_rejected_below_and_above(self):
+        for invalid in (0, 101):
+            employment = Employment(
+                tenant=self.tenant, employee=self.employee, node=self.node, pensum_pct=invalid
+            )
+            with self.assertRaises(ValidationError):
+                employment.full_clean()
+
+
+class EmploymentMigrationTests(TransactionTestCase):
+    """
+    README Punkt 17: die Backfill-Datenmigration (0013_employment) muss für
+    jede bestehende Employee.nodes-Zuordnung eine gleichwertige
+    Employment-Zeile anlegen -- kritisch, weil die App bereits mit echten,
+    produktiven Praxisdaten läuft (Employee.nodes darf nicht manuell
+    nachgepflegt werden müssen). Erster Migrations-State-Test in diesem
+    Projekt: migriert die Test-DB explizit auf den Stand VOR 0013, baut dort
+    Fixture-Daten am gefrorenen (historischen) Modell auf, migriert dann auf
+    0013 und prüft das Ergebnis -- danach zurück auf den aktuellsten Stand,
+    damit nachfolgende Tests wieder auf der vollen, aktuellen DB-Struktur
+    laufen. TransactionTestCase statt TestCase, weil SQLite den
+    Schema-Editor (für die rückwärts/vorwärts laufenden Migrationen) nicht
+    innerhalb einer von TestCase automatisch offenen Transaktion erlaubt.
+    """
+
+    def test_backfills_employment_from_existing_employee_nodes(self):
+        executor = MigrationExecutor(connection)
+        # core bleibt explizit auf seinem tatsächlich angewendeten, neuesten
+        # Stand (core 0012 hängt nicht davon ab, core zurückzurollen) --
+        # sonst würde project_state() das core-Modell nur bis zu dem älteren
+        # Stand einfrieren, den scheduling 0012 selbst als Abhängigkeit
+        # deklariert (z. B. ohne Tenant.night_work_permit_confirmed/.canton),
+        # während die reale SQLite-Tabelle bereits die volle, aktuelle
+        # core-Struktur hat -- ein NOT-NULL-Mismatch beim Anlegen der
+        # Fixture.
+        before = [
+            ("scheduling", "0012_employee_employment_start_date_and_more"),
+            ("core", "0007_tenant_canton_tenantholidayoverride"),
+        ]
+        executor.migrate(before)
+        executor.loader.build_graph()
+
+        old_apps = executor.loader.project_state(before).apps
+        OldTenant = old_apps.get_model("core", "Tenant")
+        OldNode = old_apps.get_model("scheduling", "Node")
+        OldEmployee = old_apps.get_model("scheduling", "Employee")
+
+        tenant = OldTenant.objects.create(name="Migrationstest", slug="migrationstest")
+        # MP_Node.add_root() existiert am gefrorenen Modell nicht mehr --
+        # Baumfelder für einen einzelnen Root-Knoten von Hand setzen (das
+        # reicht für diesen Test, treebeard braucht dafür kein Setup).
+        node = OldNode.objects.create(tenant=tenant, name="Station A", path="0001", depth=1, numchild=0)
+        employee = OldEmployee.objects.create(
+            tenant=tenant, first_name="Peter", last_name="Meier", employment_pct=70
+        )
+        employee.nodes.add(node)
+
+        after = [("scheduling", "0013_employment")]
+        executor.migrate(after)
+        executor.loader.build_graph()
+
+        new_apps = executor.loader.project_state(after).apps
+        NewEmployment = new_apps.get_model("scheduling", "Employment")
+        employments = list(NewEmployment.objects.filter(employee_id=employee.id))
+        self.assertEqual(len(employments), 1)
+        self.assertEqual(employments[0].node_id, node.id)
+        self.assertEqual(employments[0].pensum_pct, 70)
+        self.assertEqual(employments[0].title, "")
+        self.assertFalse(employments[0].is_team_lead)
+
+        # Aufräumen: zurück auf den aktuellsten Migrationsstand, sonst bleibt
+        # die Test-DB für nachfolgende Tests auf altem Schema hängen.
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class TeamNestingPermissionTests(APITestCase):
+    """
+    README Punkt 17: eine Station mit Team-Kind-Knoten -- Mitarbeiter-Scoping
+    (_employee_scoped_node_ids), stationsweiter Zuweisungs-Abruf
+    (ShiftAssignmentViewSet ?node=) und das Verbot der Direktbuchung auf eine
+    Station mit Teams (ShiftAssignment._check_node_has_no_children).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik ICT", slug="klinik-ict")
+        self.station = Node.add_root(name="ICT", tenant=self.tenant)
+        self.team_a = self.station.add_child(name="Infrastruktur", tenant=self.tenant)
+        self.team_b = self.station.add_child(name="Support", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.station,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+
+        self.planner_user = User.objects.create_user(username="planner-ict", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+        self.alice_user = User.objects.create_user(username="alice-ict", password="pw-not-real-123!")
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_employee_with_team_employment_sees_team_and_station_not_sibling_team(self):
+        Employment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.team_a, pensum_pct=100
+        )
+        self.alice.nodes.add(self.team_a)
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/nodes/")
+        ids = {n["id"] for n in response.data["results"]}
+        self.assertEqual(ids, {self.team_a.id, self.station.id})
+        self.assertNotIn(self.team_b.id, ids)
+
+    def test_employee_with_team_employment_still_sees_station_wide_templates(self):
+        self.alice.nodes.add(self.team_a)
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/time-templates/")
+        ids = {t["id"] for t in response.data["results"]}
+        self.assertIn(self.template.id, ids)
+
+    def test_shift_assignment_query_by_station_includes_both_teams(self):
+        assignment_a = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        bob_user = User.objects.create_user(username="bob-ict", password="pw-not-real-123!")
+        Membership.objects.create(user=bob_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        bob = Employee.objects.create(tenant=self.tenant, user=bob_user, first_name="Bob", last_name="B", employment_pct=100)
+        assignment_b = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=bob, node=self.team_b, date=date(2026, 8, 3), template=self.template
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/shift-assignments/?node={self.station.id}")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {assignment_a.id, assignment_b.id})
+
+    def test_direct_booking_on_station_with_teams_is_rejected(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.alice, node=self.station, date=date(2026, 8, 3), template=self.template
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_booking_on_team_is_still_allowed(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.alice, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        assignment.clean()  # keine Exception
+
+    def test_multi_employment_does_not_relax_one_shift_per_day_rule(self):
+        # Zwei Anstellungen derselben Person in verschiedenen Teams heben die
+        # bestehende unique_together("employee", "date")-Regel nicht auf --
+        # das ist die Grundannahme, auf der die additive Employment-Ebene
+        # (statt einer ShiftAssignment->Employment-FK-Umstellung) beruht.
+        Employment.objects.create(tenant=self.tenant, employee=self.alice, node=self.team_a, pensum_pct=60)
+        Employment.objects.create(tenant=self.tenant, employee=self.alice, node=self.team_b, pensum_pct=40)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        with self.assertRaises(IntegrityError):
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.alice, node=self.team_b, date=date(2026, 8, 3), template=self.template
+            )
+
+
+class EmployeeSerializerEmploymentSyncTests(APITestCase):
+    """
+    README Punkt 17: employments ist der einzige Änderungsweg für
+    Employee.nodes (nodes selbst ist über die API nur noch lesbar) -- siehe
+    EmployeeSerializer._sync_employments.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node_a = Node.add_root(name="Team A", tenant=self.tenant)
+        self.node_b = Node.add_root(name="Team B", tenant=self.tenant)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        self.planner_user = User.objects.create_user(username="planner-sync", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=self.planner_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_nodes_in_payload_is_ignored(self):
+        response = self.client.patch(f"/api/employees/{self.employee.id}/", {"nodes": [self.node_a.id]})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.nodes.all()), [])
+
+    def test_employments_on_create_syncs_nodes(self):
+        response = self.client.post(
+            "/api/employees/",
+            {
+                "first_name": "Anna",
+                "last_name": "Berger",
+                "employment_pct": 100,
+                "employments": [{"node": self.node_a.id, "pensum_pct": 60, "title": "Arzt", "is_team_lead": True}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        employee = Employee.objects.get(id=response.data["id"])
+        self.assertEqual(list(employee.nodes.values_list("id", flat=True)), [self.node_a.id])
+        employment = employee.employments.get()
+        self.assertEqual(employment.pensum_pct, 60)
+        self.assertEqual(employment.title, "Arzt")
+        self.assertTrue(employment.is_team_lead)
+
+    def test_employments_replace_on_update(self):
+        Employment.objects.create(tenant=self.tenant, employee=self.employee, node=self.node_a, pensum_pct=100)
+        self.employee.nodes.add(self.node_a)
+
+        response = self.client.patch(
+            f"/api/employees/{self.employee.id}/",
+            {"employments": [{"node": self.node_b.id, "pensum_pct": 40, "title": "Dozent", "is_team_lead": False}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.nodes.values_list("id", flat=True)), [self.node_b.id])
+        employment = self.employee.employments.get()
+        self.assertEqual(employment.node_id, self.node_b.id)
+        self.assertEqual(employment.pensum_pct, 40)
+
+    def test_patch_without_employments_key_leaves_existing_untouched(self):
+        Employment.objects.create(tenant=self.tenant, employee=self.employee, node=self.node_a, pensum_pct=100)
+        self.employee.nodes.add(self.node_a)
+
+        response = self.client.patch(f"/api/employees/{self.employee.id}/", {"first_name": "Peter"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.employments.count(), 1)
+        self.assertEqual(list(self.employee.nodes.values_list("id", flat=True)), [self.node_a.id])
+
+    def test_employments_with_foreign_node_rejected(self):
+        other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b")
+        foreign_node = Node.add_root(name="Fremde Station", tenant=other_tenant)
+        response = self.client.patch(
+            f"/api/employees/{self.employee.id}/",
+            {"employments": [{"node": foreign_node.id, "pensum_pct": 50, "title": "", "is_team_lead": False}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class ShiftPreferenceTests(APITestCase):

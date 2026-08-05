@@ -2,6 +2,7 @@ from datetime import date, datetime, time, timedelta
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
 from django.utils import timezone
 from simple_history.models import HistoricalRecords
@@ -548,6 +549,45 @@ class Employee(TenantScopedModel):
             "remaining_days": entitlement_days - used_days,
         }
 
+
+class Employment(TenantScopedModel):
+    """
+    Eine einzelne Anstellung: Person + Team-Node + Pensum + Rolle (README
+    Punkt 17, "Teams pro Station + Mehrfachanstellungen"). Additive Ebene
+    neben Employee.nodes/employment_pct, die für die bestehende
+    Saldo-/ArG-Berechnung weiterhin massgeblich bleiben (Employee.
+    time_account_summary()/weekly_hours_summary() etc. sind bewusst
+    unverändert -- sie aggregieren schon heute personenweit über alle
+    ShiftAssignments, unabhängig vom Node) -- Employment trägt nur
+    Team-Zugehörigkeit + Anzeige-Metadaten (Pensum pro Team, Rollentitel,
+    Teamleitung). Employee.nodes wird serverseitig aus den
+    Employment-Zeilen abgeleitet (siehe EmployeeSerializer._sync_employments),
+    damit es nur einen Änderungsweg für Team-Mitgliedschaft gibt.
+
+    Bewusst kein zweites Anstellungsverhältnis am selben Node (unique_together)
+    -- wer zwei unterschiedliche Rollen im selben Team hat, ist ein Spezialfall,
+    der hier nicht abgebildet wird.
+    """
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="employments")
+    node = models.ForeignKey(Node, on_delete=models.CASCADE, related_name="employments")
+    pensum_pct = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(100)],
+        help_text="Pensum in % für diese einzelne Anstellung, z. B. 60.",
+    )
+    title = models.CharField(
+        max_length=100, blank=True, help_text="Rollenbezeichnung dieser Anstellung, z. B. 'Arzt'."
+    )
+    is_team_lead = models.BooleanField(default=False)
+
+    class Meta:
+        unique_together = ("employee", "node")
+        ordering = ["node__path"]
+
+    def __str__(self):
+        return f"{self.employee} – {self.node.name} ({self.pensum_pct}%)"
+
+
 class Absence(TenantScopedModel):
     """
     Ferien/Krankheit/Sonstiges (Abschnitt 6). Blockiert Schichtzuweisungen im
@@ -796,6 +836,21 @@ class ShiftAssignment(TenantScopedModel):
         self._check_weekly_rest_day()
         self._check_youth_protection()
         self._check_no_absence_conflict()
+        self._check_node_has_no_children()
+
+    def _check_node_has_no_children(self):
+        """
+        README Punkt 17 (Nutzer-Entscheidung): sobald eine Station Teams
+        (Kind-Knoten) hat, muss jede Schicht einem Team zugewiesen werden,
+        nicht direkt der Station -- sonst wäre die Zuweisung in keinem
+        Team-Block des Planblatts sichtbar. Für jede heutige, teamlose
+        Station ist get_children() leer, der Check ist dort ein No-Op.
+        """
+        if self.node.get_children().exists():
+            raise ValidationError(
+                f"„{self.node.name}“ hat Teams -- eine Schicht muss einem Team zugewiesen werden, "
+                "nicht direkt der Station."
+            )
 
     def _check_required_skill(self):
         required_skill_id = self.template.required_skill_id

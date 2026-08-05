@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { relevantNodeIds } from "../App.jsx";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
 
@@ -62,12 +63,17 @@ function groupConsecutiveDates(dates) {
   return ranges;
 }
 
-export default function YearPlan({ nodeId, employees, me, onError }) {
+export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
   const canManage = canManageSchedule(me);
   const ownEmployeeId = me?.employee?.id ?? null;
 
   const [year, setYear] = useState(() => new Date().getFullYear());
-  const [employeeId, setEmployeeId] = useState(null);
+  // README Punkt 17: bei einer Station mit Teams (oder einer Person mit
+  // mehreren Anstellungen) reicht eine reine Employee-Id nicht mehr, um
+  // eindeutig zu sagen, wessen/welchen Kalender man sieht -- employmentKey
+  // ("employeeId:node") wählt zusätzlich die konkrete Anstellung/das Team,
+  // dessen Zuweisungen tatsächlich geladen werden (siehe Datenabruf unten).
+  const [employmentKey, setEmploymentKey] = useState(null);
   const [templates, setTemplates] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [absences, setAbsences] = useState([]);
@@ -81,7 +87,6 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
   // Jahresplan nur stempelbar, solange die ausgewählte Person die eigene
   // ist, unabhängig von der Rolle (Admin/Planer dürfen für andere Personen
   // zwar den Jahresplan ansehen/Schichten stempeln, aber keine Wünsche).
-  const isOwnEmployeeSelected = employeeId !== null && employeeId === ownEmployeeId;
   const [markedDates, setMarkedDates] = useState(() => new Set());
   // Ziehen mit gedrückter Maustaste markiert mehrere Tage am Stück (analog
   // zu PlanGrid.jsx): "mark"/"unmark" je nach Zustand des zuerst angeklickten
@@ -103,21 +108,46 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
     return () => window.removeEventListener("mouseup", handleWindowMouseUp);
   }, []);
 
-  // Mitarbeitende sehen nur die eigene Person (analog zur Sperrung im
-  // Abwesenheiten-Formular); Admin/Planer wählen frei, bleiben aber bei
-  // einer gültigen Auswahl, falls sich die Stations-gefilterte Liste ändert.
-  useEffect(() => {
-    if (!canManage) {
-      setEmployeeId(ownEmployeeId);
-      return;
+  // README Punkt 17: eine Anstellung pro Team/Node, die im aktuellen
+  // Stations-Scope (Station + ihre Teams) liegt. Mitarbeitende sehen nur
+  // ihre eigenen Anstellungen (höchstpersönlich, analog zur Sperrung im
+  // Abwesenheiten-Formular); Admin/Planer sehen die aller Mitarbeitenden.
+  // Der Rollen-/Team-Zusatz im Label erscheint nur, wenn dieselbe Person
+  // wirklich mehr als eine Anstellung im Scope hat (progressive disclosure --
+  // der weit überwiegende Einzel-Anstellungs-Fall sieht exakt wie vorher aus).
+  const employmentOptions = useMemo(() => {
+    const scopedNodeIds = relevantNodeIds(nodes, nodeId);
+    const relevantEmployees = canManage ? employees : employees.filter((e) => e.id === ownEmployeeId);
+    const options = [];
+    for (const emp of relevantEmployees) {
+      const employments = (emp.employments ?? []).filter((e) => scopedNodeIds.includes(e.node));
+      if (employments.length === 0) {
+        // Fallback für Datensätze ohne passende Anstellung im Scope (z. B.
+        // frisch angelegt, noch kein Team zugewiesen) -- die Person soll
+        // trotzdem im Jahresplan auswählbar bleiben, auch ohne Rollen-Zusatz.
+        options.push({ key: `${emp.id}:${nodeId}`, employeeId: emp.id, node: nodeId, emp, employment: null });
+        continue;
+      }
+      for (const employment of employments) {
+        options.push({ key: `${emp.id}:${employment.node}`, employeeId: emp.id, node: employment.node, emp, employment });
+      }
     }
-    setEmployeeId((current) =>
-      employees.some((e) => e.id === current) ? current : employees[0]?.id ?? null
-    );
-  }, [employees, canManage, ownEmployeeId]);
+    return options;
+  }, [nodes, nodeId, employees, canManage, ownEmployeeId]);
+
+  const selectedOption = employmentOptions.find((o) => o.key === employmentKey) ?? null;
+  const employeeId = selectedOption?.employeeId ?? null;
+  const selectedNode = selectedOption?.node ?? null;
+  const isOwnEmployeeSelected = employeeId !== null && employeeId === ownEmployeeId;
 
   useEffect(() => {
-    if (!employeeId || !nodeId) {
+    setEmploymentKey((current) =>
+      employmentOptions.some((o) => o.key === current) ? current : employmentOptions[0]?.key ?? null
+    );
+  }, [employmentOptions]);
+
+  useEffect(() => {
+    if (!employeeId || !selectedNode) {
       setLoading(false);
       return;
     }
@@ -128,16 +158,20 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
     const dateTo = `${year}-12-31`;
     Promise.all([
       api.getTimeTemplates(),
-      api.getShiftAssignments(nodeId, dateFrom, dateTo),
+      api.getShiftAssignments(selectedNode, dateFrom, dateTo),
       api.getAbsences(employeeId),
       api.getShiftPreferences(employeeId),
       api.getTenantHolidays(year),
     ])
       .then(([templatesRes, assignmentsRes, absencesRes, preferencesRes, holidaysRes]) => {
         if (cancelled) return;
-        setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === nodeId));
+        setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === selectedNode));
         const allAssignments = assignmentsRes.results ?? assignmentsRes;
-        setAssignments(allAssignments.filter((a) => a.employee === employeeId));
+        // README Punkt 17: nur die Zuweisungen dieser konkreten Anstellung
+        // (Employee UND Node) -- bei Mehrfachanstellung liefert
+        // getShiftAssignments(selectedNode, ...) bereits nur diesen
+        // Team-Scope, der employee-Filter grenzt zusätzlich auf die Person ein.
+        setAssignments(allAssignments.filter((a) => a.employee === employeeId && a.node === selectedNode));
         setAbsences(absencesRes.results ?? absencesRes);
         setPreferences(preferencesRes.results ?? preferencesRes);
         setHolidays(new Map(holidaysRes.dates.map((entry) => [entry.date, entry.name])));
@@ -148,7 +182,7 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeId, employeeId, year]);
+  }, [employeeId, selectedNode, year]);
 
   const assignmentByDate = useMemo(() => {
     const map = new Map();
@@ -212,7 +246,7 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
           upserted.push(await api.updateShiftAssignment(existing.id, { template: templateId }));
         } else {
           upserted.push(
-            await api.createShiftAssignment({ employee: employeeId, node: nodeId, date, template: templateId })
+            await api.createShiftAssignment({ employee: employeeId, node: selectedNode, date, template: templateId })
           );
         }
       } catch {
@@ -380,21 +414,31 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
   return (
     <div className="year-plan">
       <div className="year-plan-toolbar">
-        {canManage ? (
+        {canManage || employmentOptions.length > 1 ? (
           <label className="year-plan-employee-select">
             Mitarbeiter
-            <select value={employeeId ?? ""} onChange={(e) => setEmployeeId(Number(e.target.value))}>
-              {employees.map((emp) => (
-                <option key={emp.id} value={emp.id}>
-                  {emp.first_name} {emp.last_name}
-                </option>
-              ))}
+            <select value={employmentKey ?? ""} onChange={(e) => setEmploymentKey(e.target.value)}>
+              {employmentOptions.map((option) => {
+                const hasMultiple =
+                  employmentOptions.filter((o) => o.employeeId === option.employeeId).length > 1;
+                const roleSuffix =
+                  hasMultiple && option.employment
+                    ? ` — ${option.employment.pensum_pct}%${
+                        option.employment.title ? ` ${option.employment.title}` : ""
+                      }`
+                    : "";
+                return (
+                  <option key={option.key} value={option.key}>
+                    {option.emp.first_name} {option.emp.last_name}
+                    {roleSuffix}
+                  </option>
+                );
+              })}
             </select>
           </label>
         ) : (
           <span className="year-plan-employee-fixed">
-            {employees.find((e) => e.id === employeeId)?.first_name}{" "}
-            {employees.find((e) => e.id === employeeId)?.last_name}
+            {selectedOption?.emp.first_name} {selectedOption?.emp.last_name}
           </span>
         )}
         <span className="year-nav">

@@ -7,6 +7,7 @@ from core.admin import TenantScopedAdminMixin
 from .models import (
     Absence,
     Employee,
+    Employment,
     Node,
     ShiftAssignment,
     ShiftPreference,
@@ -37,6 +38,12 @@ class EmployeeAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["last_name", "first_name", "tenant", "birth_date", "employment_pct", "is_active"]
     list_filter = ["tenant", "is_active"]
     filter_horizontal = ["nodes", "skills"]
+
+
+@admin.register(Employment)
+class EmploymentAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
+    list_display = ["employee", "node", "pensum_pct", "title", "is_team_lead", "tenant"]
+    list_filter = ["tenant", "is_team_lead"]
 
 
 class TimeTemplateSegmentInline(admin.TabularInline):

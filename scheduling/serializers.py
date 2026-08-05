@@ -5,6 +5,7 @@ from core.models import Membership
 from .models import (
     Absence,
     Employee,
+    Employment,
     Node,
     ShiftAssignment,
     ShiftPreference,
@@ -43,7 +44,35 @@ class SkillSerializer(serializers.ModelSerializer):
         fields = ["id", "name"]
 
 
+class EmploymentSerializer(serializers.ModelSerializer):
+    """
+    Eine einzelne Anstellung (README Punkt 17) -- immer nur verschachtelt
+    unter EmployeeSerializer gelesen/geschrieben, kein eigener Endpoint
+    (analog zu TimeTemplateSegment unter TimeTemplateSerializer). `node`
+    bewusst ein rohes IntegerField statt PrimaryKeyRelatedField(queryset=...),
+    aus demselben Grund wie NodeSerializer.parent: der
+    TenantScopedManager-Queryset würde sonst zur Modul-Importzeit
+    eingefroren. Die Tenant-/Existenz-Prüfung passiert explizit in
+    EmployeeSerializer._sync_employments.
+    """
+
+    node = serializers.IntegerField(source="node_id")
+
+    class Meta:
+        model = Employment
+        fields = ["id", "node", "pensum_pct", "title", "is_team_lead"]
+        read_only_fields = ["id"]
+
+
 class EmployeeSerializer(serializers.ModelSerializer):
+    # README Punkt 17: Team-Mitgliedschaft läuft jetzt ausschliesslich über
+    # employments (siehe _sync_employments) -- nodes wird daraus serverseitig
+    # abgeleitet und ist nur noch lesbar, damit es genau einen Änderungsweg
+    # gibt (kein Auseinanderlaufen zwischen employee.nodes und den
+    # tatsächlichen Employment-Zeilen).
+    nodes = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    employments = EmploymentSerializer(many=True, required=False)
+
     class Meta:
         model = Employee
         fields = [
@@ -54,6 +83,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "employment_pct",
             "employment_start_date",
             "nodes",
+            "employments",
             "skills",
             "is_active",
             "maximum_weekly_hours",
@@ -62,6 +92,45 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "vacation_days_per_year",
             "last_night_work_medical_exam_date",
         ]
+
+    def create(self, validated_data):
+        employments_data = validated_data.pop("employments", None)
+        instance = Employee.objects.create(**validated_data)
+        if employments_data:
+            self._sync_employments(instance, employments_data)
+        return instance
+
+    def update(self, instance, validated_data):
+        employments_data = validated_data.pop("employments", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        if employments_data is not None:
+            self._sync_employments(instance, employments_data)
+        return instance
+
+    def _sync_employments(self, instance, employments_data):
+        tenant = self.context["request"].tenant
+        node_ids = [e["node_id"] for e in employments_data]
+        valid_node_ids = set(
+            Node.all_objects.filter(tenant=tenant, pk__in=node_ids).values_list("id", flat=True)
+        )
+        invalid = set(node_ids) - valid_node_ids
+        if invalid:
+            raise serializers.ValidationError({"employments": "Ungültiger oder fremder Team-Knoten."})
+        instance.employments.all().delete()
+        Employment.objects.bulk_create(
+            Employment(
+                employee=instance,
+                tenant=tenant,
+                node_id=e["node_id"],
+                pensum_pct=e["pensum_pct"],
+                title=e.get("title", ""),
+                is_team_lead=e.get("is_team_lead", False),
+            )
+            for e in employments_data
+        )
+        instance.nodes.set(node_ids)
 
 
 class EmployeeBalanceSerializer(serializers.Serializer):

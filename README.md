@@ -739,9 +739,37 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       echten Nutzen.
     - Manuell im Browser verifiziert (Playwright): Kachel-Übersicht, Formular-Gliederung,
       Hint-Texte, Suchfilter (11 Testmitarbeitende, korrekt gefiltert), Rücksprung zur Übersicht.
-17. **Teams pro Station + Mehrfachanstellungen -- Anstellung statt Person als Planungseinheit**
+17. ✅ **Teams pro Station + Mehrfachanstellungen -- Anstellung statt Person als Planungseinheit**
     (2026-08, Nutzer-Feedback + Neuentwurf; ersetzt eine erste, unvollständige Fassung dieses
-    Punkts). Zwei Fakten, die zusammen betrachtet werden müssen, weil sie dieselbe Modell-Lücke
+    Punkts). **Umgesetzt** wie unten geplant, mit einer bewussten Vereinfachung gegenüber dem
+    ursprünglichen Zielbild: `ShiftAssignment` wurde NICHT auf eine neue `Employment`-FK
+    umgestellt (das hätte Saldo-/ArG-Berechnung, Absenz-Konflikt-Check, alle Serializer und weite
+    Teile des Frontends riskant mitverändert) -- stattdessen bleibt `Employee`/`node` unverändert,
+    und das bereits vorhandene `ShiftAssignment.node`-Feld übernimmt die Rolle, eine Zuweisung
+    eindeutig einem Team zuzuordnen. `Employment` ist eine rein additive Tabelle (Team + Pensum +
+    Rollentitel + Teamleiter-Flag), `Employee.nodes` bleibt die tatsächliche Berechtigungs-/
+    Saldogrundlage, wird aber jetzt serverseitig aus den `Employment`-Zeilen abgeleitet statt direkt
+    editierbar zu sein. Ergebnis: alle 241 zuvor bestehenden Tests blieben unverändert grün, 14 neue
+    kamen dazu (u. a. der erste Migrations-State-Test dieses Projekts, der den Backfill bestehender
+    `Employee.nodes`-Zuordnungen in `Employment`-Zeilen absichert). Zwei zusätzliche, beim Umsetzen
+    gefundene "Verdrahtungslücken" mussten mitgelöst werden, ohne die waren die beiden Kernfakten
+    unten faktisch nicht nutzbar: `_employee_scoped_node_ids()` (Mitarbeiter-Scoping) musste den
+    direkten Elternknoten mit einschliessen, sonst verlor ein Mitarbeiter mit Team-Anstellung den
+    Zugriff auf die stationsweiten Schichttypen; `ShiftAssignmentViewSet`s `?node=`-Filter musste
+    von exaktem Treffer auf "Knoten + direkte Kinder" erweitert werden, sonst lieferte eine
+    Stations-Anfrage bei einer Station mit Teams grundsätzlich keine Zuweisungen zurück (die liegen
+    ja auf den Team-Knoten). Zwei Entscheidungen wurden dem Nutzer explizit vorgelegt: **Direktbuchung
+    auf eine Station mit Teams wird verhindert** (`ShiftAssignment._check_node_has_no_children()`,
+    neue Zeile in `clean()`) -- Mitarbeitende ohne passende Team-Anstellung erscheinen im Planblatt
+    sichtbar, aber schreibgeschützt ("Kein Team zugeordnet"), bis ihnen im Mitarbeiter-Formular ein
+    Team zugewiesen wird; und die Backfill-Migration bekam den **vollständigen Migrations-State-Test**
+    (Django `MigrationExecutor`, migriert die Test-DB explizit vor/nach 0013) statt eines einfacheren
+    Unit-Tests der Backfill-Funktion. Mit Playwright end-to-end gegen die echten, gepushten
+    Testheim-Daten verifiziert: Team-Trennzeilen, Teamleiter-Badge, pro-Team gefilterte Zellen bei
+    einer Person mit zwei Anstellungen (Schicht erscheint nur im richtigen Team-Block, nie doppelt),
+    sowie zwei unterschiedliche Jahresplan-Kalender für dieselbe Person je nach gewählter Anstellung.
+
+    Zwei Fakten, die zusammen betrachtet werden müssen, weil sie dieselbe Modell-Lücke
     treffen:
     - **Mehrere Teams pro Station müssen sichtbar sein** (Beispiel ICT): eine Abteilung wie "ICT"
       hat oft mehrere Teams (Infrastruktur, Applikationen, Support), die ein **gemeinsames
@@ -760,22 +788,22 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     **Anstellung (`Employment`) wird die eigentliche Planungseinheit**, nicht mehr die Person direkt
     -- analog dazu, wie reale Spital-HR-Systeme "Person" und "Beschäftigungsverhältnis" trennen.
 
-    - **Datenmodell (neu, nicht implementiert)**: `Employment` als eigenständiges Modell zwischen
-      `Employee` (die reale Person, bleibt Login/Stammdaten-Träger) und `Node` (jetzt konsequent als
-      Team-Ebene genutzt, dank `django-treebeard` bereits ein Baum -- eine Station wie "ICT" bekommt
-      Kind-Knoten "ICT/Infrastruktur", "ICT/Applikationen", "ICT/Support"). Felder: `employee` (FK),
-      `node` (FK, das konkrete Team), `pensum_pct` (statt des heutigen globalen
-      `Employee.employment_pct`), `title` (Freitext-Bezeichnung der Rolle, z. B. "Arzt"/"Dozent" --
-      bewusst getrennt von `Skill`, das weiterhin die schicht-relevante Qualifikation abbildet, nicht
-      den Vertragstitel), `is_team_lead` (Boolean, **pro Anstellung**, nicht pro Person -- so kann
-      dieselbe Person in Team A Teamleiterin sein und in Team B nicht), `active` (für Ein-/Austritt
-      einzelner Anstellungen, unabhängig von den anderen). `ShiftAssignment` referenziert künftig
-      `Employment` statt `Employee` -- eine Schicht ist damit von Anfang an eindeutig einer Rolle
-      zugeordnet, ohne Sonderfall-Logik zur Laufzeit zu brauchen ("in welcher Rolle war die Person an
-      diesem Tag tätig"). Grössere Migration (u. a. `TimeRecord`/`Absence`/`ShiftPreference` hängen
-      aktuell an `Employee` und müssten geprüft werden, ob sie an `Employment` oder weiterhin an
-      `Employee` bleiben -- z. B. Ferienanspruch/Absenzen sind vermutlich personenweit sinnvoller
-      als pro Anstellung), deshalb hier bewusst nur als Zielbild skizziert.
+    - **Datenmodell (ursprüngliche Skizze -- die tatsächliche Umsetzung weicht bewusst ab, siehe
+      "Umgesetzt" oben)**: `Employment` als eigenständiges Modell zwischen `Employee` (die reale
+      Person, bleibt Login/Stammdaten-Träger) und `Node` (jetzt konsequent als Team-Ebene genutzt,
+      dank `django-treebeard` bereits ein Baum -- eine Station wie "ICT" bekommt Kind-Knoten
+      "ICT/Infrastruktur", "ICT/Applikationen", "ICT/Support"). Felder: `employee` (FK), `node` (FK,
+      das konkrete Team), `pensum_pct` (statt des heutigen globalen `Employee.employment_pct`),
+      `title` (Freitext-Bezeichnung der Rolle, z. B. "Arzt"/"Dozent" -- bewusst getrennt von `Skill`,
+      das weiterhin die schicht-relevante Qualifikation abbildet, nicht den Vertragstitel),
+      `is_team_lead` (Boolean, **pro Anstellung**, nicht pro Person -- so kann dieselbe Person in
+      Team A Teamleiterin sein und in Team B nicht) -- alle vier Felder wurden 1:1 umgesetzt. Zwei
+      Abweichungen von dieser ersten Skizze: kein `active`-Feld (YAGNI -- eine beendete Anstellung
+      wird gelöscht, nicht deaktiviert), und `ShiftAssignment` referenziert **weiterhin** `Employee`
+      statt `Employment` -- das bereits vorhandene `ShiftAssignment.node`-Feld übernimmt die
+      Rollen-Eindeutigkeit stattdessen, ohne die riskante FK-Migration. `TimeRecord`/`Absence`/
+      `ShiftPreference` blieben wie hier vermutet an `Employee` (personenweit), siehe die
+      "Entscheidungen" weiter unten.
 
     - **Planblatt-UX (intuitiv, ein Blick genügt)**: Stations-Auswahl (`NodeSelector`) zeigt weiterhin
       Stationen, aber eine Station mit Kind-Knoten (Teams) öffnet **eine gemeinsame Tabelle mit

@@ -752,3 +752,37 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 1. Zahlungsanbieter-Integration (z. B. Stripe) für ein Abo pro Praxis/Anzahl aktiver
    Mitarbeitende.
 2. Trial-Phase und Plan-/Mitarbeiterlimits pro Tenant.
+
+### 7. Zeitmanagement
+Die intuitivste Lösung: zwei Zahlen statt einer
+
+Laufender Saldo — das, was der Mitarbeitende täglich sieht:
+Saldo(t) = Ist_kumuliert(t) − Soll_kumuliert(t)
+Wichtig: Soll_kumuliert(t) ist nicht das Jahresziel, sondern das anteilige Soll bis zum heutigen Datum (Wochen × Wochensoll, abzüglich bereits vergangener Ferien/Feiertage). So zeigt der Saldo sofort "ich bin gerade 20h im Minus" — unabhängig davon, wie weit das Jahr noch geht. Das ist die Zahl aus dem Chart oben: sie schwankt übers Jahr (z.B. Einbruch im Sommer wegen Ferien) und nähert sich gegen Jahresende der Null bzw. geht ins Plus, sobald Überzeit anfällt.
+Jahresrestsoll — eher eine Planungsgrösse für die Dienstplanung: Restsoll = Jahressoll − Ist_kumuliert(t), sagt "wie viele Stunden muss ich bis Silvester noch leisten". Mathematisch äquivalent zum Polypoint-Ansatz, aber als zweite, klar benannte Zahl neben dem laufenden Saldo — nicht als einzige Anzeige.
+
+Soll individuell pro Rolle berechnen
+
+Jahressoll = Wochensoll_Vertrag × Pensum% × Wochen/Jahr − Ferienanspruch(Std) − Feiertage_auf_Arbeitstage(Std)
+
+Arzt 100 %, 50h/Woche und Admin 100 %, 42h/Woche unterscheiden sich also nur im konfigurierten Wochensoll — das sollte pro Personalkategorie/Vertrag hinterlegt sein, nicht hartkodiert, weil auch Ferienanspruch (oft altersabhängig) und ggf. Zuschlagsregeln je Kategorie variieren.
+
+Abwesenheiten müssen Soll-neutral sein
+
+Ferien, Feiertage, Krankheit etc. dürfen nicht als "nicht geleistet" in den Saldo einfliessen, sonst wird jemand für Krankheit "bestraft". Am saubersten: Diese Tage reduzieren direkt das Soll_kumuliert(t), statt im Ist gutgeschrieben zu werden.
+
+Drei Ebenen sauber trennen — hier entsteht in der Praxis die meiste Verwirrung:
+
+Ebene	Was gemessen wird
+- Tagesdifferenz:	geplante vs. effektiv geleistete Stunden EINES Dienstes
+- Laufender Saldo:	kumulierte Ist/Soll-Differenz über die Zeit
+- Überzeit (offiziell):	Saldo-Anteil über einem Schwellenwert, explizit genehmigt/zuschlagsberechtigt
+
+Gerade bei Ärzten ist das relevant, weil dort oft eigene Regeln gelten (Nacht-/Wochenendzuschläge, Ruhezeiten, kantonale GAV wie VSAO). Diese Regeln gehören als konfigurierbares Regelwerk pro Personalkategorie ins System, nicht fix im Code.
+
+Für die Oberfläche:
+
+Saldo prominent mit Farbcodierung (blau/positiv = vor Plan, rot/negativ = hinter Plan) statt nackter grosser Zahl
+Fortschrittsbalken zum Jahressoll als visuelle Ergänzung
+Prognose statt nur Ist-Zustand: "bei aktuellem Pensum Jahresziel voraussichtlich am 3. Dezember erreicht"
+Nie am 1. Januar ein rohes "-2267h" ohne Kontext zeigen — rechnerisch korrekt, aber für neue Mitarbeitende eher beängstigend als informativ

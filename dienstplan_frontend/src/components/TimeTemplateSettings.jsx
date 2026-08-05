@@ -194,6 +194,16 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
             />
           </label>
           <label>
+            Icon (optional)
+            <input
+              type="text"
+              maxLength={50}
+              placeholder="z. B. 🌙 oder ein Kürzel"
+              value={form.icon}
+              onChange={(e) => setForm((prev) => ({ ...prev, icon: e.target.value }))}
+            />
+          </label>
+          <label>
             Erforderlicher Skill (optional)
             <select
               value={form.required_skill}
@@ -206,6 +216,21 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                 </option>
               ))}
             </select>
+          </label>
+        </div>
+        <div className="panel-form-row">
+          <label>
+            Mindestbesetzung (0 = keine)
+            <input
+              type="number"
+              min="0"
+              value={form.minimum_staffing}
+              onChange={(e) => setForm((prev) => ({ ...prev, minimum_staffing: e.target.value }))}
+            />
+            <span className="panel-hint">
+              Mindestanzahl gleichzeitig eingeteilter Mitarbeitender an diesem Schichttyp -- wird im
+              Planblatt als Warn-Badge angezeigt, sobald ein Tag unterbesetzt ist (README Punkt 9).
+            </span>
           </label>
         </div>
 
@@ -250,6 +275,9 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                   {t.end_time.slice(0, 5)}
                   {t.segments?.length > 1 && (
                     <span className="entry-note"> · {t.segments.length} Segmente</span>
+                  )}
+                  {t.minimum_staffing > 0 && (
+                    <span className="entry-note"> · min. {t.minimum_staffing} Personen</span>
                   )}
                 </span>
                 <span className="entry-actions">

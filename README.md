@@ -1047,6 +1047,138 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
         Vorab-Konfiguration zu erzwingen -- tippt man einen neuen Titel, wird er beim nächsten Mal
         einfach mit vorgeschlagen.
 
+18. **Geteilte Dienste (Split-Shifts): mehrere Zuweisungen pro Mitarbeiter und Tag** (noch nicht
+    umgesetzt). Nutzer-Feedback: in einer Vergleichsanwendung ("im Büro") lassen sich pro Tag zwei
+    Dienste einplanen -- konkreter Praxisfall ICT: Frühdienst (07:00–12:00) und Spätdienst
+    (13:00–17:30) werden am selben Tag von derselben Person geleistet, mit einer echten,
+    variablen Mittagspause dazwischen statt einer festen Pause innerhalb eines einzigen
+    Zeitfensters. Bewusst **nicht** über die bereits vorhandene Blockstruktur
+    (`TimeTemplateSegment`, Block 1.9/1.12) lösbar: Segmente gehören zu *einem* `TimeTemplate` mit
+    fixer Segmentanzahl/-reihenfolge und werden gemeinsam als eine Schicht geplant/getauscht/
+    bepunktet -- hier sind es zwei eigenständige, potenziell unterschiedliche Schichttypen (andere
+    Farbe, ggf. anderer `required_skill`, unabhängig tauschbar), die zufällig am selben Tag
+    derselben Person zugewiesen sind.
+
+    - **Grundproblem**: `ShiftAssignment` hat `unique_together = ("employee", "date")` --
+      strukturell **eine** Zuweisung pro Person und Tag. Das ist der zentrale Sperrpunkt für alles
+      Weitere hier: `assignmentMap` im Planblatt-Grid ist nach `employee:date` geschlüsselt
+      (erwartet höchstens einen Treffer), `weekly_hours_summary`/`monthly_summary`/
+      `time_account_summary` iterieren "die" Zuweisung eines Tages statt über eine Menge, und
+      `TimeRecord` hängt 1:1 an genau einer `ShiftAssignment` (bleibt aber unverändert korrekt,
+      siehe unten).
+    - **Vorschlag (state of the art, angelehnt an gängige Dienstplan-Software mit
+      Split-Shift-Unterstützung)**: Constraint lockern zu `unique_together` über
+      `(employee, date, template)` (identische Schicht zweimal am selben Tag bleibt weiterhin
+      sinnlos und blockiert), dafür eine **neue Regel-Engine-Prüfung** `_check_no_overlap`, die
+      alle Zuweisungen derselben Person am selben Tag paarweise auf Zeit-Überlappung prüft
+      (`_shift_datetimes()` existiert bereits für genau diesen Zweck, siehe `_night_hours`). Die
+      bestehende Ruhezeit-Prüfung (`_check_minimum_rest_hours`) muss zusätzlich die Lücke
+      *zwischen* zwei Diensten desselben Tages einbeziehen, nicht nur zwischen aufeinanderfolgenden
+      Tagen -- eine zu knappe Mittagspause (z. B. 12:05–12:55 zwischen zwei ArG-relevanten
+      Schichten) ist rechtlich keine Pause, sondern eine (zu kurze) Ruhezeit zwischen zwei
+      getrennten Arbeitseinsätzen.
+    - **Planblatt-UX (ein Blick genügt, keine neue Bedienlogik)**: eine Tageszelle mit mehreren
+      Zuweisungen zeigt **zwei kompakte Chips übereinander statt eines** (analog zur bestehenden
+      `shift-chip`-Darstellung, nur gestapelt) -- kein separater "zweiter Dienst"-Modus, den
+      Planende erst lernen müssten. Das bestehende Ziehen/Ablegen (Block 2.8, echter Swap) und die
+      Mehrfachauswahl-Stempelleiste (Block 2.13-Vorläufer) funktionieren unverändert pro Chip, mit
+      demselben `stationScope()`/`assignableTemplates`-Muster wie heute (Block 17-Nachbesserung) --
+      ein Split-Dienst ist einfach "eine weitere Zuweisung in derselben Zelle", kein neues Konzept.
+    - **Auswertungen bleiben korrekt, ohne Sonderfall-Code**: `weekly_hours_summary`/
+      `monthly_summary`/`time_account_summary` summieren schon heute über
+      `ShiftAssignment.all_objects.filter(employee=..., date__range=...)` -- eine Änderung von
+      "erwartet höchstens eine Zeile pro Tag" zu "iteriert über alle Zeilen eines Tages" ist eine
+      lokale Anpassung der bestehenden Schleifen, keine neue Aggregationslogik. `TimeRecord` bleibt
+      unverändert 1:1 pro `ShiftAssignment` -- zwei Dienste ergeben automatisch zwei unabhängig
+      erfassbare Ist-Zeiten samt eigener Segmente, ohne jede Modelländerung an `TimeRecord` selbst.
+    - **Offene Entscheidung für die Umsetzung**: ob eine dritte, vierte... Zuweisung am selben Tag
+      technisch ebenfalls erlaubt sein soll (kein Modellgrund dagegen) oder ob UI/Regel-Engine
+      bewusst auf zwei begrenzt werden, um die Zelle nicht unübersichtlich werden zu lassen --
+      Praxisfälle mit mehr als zwei echten Diensteinheiten pro Tag/Person sind selten genug, dass
+      eine harte Grenze vertretbar sein könnte, sollte aber am realen Anwendungsfall (ICT und
+      ähnliche) verifiziert werden, bevor sie festgeschrieben wird.
+
+19. **Automatisierte Planung (One-Click Planning)** (noch nicht umgesetzt). Ziel: Admin/Planer
+    wählen eine Station/einen Zeitraum und lassen das System selbständig einen vollständigen,
+    regelkonformen Dienstplan-Entwurf erzeugen -- unter Einhaltung sämtlicher bereits vorhandener
+    Einschränkungen (Regel-Engine: Ruhezeit, Höchstarbeitszeit, Qualifikation/`required_skill`,
+    Jugendschutz, Absenz-Konflikte; Mindestbesetzung pro Schichttyp, Block 9; künftig
+    Split-Shift-Überlappung, Punkt 18 oben) statt jede Schicht manuell zu ziehen.
+
+    - **State-of-the-art-Einordnung**: das ist im Kern ein klassisches "Nurse/Staff Rostering
+      Problem" aus der Operations-Research-Literatur -- ein Constraint-Satisfaction- bzw.
+      Optimierungsproblem, kein Heuristik-Hack. Empfehlung: ein dedizierter CP-Solver
+      (z. B. Google OR-Tools CP-SAT, reine Python-Abhängigkeit, keine externe Service-Anbindung
+      nötig) statt einer selbstgeschriebenen Greedy-Heuristik -- letztere findet bei mehreren
+      gleichzeitig wirkenden ArG-Regeln + Mindestbesetzung + Fairness (Punkt 20 unten) schnell
+      keine gültige Lösung mehr oder erzeugt unfaire, schwer nachvollziehbare Ergebnisse, während
+      ein CP-Solver Machbarkeit *beweist* oder explizit meldet, welche Nebenbedingung(en) eine
+      Lösung verhindern.
+    - **Modellierung als Entscheidungsproblem**: eine Binärvariable `x[employee, date, template]`
+      pro möglicher Zuweisung; harte Nebenbedingungen (müssen gelten, sonst keine gültige Lösung) =
+      identisch zu den bestehenden `ShiftAssignment.clean()`-Prüfungen (Ruhezeit, Höchstarbeitszeit,
+      `required_skill`, Jugendschutz, kein Absenz-Konflikt, Mindestbesetzung als Untergrenze der
+      Summe über alle passenden `x`); weiche Ziele (sollen möglichst gut erfüllt werden, blockieren
+      aber nichts) = `ShiftPreference`-Wünsche (Block 2.13, Wunschfrei/Wunschdienst) und
+      Fairness-Ausgleich über die Bonus-Punkte aus Punkt 20 unten (unpopuläre Schichten bevorzugt an
+      Mitarbeitende mit aktuell niedrigem Punktestand vergeben) als gewichtete Terme in der
+      Zielfunktion.
+    - **Vorschau statt Blindautomatik (Vertrauen vor Bequemlichkeit)**: das Ergebnis wird
+      grundsätzlich als **Entwurf/Vorschlag** erzeugt, nicht direkt gespeichert -- eine
+      Diff-Ansicht im Planblatt (neue Zuweisungen optisch hervorgehoben, z. B. gestrichelter Rand)
+      erlaubt Durchsicht, punktuelle manuelle Korrektur und erst dann bewusstes Übernehmen. Analog
+      zur bereits etablierten Begründung, warum ArG-Prüfungen informativ statt blockierend sind
+      (Nachtarbeit/Sonntagsarbeit, Block 1.5/1.6): ein Algorithmus, der ohne Bestätigung einen
+      ganzen Monatsplan überschreibt, wäre für die Akzeptanz in der Praxis riskanter als ein
+      spürbar geringerer Automatisierungsgrad mit echtem Vertrauen der Planenden.
+    - **Umgang mit Unlösbarkeit**: liefert der Solver keine vollständige Lösung (z. B. zu wenig
+      Personal mit der nötigen Qualifikation für die gewählte Mindestbesetzung), soll das Ergebnis
+      trotzdem der bestmögliche **Teilentwurf** sein plus eine für Menschen lesbare Liste der
+      verletzten/nicht erfüllbaren Stellen ("Nachtwache am 14.6.: nur 1 von 2 Personen mit Skill
+      'Reanimation' verfügbar") -- kein reines Scheitern ohne Diagnose.
+    - **Umfang MVP vs. später**: ein erster Wurf beschränkt sich sinnvollerweise auf eine Station
+      (nicht tenant-weit) und einen Monat (nicht beliebige Zeiträume) -- CP-SAT-Laufzeit wächst mit
+      der Anzahl Variablen (Mitarbeitende × Tage × Schichttypen), ein monatlicher Stations-Lauf
+      bleibt performant, ein tenant-weiter Jahres-Lauf müsste erst als eigener, potenziell
+      asynchroner Hintergrund-Task (nicht im Request-Response-Zyklus) konzipiert werden.
+
+20. **Bonus-/Fairness-Punktesystem für unpopuläre Schichten** (noch nicht umgesetzt). Ziel: sichtbar
+    und nachvollziehbar machen, wer wie oft unpopuläre Schichten (Sonntag, Nacht) übernommen hat --
+    sowohl als Transparenz-/Motivationsinstrument für Mitarbeitende als auch als Fairness-Eingabe
+    für die automatisierte Planung (Punkt 19 oben), damit nicht dieselbe Person systematisch
+    überproportional oft Sonntagsdienst leistet.
+
+    - **Bewusst keine manuelle Punktevergabe pro Schichttyp**: statt eines neuen, separat zu
+      pflegenden Felds (z. B. "Bonuspunkte" pro `TimeTemplate`) auf den bereits vorhandenen,
+      automatisch berechneten Signalen aufbauen, die die Regel-Engine ohnehin schon liefert --
+      `ShiftAssignment.is_sunday`/`night_hours` (Block 1.5/1.6, informativ, bereits pro Zuweisung
+      berechnet). Zwei neue, konfigurierbare `Tenant`-Felder nach demselben Muster wie
+      `overtime_surcharge_pct`/`sunday_work_surcharge_pct`: `sunday_shift_bonus_points` und
+      `night_shift_bonus_points_per_hour` -- eine Klinik kann damit z. B. "1 Punkt pro
+      Sonntagsdienst" oder "0.5 Punkte pro Nachtstunde" festlegen, ohne jedes `TimeTemplate`
+      manuell zu pflegen. Neue Schichttypen sind dadurch automatisch korrekt eingebunden, sobald sie
+      auf einen Sonntag fallen oder Nachtstunden enthalten -- kein Vergessen möglich.
+    - **Aggregation nach demselben, bereits etablierten Muster** wie `night_work_summary()`/
+      `weekly_hours_summary()`: neue Methode `Employee.fairness_summary(year)` (kalenderjahresweise,
+      analog zu `annual_target_hours`) liefert die kumulierten Punkte der Person sowie -- für die
+      Einordnung "bin ich fair dran" -- den Punktedurchschnitt aller Mitarbeitenden derselben
+      Station/desselben Teams im selben Zeitraum.
+    - **Frontend**: kleines Badge analog zu `BalanceBadge.jsx` (gleiches Pub/Sub-Muster über
+      `onBalanceChanged`, da eine neue Zuweisung sowohl den Saldo als auch die Fairness-Punkte
+      beeinflusst), sichtbar für Admin/Planer in der Mitarbeitendenliste (Übersicht "wer ist
+      wann dran") sowie optional für Mitarbeitende selbst in der Topbar (**zur Diskussion**, wenn
+      umgesetzt: Transparenz kann Fairness-Vertrauen stärken, aber ein sichtbarer
+      "Punkte-Vergleich mit Kolleg:innen" könnte in manchen Teams auch unerwünschten Konkurrenzdruck
+      erzeugen -- anders als der bestehende Saldo, der bewusst rein personenbezogen ist und nie mit
+      anderen verglichen wird).
+    - **Verzahnung mit Punkt 19**: der Solver berücksichtigt beim Verteilen einer unpopulären
+      Schicht neben den harten Regeln (Ruhezeit, Qualifikation etc.) den *aktuellen* Punktestand
+      aller in Frage kommenden Mitarbeitenden als weichen Zielfunktions-Term -- wer zuletzt
+      überdurchschnittlich oft Sonntag/Nacht gemacht hat, wird bei der nächsten automatischen
+      Zuteilung tendenziell übersprungen, ohne dass das je hart erzwungen würde (eine einzelne
+      unpopuläre Schicht bei objektiv fehlenden Alternativen -- z. B. nur eine Person mit dem
+      nötigen Skill verfügbar -- darf die Planung nicht blockieren).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 1. **Setup-Wizard**: eine neue Praxis registriert sich selbst (Tenant, erster Admin-Account,

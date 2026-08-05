@@ -550,10 +550,63 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      entsprechenden Spalten/Zellen mit einer eigenen `is-holiday`-Klasse (Tooltip zeigt den
      Feiertagsnamen) -- im Planblatt zusätzlich zur bestehenden `is-weekend`-Markierung, im Jahresplan
      als Rahmen um die Tageszelle.
-8. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
-   eine belegte Zelle wird abgelehnt statt getauscht).
-9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn
-   sie unterschritten wird.
+8. ✅ **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (2026-08): Ziehen auf
+   eine belegte Zelle wurde bisher abgelehnt ("Zielfeld ist bereits belegt"), tauscht jetzt beide
+   Zuweisungen. Neue Classmethod `ShiftAssignment.swap(first_id, second_id)`
+   (`scheduling/models.py`) tauscht `employee`, `date` **und** `node` als Einheit zwischen den
+   beiden Zeilen (nicht nur `employee` -- ein Grid-Drag kann anders als ein
+   `ShiftTradeRequest`-Tausch, der bewusst das Datum je Zeile unverändert lässt, beliebige
+   Quell-/Zielzellen über Tage UND Team-Zeilen hinweg kombinieren; `node` ergibt sich dabei korrekt
+   automatisch, weil eine gezogene Zuweisung immer `node === rowNodeId` ihrer eigenen Zeile hat,
+   Punkt 17), `template`/`note`/`history` bleiben bei ihrer bisherigen Zeile. Läuft in
+   `transaction.atomic()` mit `select_for_update()` (deterministische Sperrreihenfolge nach
+   sortierten IDs, sonst Deadlock-Risiko bei gegenläufig geordneten Swap-Requests) und
+   `full_clean()` auf beiden resultierenden Zeilen -- ein Ruhezeit-/Wochenstunden-/
+   Qualifikationskonflikt lehnt den gesamten Tausch ab, ohne etwas zu ändern (per Playwright gegen
+   die echten Testheim-Daten verifiziert: Sarah Kellers Wochenstunden hätten 45h überschritten,
+   Tausch korrekt abgelehnt). Neue Action `POST /api/shift-assignments/swap/` (`detail=False`, kein
+   natürliches "Hauptobjekt" bei einem symmetrischen Tausch zwischen zwei Peers), `first`/`second`
+   als Assignment-Ids im Body -- Admin/Planer-only wie der Rest des ViewSets. Frontend:
+   `PlanGrid.jsx`s `handleMove` löst die Zielzelle jetzt zusätzlich über `node === toRowNodeId` auf
+   (nicht nur `employee`+`date`) -- bei Mehrfachanstellung (Punkt 17) kann dieselbe Person am
+   selben Tag bereits eine Zuweisung in einem ANDEREN Team haben, die optisch leere Zielzelle wäre
+   sonst fälschlich "belegt"; dieselbe Korrektur fixt nebenbei einen latenten Bug beim Verschieben
+   in eine leere Zelle eines anderen Teams (`node` wurde dabei bisher nicht mitgepatcht). Kein
+   Bestätigungsdialog vor dem Tausch, konsistent mit dem Rest der App (Fehler laufen über das
+   bestehende `onError`-Banner). **Nebenbei gefundener und mitbehobener Bug**:
+   `ShiftTradeRequest.approve()`s Voll-Swap-Zweig scheiterte bislang an einem falschen
+   Unique-Konflikt, sobald beide getauschten Zuweisungen auf demselben Datum lagen (der häufigste
+   Tauschfall) -- `full_clean()` sah beim Prüfen der ersten Zuweisung noch den unveränderten
+   DB-Stand der zweiten. Behoben mit demselben Muster (`validate_unique=False` + manueller
+   Konfliktcheck, der beide beteiligten Zeilen ausschliesst, + ein Zwischenschritt, der die eine
+   Zeile kurz auf ein Sentinel-Datum setzt, damit das Speichern der zweiten nicht mit der noch
+   nicht aktualisierten ersten kollidiert).
+9. ✅ **Mindestbesetzung pro Schicht/Node** (2026-08): neues Feld `TimeTemplate.minimum_staffing`
+   (Default 0 = keine Mindestbesetzung definiert, rein additiv). Bewusst **eine** Zahl pro
+   `TimeTemplate`, stationsweit über alle Team-Zuweisungen gezählt, nicht pro Team separat --
+   `TimeTemplate.node` ist ohnehin immer die Station (Punkt 17), und "ist diese Schicht besetzt"
+   ist inhaltlich eine Frage der physischen Abdeckung, nicht der administrativen
+   Team-Zugehörigkeit. Brauchen zwei Teams für dasselbe Zeitfenster unterschiedliche Minima, deckt
+   das bestehende Modell das bereits ohne neue Tabelle ab: zwei separat benannte `TimeTemplate`s
+   für dasselbe Zeitfenster, je mit eigenem `minimum_staffing`. Rein informativ wie
+   `night_hours`/`is_sunday` -- **keine** neue Regel-Engine-Prüfung, `ShiftAssignment.clean()`
+   bleibt unverändert, eine unterbesetzte Schicht blockiert nichts. **Kein neuer Endpoint**: die
+   Auswertung "Ist-Anzahl vs. Minimum pro Tag" passiert rein clientseitig in `PlanGrid.jsx`, weil
+   `templates` (schon auf die Station gefiltert) und `assignments` (schon vollständig paginiert für
+   Station + alle Team-Kinder) dort ohnehin komplett geladen sind -- ein Backend-Endpoint würde
+   nur dasselbe `GROUP BY (date, template)` redundant übers Netz schicken. Anzeige: klickbares
+   Warn-Badge in der Tages-Kopfzelle (`FloatingPopover`, dieselbe Komponente wie die Wunsch-/
+   Zeiterfassungs-Badges in `ShiftCell.jsx` -- bewusst kein reines `title=`-Tooltip, das wäre
+   hover-only, würde mit dem bestehenden Feiertags-Tooltip auf derselben Zelle kollidieren und
+   funktioniert nicht auf Touch/Tablet), öffnet eine Liste aller unterbesetzten Schichttypen dieses
+   Tages ("Frühschicht: 3/5 besetzt"). Sichtbar für **alle** Rollen, nicht nur Admin/Planer --
+   konsistent mit der bestehenden "Mitarbeitende sehen den ganzen Plan"-Transparenz-Doktrin (anders
+   als die Saldo-Spalte, die aus Datenschutz-, nicht aus Autoritätsgründen `canManage`-only ist).
+   Neues Zahlenfeld in `TimeTemplateSettings.jsx` (gleiches Muster wie das bestehende
+   `break_minutes`-Feld) plus Listen-Badge ("· min. 3 Personen"). Bewusst nur im Planblatt
+   (`PlanGrid.jsx`), nicht im Jahresplan -- der ist personenweit und lädt keine Zuweisungen anderer
+   Mitarbeitender, "wie viele andere sind an dieser Schicht" ist dort ohne zusätzlichen
+   Datenabruf nicht beantwortbar.
 10. ✅ **"Einstellungen"-Bereich im Frontend für Admin/Planer** (Stammdaten-Selfservice): zuvor
    liessen sich Nodes/Skills/TimeTemplates/Employee-Zusatzfelder nur über den Django-Admin
    pflegen — nicht praktikabel für Kliniken ohne eigene IT-Abteilung, und ein Planer
@@ -930,7 +983,7 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 5. **Automatisierte Frontend-Tests**: `dienstplan_frontend` hat aktuell keine persistierte
    Testsuite -- jedes Feature wurde bei der Entwicklung manuell per Playwright im Browser
    verifiziert, aber nichts davon liegt als wiederholbarer Test im Repo. Regressionen im
-   Frontend fallen damit nicht automatisch auf, anders als im Backend (255 Tests, `python
+   Frontend fallen damit nicht automatisch auf, anders als im Backend (269 Tests, `python
    manage.py test`).
 
 ### 5. Datenschutz (revDSG) & Rechtliches

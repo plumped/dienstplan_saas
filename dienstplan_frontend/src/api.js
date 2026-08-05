@@ -180,6 +180,15 @@ export const api = {
     request(`/shift-assignments/${id}/`, { method: "PATCH", body: payload, affectsBalance: true }),
   deleteShiftAssignment: (id) =>
     request(`/shift-assignments/${id}/`, { method: "DELETE", affectsBalance: true }),
+  // README Block 2.8: echter Swap im Drag & Drop (Ziehen auf eine belegte
+  // Zelle) -- tauscht employee/date/node zwischen zwei Zuweisungen, siehe
+  // ShiftAssignment.swap() im Backend.
+  swapShiftAssignments: (firstId, secondId) =>
+    request("/shift-assignments/swap/", {
+      method: "POST",
+      body: { first: firstId, second: secondId },
+      affectsBalance: true,
+    }),
 
   getAbsences: (employeeId) =>
     requestAllPages(employeeId ? `/absences/?employee=${employeeId}` : "/absences/"),

@@ -2,7 +2,45 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
 import BalanceBadge from "./BalanceBadge.jsx";
+import FloatingPopover from "./FloatingPopover.jsx";
 import ShiftCell from "./ShiftCell.jsx";
+
+// README Block 2.9: kleines, klickbares Warn-Badge in der Tages-Kopfzelle,
+// wenn mindestens ein Schichttyp mit minimum_staffing an diesem Tag
+// unterbesetzt ist -- bewusst ein FloatingPopover statt eines reinen
+// title=-Tooltips (hover-only, würde ausserdem mit dem bereits vorhandenen
+// title={holidayName} auf derselben Zelle kollidieren, funktioniert nicht
+// auf Tablet/Touch), gleiches Muster wie die Wunsch-/Zeiterfassungs-Badges
+// in ShiftCell.jsx.
+function DayStaffingBadge({ shortfalls }) {
+  const [open, setOpen] = useState(false);
+  const badgeRef = useRef(null);
+  if (!shortfalls.length) return null;
+  return (
+    <>
+      <button
+        ref={badgeRef}
+        type="button"
+        className="staffing-warning-badge"
+        title="Mindestbesetzung unterschritten -- Details anzeigen"
+        onClick={() => setOpen((v) => !v)}
+      >
+        ⚠<span className="visually-hidden"> Mindestbesetzung unterschritten</span>
+      </button>
+      {open && (
+        <FloatingPopover anchorRef={badgeRef} onClose={() => setOpen(false)} className="staffing-popover">
+          <ul className="staffing-popover-list">
+            {shortfalls.map(({ template, count }) => (
+              <li key={template.id}>
+                {template.name}: {count}/{template.minimum_staffing} besetzt
+              </li>
+            ))}
+          </ul>
+        </FloatingPopover>
+      )}
+    </>
+  );
+}
 
 const WEEKDAYS_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 
@@ -189,6 +227,32 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     return map;
   }, [timeRecords]);
 
+  // README Block 2.9: Mindestbesetzung ist rein informativ (keine neue
+  // Regel-Engine-Prüfung, kein eigener Endpoint) -- templates und
+  // assignments sind für diese Station bereits vollständig geladen
+  // (inkl. aller Team-Kinder, siehe ShiftAssignmentViewSet), ein
+  // GROUP BY (date, template) lässt sich daher rein clientseitig bilden.
+  const understaffedByDate = useMemo(() => {
+    const relevantTemplates = templates.filter((t) => t.minimum_staffing > 0);
+    if (relevantTemplates.length === 0) return new Map();
+    const counts = new Map();
+    for (const a of assignments) {
+      const key = `${a.date}:${a.template}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    const map = new Map();
+    for (const d of days) {
+      const date = isoDate(year, month, d);
+      const shortfalls = [];
+      for (const t of relevantTemplates) {
+        const count = counts.get(`${date}:${t.id}`) ?? 0;
+        if (count < t.minimum_staffing) shortfalls.push({ template: t, count });
+      }
+      if (shortfalls.length) map.set(date, shortfalls);
+    }
+    return map;
+  }, [templates, assignments, days, year, month]);
+
   const preferenceMap = useMemo(() => {
     const map = new Map();
     for (const p of preferences) map.set(`${p.employee}:${p.date}`, p);
@@ -283,20 +347,34 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
-  async function handleMove(fromEmployeeId, fromDate, toEmployeeId, toDate) {
+  async function handleMove(fromEmployeeId, fromDate, toEmployeeId, toDate, toRowNodeId) {
     if (fromEmployeeId === toEmployeeId && fromDate === toDate) return;
     const source = assignmentMap.get(`${fromEmployeeId}:${fromDate}`);
     if (!source) return;
-    if (assignmentMap.has(`${toEmployeeId}:${toDate}`)) {
-      onError("Zielfeld ist bereits belegt. Bitte zuerst leeren, bevor eine Schicht dorthin verschoben wird.");
-      return;
-    }
+    // README Block 2.8: die Zielzelle muss zusätzlich nach ihrem eigenen
+    // Team-Knoten aufgelöst werden, nicht nur nach employee+date -- bei
+    // Mehrfachanstellung (Punkt 17) kann dieselbe Person an diesem Tag
+    // bereits eine Zuweisung in einem ANDEREN Team haben, die optisch
+    // leere Zielzelle wäre sonst fälschlich "belegt".
+    const target = assignments.find(
+      (a) => a.employee === toEmployeeId && a.date === toDate && a.node === toRowNodeId
+    );
     try {
-      const updated = await api.updateShiftAssignment(source.id, {
-        employee: toEmployeeId,
-        date: toDate,
-      });
-      setAssignments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+      if (target) {
+        // Echter Swap statt Ablehnung: tauscht employee/date/node zwischen
+        // den beiden Zuweisungen (siehe ShiftAssignment.swap() im Backend).
+        const { first, second } = await api.swapShiftAssignments(source.id, target.id);
+        setAssignments((prev) =>
+          prev.map((a) => (a.id === first.id ? first : a.id === second.id ? second : a))
+        );
+      } else {
+        const updated = await api.updateShiftAssignment(source.id, {
+          employee: toEmployeeId,
+          date: toDate,
+          node: toRowNodeId,
+        });
+        setAssignments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+      }
     } catch (e) {
       // Greift z. B. bei einer Ruhezeit-Verletzung am Zieltag (siehe ShiftAssignment.clean())
       onError(e.message);
@@ -521,8 +599,9 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
             <tr>
               <th className="col-employee">Mitarbeiter</th>
               {days.map((d) => {
+                const date = isoDate(year, month, d);
                 const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
-                const holidayName = holidays.get(isoDate(year, month, d));
+                const holidayName = holidays.get(date);
                 return (
                   <th
                     key={d}
@@ -531,6 +610,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                   >
                     <span className="day-num">{d}</span>
                     <span className="day-weekday">{weekdayLabel(year, month, d)}</span>
+                    <DayStaffingBadge shortfalls={understaffedByDate.get(date) ?? []} />
                   </th>
                 );
               })}
@@ -641,7 +721,9 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           canEdit={canManage}
                           canOfferTrade={canOfferTrade}
                           onChange={(templateId) => handleAssign(emp.id, date, templateId, rowNodeId)}
-                          onMove={handleMove}
+                          onMove={(fromEmployeeId, fromDate, toEmployeeId, toDate) =>
+                            handleMove(fromEmployeeId, fromDate, toEmployeeId, toDate, rowNodeId)
+                          }
                           onOfferTrade={(targetEmployeeId) =>
                             handleOfferTrade(emp.id, date, targetEmployeeId)
                           }

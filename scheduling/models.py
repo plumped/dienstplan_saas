@@ -667,6 +667,11 @@ class TimeTemplate(TenantScopedModel):
         blank=True,
         help_text="Optional: Qualifikation, die für diese Schicht zwingend vorhanden sein muss.",
     )
+    minimum_staffing = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Mindestanzahl gleichzeitig eingeteilter Mitarbeitender an diesem Schichttyp; "
+        "0 = keine Mindestbesetzung definiert.",
+    )
 
     class Meta:
         ordering = ["start_time"]
@@ -1008,6 +1013,80 @@ class ShiftAssignment(TenantScopedModel):
                 f"({conflict.get_type_display()}, {conflict.start_date}–{conflict.end_date})."
             )
 
+    @classmethod
+    def swap(cls, first_id, second_id):
+        """
+        Echter Swap zweier Zuweisungen im Drag & Drop (README Block 2.8):
+        tauscht employee_id, date UND node_id zwischen den beiden Zeilen als
+        Einheit -- template/note/history bleiben bei ihrer bisherigen
+        Zeile. Damit landet exakt das, was vorher in der jeweils ANDEREN
+        Zelle stand, in der eigenen Zelle -- unabhängig davon, ob Quelle und
+        Ziel denselben Tag/dieselbe Team-Zeile betreffen. Anders als
+        ShiftTradeRequest.approve() (das bewusst nur employee_id tauscht und
+        date unangetastet lässt -- dort korrekt, weil ein Diensttausch "mein
+        Montag gegen deinen Dienstag" per Definition beide Daten unverändert
+        lässt) kann ein Grid-Drag jede beliebige Quell-/Zielzelle
+        kombinieren. node_id ergibt sich automatisch korrekt aus der
+        jeweils anderen Zeile, weil eine gezogene Zuweisung immer node ===
+        rowNodeId ihrer eigenen Zeile hat (Team-Gruppierung, Punkt 17) --
+        kein zusätzlicher Parameter nötig.
+
+        Der manuelle Drittkonflikt-Check unten ist für DIESE Methode
+        streng genommen unerreichbar (nicht nur defensiv): weil komplett
+        employee+date+node zwischen genau zwei bereits gültigen,
+        eindeutigen Zeilen getauscht wird, bleibt die Menge der belegten
+        (employee, date)-Paare vor und nach dem Tausch identisch -- ein
+        Drittes kann also nie kollidieren. Bewusst trotzdem drin gelassen
+        (Symmetrie zum inhaltlich anderen Fix in
+        ShiftTradeRequest.approve(), wo dieselbe Prüfung tatsächlich
+        greifen kann, weil dort nur employee_id tauscht und date fix
+        bleibt) -- günstige Absicherung gegen künftige Änderungen an
+        dieser Methode.
+        """
+        first_id, second_id = int(first_id), int(second_id)
+        if first_id == second_id:
+            raise ValidationError("Kann nicht mit sich selbst getauscht werden.")
+        with transaction.atomic():
+            # Deterministische Sperrreihenfolge unabhängig von der
+            # Aufrufreihenfolge, sonst Deadlock-Risiko bei gegenläufig
+            # geordneten Swap-Requests.
+            lo_id, hi_id = sorted([first_id, second_id])
+            lo = cls.all_objects.select_for_update().get(pk=lo_id)
+            hi = cls.all_objects.select_for_update().get(pk=hi_id)
+            first = lo if lo.pk == first_id else hi
+            second = hi if hi.pk == second_id else lo
+
+            first_orig = (first.employee_id, first.date, first.node_id)
+            second_orig = (second.employee_id, second.date, second.node_id)
+            first.employee_id, first.date, first.node_id = second_orig
+            second.employee_id, second.date, second.node_id = first_orig
+
+            # validate_unique=False: der eingebaute Check sieht während
+            # dieser Transaktion noch den unveränderten DB-Stand der
+            # jeweils anderen Zeile und würde beim Tauschen fälschlich
+            # einen Konflikt mit sich selbst melden. Konflikte mit echten
+            # Dritten werden unten separat geprüft (siehe Docstring oben).
+            first.full_clean(validate_unique=False)
+            second.full_clean(validate_unique=False)
+            for assignment, other_pk in ((first, second.pk), (second, first.pk)):
+                conflict = (
+                    cls.all_objects.filter(employee_id=assignment.employee_id, date=assignment.date)
+                    .exclude(pk__in=[assignment.pk, other_pk])
+                    .exists()
+                )
+                if conflict:
+                    raise ValidationError(
+                        f"{assignment.employee} hat am {assignment.date} bereits eine andere Zuweisung."
+                    )
+
+            # DB-Constraint (employee, date) verlangt einen Zwischenschritt
+            # beim Tauschen zweier Zeilen -- sonst kollidiert das erste
+            # save() mit dem noch nicht aktualisierten zweiten Datensatz.
+            cls.all_objects.filter(pk=first.pk).update(date=date.max)
+            second.save()
+            first.save()
+        return first, second
+
 
 class ShiftPreference(TenantScopedModel):
     """
@@ -1151,10 +1230,32 @@ class ShiftTradeRequest(TenantScopedModel):
                 )
                 requester_assignment.employee_id = self.target_employee_id
                 target_assignment.employee_id = original_employee_id
-                requester_assignment.full_clean()
-                target_assignment.full_clean()
-                requester_assignment.save()
+                # validate_unique=False + manueller Konfliktcheck + Zwischenschritt:
+                # liegen beide Zuweisungen auf demselben Datum (der häufigste
+                # Tausch-Fall), sähe der eingebaute Unique-Check beim Prüfen der
+                # ersten Zuweisung noch den unveränderten DB-Stand der zweiten und
+                # würde fälschlich einen Konflikt mit sich selbst melden -- siehe
+                # ShiftAssignment.swap() für dasselbe Muster inkl. Begründung.
+                requester_assignment.full_clean(validate_unique=False)
+                target_assignment.full_clean(validate_unique=False)
+                for assignment, other_pk in (
+                    (requester_assignment, target_assignment.pk),
+                    (target_assignment, requester_assignment.pk),
+                ):
+                    conflict = (
+                        ShiftAssignment.all_objects.filter(
+                            employee_id=assignment.employee_id, date=assignment.date
+                        )
+                        .exclude(pk__in=[assignment.pk, other_pk])
+                        .exists()
+                    )
+                    if conflict:
+                        raise ValidationError(
+                            f"{assignment.employee} hat am {assignment.date} bereits eine andere Zuweisung."
+                        )
+                ShiftAssignment.all_objects.filter(pk=requester_assignment.pk).update(date=date.max)
                 target_assignment.save()
+                requester_assignment.save()
             else:
                 requester_assignment.employee_id = self.target_employee_id
                 requester_assignment.full_clean()

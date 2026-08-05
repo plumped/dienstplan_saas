@@ -1,6 +1,7 @@
 from datetime import date
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
@@ -340,6 +341,42 @@ class ShiftAssignmentViewSet(TenantScopedViewSet):
         if date_to:
             qs = qs.filter(date__lte=date_to)
         return qs
+
+    @action(detail=False, methods=["post"])
+    def swap(self, request):
+        """
+        README Block 2.8: echter Swap im Drag & Drop (Ziehen auf eine
+        belegte Zelle) statt der bisherigen Ablehnung -- siehe
+        ShiftAssignment.swap() für die eigentliche Tausch-/Validierungslogik.
+        `detail=False`, weil ein Tausch zwischen zwei gleichberechtigten
+        Zuweisungen kein natürliches "Hauptobjekt" hat (anders als die
+        detail=True-Actions von ShiftTradeRequestViewSet unten).
+        """
+        first_id = request.data.get("first")
+        second_id = request.data.get("second")
+        if not first_id or not second_id:
+            raise ValidationError({"first": "Erforderlich.", "second": "Erforderlich."})
+        try:
+            # Form-/Multipart-kodierte Requests liefern Strings -- ohne
+            # diese Umwandlung würde `lo.pk == first_id` in
+            # ShiftAssignment.swap() (int == str) immer falsch sein und
+            # "first"/"second" in der Antwort stillschweigend vertauschen.
+            first_id = int(first_id)
+            second_id = int(second_id)
+        except (TypeError, ValueError):
+            raise ValidationError({"first": "Muss eine Zahl sein.", "second": "Muss eine Zahl sein."})
+        get_object_or_404(self.get_queryset(), pk=first_id)
+        get_object_or_404(self.get_queryset(), pk=second_id)
+        try:
+            first, second = ShiftAssignment.swap(first_id, second_id)
+        except DjangoValidationError as e:
+            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
+        return Response(
+            {
+                "first": self.get_serializer(first).data,
+                "second": self.get_serializer(second).data,
+            }
+        )
 
 
 class AbsenceViewSet(TenantScopedViewSet):

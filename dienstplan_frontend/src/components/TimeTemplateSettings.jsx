@@ -12,6 +12,7 @@ function emptyForm(defaultNodeId) {
     icon: "",
     color: "#2563eb",
     required_skill: "",
+    minimum_staffing: 0,
     segments: [],
   };
 }
@@ -26,6 +27,7 @@ function toFormValues(template) {
     icon: template.icon,
     color: template.color,
     required_skill: template.required_skill ?? "",
+    minimum_staffing: template.minimum_staffing,
     segments: (template.segments ?? []).map((s) => ({
       start_time: s.start_time.slice(0, 5),
       end_time: s.end_time.slice(0, 5),
@@ -81,6 +83,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
       icon: form.icon,
       color: form.color,
       required_skill: form.required_skill || null,
+      minimum_staffing: Number(form.minimum_staffing) || 0,
       segments: form.segments.map((s, i) => ({ order: i, start_time: s.start_time, end_time: s.end_time })),
     };
     setSaving(true);

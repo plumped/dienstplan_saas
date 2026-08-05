@@ -3281,3 +3281,293 @@ class NotificationsAndTaskCountsTests(APITestCase):
         Membership.objects.create(user=hr_user, tenant=self.tenant, role=Membership.Role.HR)
         response = self.auth_and_get_me(hr_user)
         self.assertEqual(response.data["task_counts"], {"absences": 0, "trades": 0, "time_records": 0})
+
+
+class ShiftAssignmentSwapTests(TestCase):
+    """README Block 2.8: echter Swap zweier Zuweisungen (ShiftAssignment.swap())."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.station = Node.add_root(name="Station A", tenant=self.tenant)
+        self.team_a = self.station.add_child(name="Team A", tenant=self.tenant)
+        self.team_b = self.station.add_child(name="Team B", tenant=self.tenant)
+        self.employee_1 = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee_2 = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.station,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+
+    def test_swap_exchanges_employee_date_node(self):
+        # Unterschiedliche Tage UND unterschiedliche Team-Knoten -- der
+        # allgemeine Fall eines Grid-Drags (nicht nur der Sonderfall
+        # "gleicher Tag", siehe Test unten).
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        a2 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_2, node=self.team_b, date=date(2026, 8, 5), template=self.template
+        )
+        first, second = ShiftAssignment.swap(a1.id, a2.id)
+        self.assertEqual(first.employee_id, self.employee_2.id)
+        self.assertEqual(first.date, date(2026, 8, 5))
+        self.assertEqual(first.node_id, self.team_b.id)
+        self.assertEqual(second.employee_id, self.employee_1.id)
+        self.assertEqual(second.date, date(2026, 8, 3))
+        self.assertEqual(second.node_id, self.team_a.id)
+        a1.refresh_from_db()
+        a2.refresh_from_db()
+        self.assertEqual(a1.employee_id, self.employee_2.id)
+        self.assertEqual(a1.date, date(2026, 8, 5))
+        self.assertEqual(a2.employee_id, self.employee_1.id)
+        self.assertEqual(a2.date, date(2026, 8, 3))
+
+    def test_swap_same_date_different_employees(self):
+        # Regressionstest für den beim Planen gefundenen Bug in
+        # ShiftTradeRequest.approve(): der eingebaute validate_unique()
+        # sieht während der Transaktion noch den unveränderten DB-Stand der
+        # jeweils anderen Zeile und meldet sonst einen falschen Konflikt --
+        # gerade der häufigste Tauschfall (zwei Personen tauschen denselben
+        # Tag) darf hier nicht scheitern.
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        a2 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_2, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        first, second = ShiftAssignment.swap(a1.id, a2.id)
+        self.assertEqual(first.employee_id, self.employee_2.id)
+        self.assertEqual(second.employee_id, self.employee_1.id)
+        self.assertEqual(first.date, date(2026, 8, 3))
+        self.assertEqual(second.date, date(2026, 8, 3))
+
+    def test_swap_with_self_is_rejected(self):
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        with self.assertRaises(ValidationError):
+            ShiftAssignment.swap(a1.id, a1.id)
+
+    def test_swap_blocked_by_rule_engine_leaves_state_unchanged(self):
+        skill = Skill.objects.create(tenant=self.tenant, name="Nachtdienst-berechtigt")
+        self.template.required_skill = skill
+        self.template.save()
+        self.employee_1.skills.add(skill)
+        # employee_2 hat den Skill NICHT -> nach dem Swap würde employee_2
+        # die qualifikationspflichtige Schicht übernehmen.
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        a2 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_2, node=self.team_a, date=date(2026, 8, 5), template=self.template
+        )
+        with self.assertRaises(ValidationError):
+            ShiftAssignment.swap(a1.id, a2.id)
+        a1.refresh_from_db()
+        a2.refresh_from_db()
+        self.assertEqual(a1.employee_id, self.employee_1.id)
+        self.assertEqual(a2.employee_id, self.employee_2.id)
+
+    def test_swap_unaffected_by_unrelated_third_party_assignment(self):
+        # employee_1 hat eine völlig unbeteiligte dritte Zuweisung an einem
+        # anderen Tag -- das Tauschen von a1/a2 tauscht employee+date+node
+        # als Einheit zwischen genau diesen beiden Zeilen, die Menge der
+        # belegten (employee, date)-Paare bleibt dabei unverändert (nur die
+        # Zeilen-Zuordnung ändert sich), ein Dritter kann also nie in
+        # Konflikt geraten -- der manuelle Check in ShiftAssignment.swap()
+        # ist hier bewusst nur Absicherung, nicht die eigentliche Prüfung.
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        a2 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_2, node=self.team_a, date=date(2026, 8, 5), template=self.template
+        )
+        third = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 10), template=self.template
+        )
+        ShiftAssignment.swap(a1.id, a2.id)
+        third.refresh_from_db()
+        self.assertEqual(third.employee_id, self.employee_1.id)
+        self.assertEqual(third.date, date(2026, 8, 10))
+
+
+class ShiftAssignmentSwapAPITests(APITestCase):
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        self.station = Node.add_root(name="Station A", tenant=self.tenant)
+        self.employee_1 = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee_2 = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.station,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+        self.a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.station, date=date(2026, 8, 3), template=self.template
+        )
+        self.a2 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_2, node=self.station, date=date(2026, 8, 5), template=self.template
+        )
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_swap_endpoint_exchanges_both_assignments(self):
+        response = self.client.post(
+            "/api/shift-assignments/swap/", {"first": self.a1.id, "second": self.a2.id}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["first"]["employee"], self.employee_2.id)
+        self.assertEqual(response.data["second"]["employee"], self.employee_1.id)
+        self.a1.refresh_from_db()
+        self.a2.refresh_from_db()
+        self.assertEqual(self.a1.employee_id, self.employee_2.id)
+        self.assertEqual(self.a2.employee_id, self.employee_1.id)
+
+    def test_swap_endpoint_requires_both_ids(self):
+        response = self.client.post("/api/shift-assignments/swap/", {"first": self.a1.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_swap_endpoint_returns_400_on_rule_violation(self):
+        skill = Skill.objects.create(tenant=self.tenant, name="Nachtdienst-berechtigt")
+        self.template.required_skill = skill
+        self.template.save()
+        self.employee_1.skills.add(skill)
+        response = self.client.post(
+            "/api/shift-assignments/swap/", {"first": self.a1.id, "second": self.a2.id}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_swap_endpoint_returns_404_for_foreign_tenant_assignment(self):
+        other_tenant, other_user = make_tenant_with_planner("klinik-b", "planner_b")
+        other_node = Node.add_root(name="Station B", tenant=other_tenant)
+        other_employee = Employee.objects.create(
+            tenant=other_tenant, first_name="Carla", last_name="C", employment_pct=100
+        )
+        other_template = TimeTemplate.objects.create(
+            tenant=other_tenant, node=other_node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+        )
+        foreign_assignment = ShiftAssignment.objects.create(
+            tenant=other_tenant, employee=other_employee, node=other_node, date=date(2026, 8, 3), template=other_template
+        )
+        response = self.client.post(
+            "/api/shift-assignments/swap/", {"first": self.a1.id, "second": foreign_assignment.id}
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_swap_endpoint_denied_for_employee_role(self):
+        employee_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        token, _ = Token.objects.get_or_create(user=employee_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        response = self.client.post(
+            "/api/shift-assignments/swap/", {"first": self.a1.id, "second": self.a2.id}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class ShiftTradeRequestFullSwapSameDateTests(TestCase):
+    """
+    Regressionstest für den beim Planen von Block 2.8 gefundenen Bug: der
+    Voll-Swap-Zweig von ShiftTradeRequest.approve() scheiterte bislang an
+    einem falschen Unique-Konflikt, sobald beide getauschten Zuweisungen auf
+    demselben Datum lagen (der Normalfall "wir tauschen unsere Mittwoch-
+    Schichten"). Ergänzt test_approve_full_swap_exchanges_employees
+    (ShiftTradeRequestTests), das bislang nur unterschiedliche Daten prüft.
+    """
+
+    def test_approve_full_swap_same_date_succeeds(self):
+        tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        node = Node.add_root(name="Station A", tenant=tenant)
+        employee_1 = Employee.objects.create(tenant=tenant, first_name="Anna", last_name="A", employment_pct=100)
+        employee_2 = Employee.objects.create(tenant=tenant, first_name="Bea", last_name="B", employment_pct=100)
+        template = TimeTemplate.objects.create(
+            tenant=tenant, node=node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0), break_minutes=30
+        )
+        a1 = ShiftAssignment.objects.create(
+            tenant=tenant, employee=employee_1, node=node, date=date(2026, 8, 3), template=template
+        )
+        a2 = ShiftAssignment.objects.create(
+            tenant=tenant, employee=employee_2, node=node, date=date(2026, 8, 3), template=template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=tenant, requester_assignment=a1, target_employee=employee_2, target_assignment=a2
+        )
+        trade.approve()
+        a1.refresh_from_db()
+        a2.refresh_from_db()
+        self.assertEqual(a1.employee_id, employee_2.id)
+        self.assertEqual(a2.employee_id, employee_1.id)
+        self.assertEqual(a1.date, date(2026, 8, 3))
+        self.assertEqual(a2.date, date(2026, 8, 3))
+
+
+class TimeTemplateMinimumStaffingTests(TestCase):
+    """README Block 2.9: Mindestbesetzung ist rein informativ, blockiert nichts."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+
+    def test_minimum_staffing_defaults_to_zero(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+        )
+        self.assertEqual(template.minimum_staffing, 0)
+
+    def test_understaffed_template_does_not_block_shift_assignment(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+            minimum_staffing=5,
+        )
+        employee = Employee.objects.create(tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100)
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=employee, node=self.node, date=date(2026, 8, 3), template=template
+        )
+        assignment.clean()  # keine Exception trotz nur einer von 5 Personen
+
+
+class TimeTemplateMinimumStaffingAPITests(APITestCase):
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_minimum_staffing_round_trips_through_serializer(self):
+        create_response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Nachtdienst",
+                "start_time": "22:00",
+                "end_time": "06:00",
+                "minimum_staffing": 3,
+            },
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data["minimum_staffing"], 3)
+
+        template_id = create_response.data["id"]
+        patch_response = self.client.patch(f"/api/time-templates/{template_id}/", {"minimum_staffing": 4})
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_response.data["minimum_staffing"], 4)

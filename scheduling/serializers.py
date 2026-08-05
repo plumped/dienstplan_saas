@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from core.models import Membership
+
 from .models import (
     Absence,
     Employee,
@@ -237,6 +239,21 @@ class AbsenceSerializer(serializers.ModelSerializer):
         for field in ["employee", "start_date", "end_date", "type"]:
             if field in attrs:
                 setattr(instance, field, attrs[field])
+        if self.instance is None:
+            # Neuanlage: status ist read_only und wird erst in
+            # AbsenceViewSet.perform_create() gesetzt (Admin/Planer ->
+            # sofort APPROVED, sonst PENDING) -- ohne diesen Vorgriff würde
+            # instance.clean() hier immer mit dem Model-Default PENDING
+            # prüfen und den Absenz/Zuweisungs-Konflikt-Check (nur bei
+            # APPROVED aktiv, siehe Absence.clean()) für von Admin/Planer
+            # sofort genehmigte Absenzen nie auslösen.
+            request = self.context.get("request")
+            is_manager = bool(
+                request
+                and request.membership
+                and request.membership.role in (Membership.Role.ADMIN, Membership.Role.PLANNER)
+            )
+            instance.status = Absence.Status.APPROVED if is_manager else Absence.Status.PENDING
         instance.clean()
         return attrs
 

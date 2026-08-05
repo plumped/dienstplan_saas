@@ -72,6 +72,10 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
   const [assignments, setAssignments] = useState([]);
   const [absences, setAbsences] = useState([]);
   const [preferences, setPreferences] = useState([]);
+  // Arbeitszeitmodell (Block 2.7 Punkt 7): Feiertage des Tenant-Kantons +
+  // manuelle Overrides (core.views.TenantHolidaysView) -- Map<isoDate, name>
+  // fürs Markieren der Tageszellen unten (analog zu PlanGrid.jsx).
+  const [holidays, setHolidays] = useState(new Map());
   const [loading, setLoading] = useState(true);
   // Wunschfrei/Wunschdienst (Block 2.13): höchstpersönlich -- auch im
   // Jahresplan nur stempelbar, solange die ausgewählte Person die eigene
@@ -127,14 +131,16 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
       api.getShiftAssignments(nodeId, dateFrom, dateTo),
       api.getAbsences(employeeId),
       api.getShiftPreferences(employeeId),
+      api.getTenantHolidays(year),
     ])
-      .then(([templatesRes, assignmentsRes, absencesRes, preferencesRes]) => {
+      .then(([templatesRes, assignmentsRes, absencesRes, preferencesRes, holidaysRes]) => {
         if (cancelled) return;
         setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === nodeId));
         const allAssignments = assignmentsRes.results ?? assignmentsRes;
         setAssignments(allAssignments.filter((a) => a.employee === employeeId));
         setAbsences(absencesRes.results ?? absencesRes);
         setPreferences(preferencesRes.results ?? preferencesRes);
+        setHolidays(new Map(holidaysRes.dates.map((entry) => [entry.date, entry.name])));
       })
       .catch((e) => onError(e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -514,6 +520,7 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
                     const marked = markedDates.has(date);
                     const kind = absence ? "absence" : assignment ? "shift" : "empty";
                     const color = absence ? "var(--ink-muted)" : template?.color;
+                    const holidayName = holidays.get(date);
                     let title = absence
                       ? `${date}: ${ABSENCE_TYPE_LABELS[absence.type] ?? absence.type} (${STATUS_LABELS[absence.status] ?? absence.status})`
                       : assignment && template
@@ -525,11 +532,12 @@ export default function YearPlan({ nodeId, employees, me, onError }) {
                           ? " -- Wunschfrei geäussert"
                           : ` -- Wunschdienst geäussert: ${wishedTemplate?.name ?? "?"}`;
                     }
+                    if (holidayName) title += ` -- Feiertag: ${holidayName}`;
                     return (
                       <button
                         key={date}
                         type="button"
-                        className={`year-day-cell${marked ? " is-marked" : ""}`}
+                        className={`year-day-cell${marked ? " is-marked" : ""}${holidayName ? " is-holiday" : ""}`}
                         title={title}
                         aria-pressed={marked}
                         onMouseDown={(e) => {

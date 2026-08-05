@@ -142,6 +142,9 @@ export const api = {
   // Feiertags-Overrides (Arbeitszeitmodell, Block 2.7 Punkt 7): Ausnahmen
   // zum kantonalen Kalender, siehe core.views.TenantHolidayOverrideViewSet.
   getTenantHolidayOverrides: () => requestAllPages("/tenant-holiday-overrides/"),
+  // Aufgelöste Feiertagsdaten fürs Planblatt/Jahresplan (siehe
+  // core.views.TenantHolidaysView) -- {year, dates: ["2026-01-01", ...]}.
+  getTenantHolidays: (year) => request(`/tenant/holidays/?year=${year}`),
   createTenantHolidayOverride: (payload) =>
     request("/tenant-holiday-overrides/", { method: "POST", body: payload }),
   deleteTenantHolidayOverride: (id) => request(`/tenant-holiday-overrides/${id}/`, { method: "DELETE" }),

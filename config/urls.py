@@ -3,7 +3,7 @@ from django.urls import include, path
 from rest_framework.authtoken.views import obtain_auth_token
 
 from core.admin_views import tenant_switch
-from core.views import MeView, TenantView
+from core.views import MeView, TenantHolidaysView, TenantView
 
 urlpatterns = [
     # Muss VOR 'admin/' stehen: admin.site.urls fängt sonst alles unter
@@ -15,6 +15,7 @@ urlpatterns = [
     path('api/', include('core.urls')),
     path('api/me/', MeView.as_view()),
     path('api/tenant/', TenantView.as_view()),
+    path('api/tenant/holidays/', TenantHolidaysView.as_view()),
     path('api/auth/token/', obtain_auth_token),
     path('api-auth/', include('rest_framework.urls')),
 ]

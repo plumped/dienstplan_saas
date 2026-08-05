@@ -365,12 +365,17 @@ class Employee(TenantScopedModel):
         weekly = self._effective_weekly_hours() * self.employment_pct / 100
         return weekly / 5
 
-    def _approved_absence_workdays(self, start_date, end_date):
+    def _approved_absence_dates(self, start_date, end_date):
         """
-        Menge der Mo-Fr-Tage in [start_date, end_date], die durch mindestens
-        eine genehmigte Absenz (Ferien/Krankheit/Sonstiges) abgedeckt sind --
-        fürs Arbeitszeitmodell (time_account_summary): diese Tage sind
-        Soll-neutral, siehe dort.
+        Menge ALLER Kalendertage (auch Wochenenden) in [start_date, end_date],
+        die durch mindestens eine genehmigte Absenz (Ferien/Krankheit/
+        Sonstiges) abgedeckt sind. Basis für _approved_absence_workdays()
+        (Soll-Neutralität) und für den defensiven Ist-Ausschluss in
+        time_account_summary() -- Absence.clean() verhindert seit dem Bugfix
+        2026-08 zwar neue Übrschneidungen mit ShiftAssignment, aber bereits
+        bestehende (z. B. vor dem Fix angelegte) Daten sollen den Saldo
+        trotzdem nicht verfälschen: eine Zuweisung an einem genehmigten
+        Absenztag zählt nicht als geleistete Ist-Zeit.
         """
         if start_date > end_date:
             return set()
@@ -385,10 +390,17 @@ class Employee(TenantScopedModel):
             cursor = max(absence.start_date, start_date)
             stop = min(absence.end_date, end_date)
             while cursor <= stop:
-                if cursor.weekday() < 5:
-                    covered.add(cursor)
+                covered.add(cursor)
                 cursor += timedelta(days=1)
         return covered
+
+    def _approved_absence_workdays(self, start_date, end_date):
+        """
+        Teilmenge von _approved_absence_dates(), die auf Mo-Fr fällt -- fürs
+        Arbeitszeitmodell (time_account_summary): diese Tage sind
+        Soll-neutral, siehe dort.
+        """
+        return {d for d in self._approved_absence_dates(start_date, end_date) if d.weekday() < 5}
 
     def _public_holiday_workdays(self, start_date, end_date):
         """Menge der Feiertage (Tenant.public_holidays) in [start_date, end_date], die auf Mo-Fr fallen."""
@@ -467,15 +479,21 @@ class Employee(TenantScopedModel):
             }
 
         workdays_elapsed = _count_workdays(period_start, as_of_date)
-        excused_days = self._public_holiday_workdays(
-            period_start, as_of_date
-        ) | self._approved_absence_workdays(period_start, as_of_date)
+        absence_dates = self._approved_absence_dates(period_start, as_of_date)
+        absence_workdays = {d for d in absence_dates if d.weekday() < 5}
+        excused_days = self._public_holiday_workdays(period_start, as_of_date) | absence_workdays
         daily = self._daily_target_hours()
         soll_kumuliert = (workdays_elapsed - len(excused_days)) * daily
 
-        assignments = ShiftAssignment.all_objects.filter(
-            employee=self, date__gte=period_start, date__lte=as_of_date
-        ).select_related("template", "time_record")
+        # Zuweisungen an genehmigten Absenztagen zählen nicht als Ist-Zeit
+        # (siehe _approved_absence_dates-Docstring) -- ein solcher Tag ist
+        # per Definition arbeitsfrei, unabhängig davon, ob versehentlich
+        # trotzdem eine Zuweisung dafür existiert.
+        assignments = (
+            ShiftAssignment.all_objects.filter(employee=self, date__gte=period_start, date__lte=as_of_date)
+            .exclude(date__in=absence_dates)
+            .select_related("template", "time_record")
+        )
         ist_kumuliert = 0.0
         is_provisional = False
         for assignment in assignments:
@@ -540,6 +558,14 @@ class Absence(TenantScopedModel):
     (AbsenceViewSet.approve/reject); von Admin/Planer selbst erstellte
     Absenzen sind sofort APPROVED (AbsenceViewSet.perform_create), weil die
     Freigabe in dem Fall bereits durch die anlegende Person erfolgt ist.
+
+    Umgekehrte Richtung (Bugfix 2026-08, Arbeitszeitmodell): eine APPROVED
+    Absenz darf ebenfalls nicht mit bereits bestehenden Schicht-Zuweisungen
+    überlappen (siehe clean()) -- vorher konnten beide nebeneinander
+    existieren, weil nur ShiftAssignment.clean() die eine Richtung prüfte.
+    Das liess Employee.time_account_summary() Zuweisungen an "Ferientagen"
+    weiterhin voll als Ist-Zeit zählen, obwohl der Tag gleichzeitig vom Soll
+    ausgenommen wurde -- ein stiller Überstunden-Bonus ohne Gegenwert.
     """
 
     class Type(models.TextChoices):
@@ -570,6 +596,18 @@ class Absence(TenantScopedModel):
     def clean(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValidationError("Enddatum darf nicht vor dem Startdatum liegen.")
+        if self.status == Absence.Status.APPROVED and self.employee_id and self.start_date and self.end_date:
+            conflicts = sorted(
+                ShiftAssignment.all_objects.filter(
+                    employee_id=self.employee_id, date__range=[self.start_date, self.end_date]
+                ).values_list("date", flat=True)
+            )
+            if conflicts:
+                raise ValidationError(
+                    f"{self.employee} hat im Zeitraum {self.start_date}–{self.end_date} bereits "
+                    f"{len(conflicts)} Dienst-Zuweisung(en) (z. B. {conflicts[0]}) -- diese zuerst im "
+                    "Planblatt entfernen, bevor eine genehmigte Absenz für diesen Zeitraum angelegt wird."
+                )
 
 
 class TimeTemplate(TenantScopedModel):

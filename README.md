@@ -507,6 +507,34 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      grundsätzlichen Frage, ob Zukunft überhaupt sofort zählen soll -- das jetzige Modell beantwortet
      das bewusst mit "nein" (striktes Gleitzeitkonto, siehe "Laufender Saldo" oben), well-defined
      statt der Cliff-Edge-Heuristik der Vorgängerversionen.
+   - **Bugfix: Absenz/Zuweisungs-Konflikt** (2026-08, nach Praxistest mit realistischem Szenario --
+     42h-Woche, 5 Wochen Ferien, ganzjährig Frühdienst Mo-Fr): eine genehmigte Ferien-Absenz konnte
+     bislang parallel zu bereits bestehenden `ShiftAssignment`-Einträgen an denselben Tagen existieren
+     (`ShiftAssignment.clean()` prüfte nur die Richtung "neue Zuweisung gegen bestehende Absenz", nie
+     umgekehrt). Der Saldo zählte diese Tage dann **doppelt gutgeschrieben**: einerseits als geleistete
+     Ist-Zeit (die Zuweisung war ja noch da), andererseits als Soll-neutral (wegen der Absenz) -- ergab
+     im gemeldeten Fall einen falschen Saldo von +211.6h statt der korrekten (durch Effekt A, die
+     strukturelle Pausenüberzeit, bereits erklärten) rund +143h. Fix in zwei Ebenen:
+     - **Prävention**: `Absence.clean()` lehnt jetzt eine APPROVED-Absenz ab, wenn im selben Zeitraum
+       noch `ShiftAssignment`-Zuweisungen bestehen ("... zuerst im Planblatt entfernen ..."). Greift
+       sowohl bei `AbsenceViewSet.approve()` (Mitarbeiter-Antrag wird genehmigt) als auch beim
+       **direkten Anlegen durch Admin/Planer** (die sofort als APPROVED gespeichert werden) --
+       `AbsenceSerializer.validate()` nimmt dafür den erst in `perform_create()` gesetzten Status
+       vorweg, sonst hätte `clean()` beim Neuanlegen immer noch mit dem Model-Default PENDING geprüft
+       und den Konflikt-Check nie ausgelöst (der eigentliche Grund, warum der erste Fix-Versuch beim
+       manuellen Nachstellen zunächst nicht griff).
+     - **Verteidigung**: `Employee.time_account_summary()` schliesst zusätzlich jede Zuweisung aus, die
+       auf einen genehmigten Absenztag fällt (`_approved_absence_dates()`, gemeinsam für Soll-
+       Neutralität und Ist-Ausschluss verwendet) -- falls doch einmal ein Konflikt in der Datenbank
+       landet (z. B. Altdaten), verfälscht er den Saldo nicht mehr.
+   - **Feiertage im Planblatt/Jahresplan sichtbar**: der Feiertagskalender (siehe oben) war zuvor nur
+     backend-intern in die Saldo-Berechnung verdrahtet, ohne dass Feiertage in der Planungsoberfläche
+     selbst zu erkennen waren. Neuer Endpoint `GET /api/tenant/holidays/?year=` (`TenantHolidaysView`,
+     Lesen für alle vier Rollen offen) liefert die aufgelösten Daten inkl. Namen
+     (`Tenant.public_holidays_with_names()`). `PlanGrid.jsx` und `YearPlan.jsx` markieren die
+     entsprechenden Spalten/Zellen mit einer eigenen `is-holiday`-Klasse (Tooltip zeigt den
+     Feiertagsnamen) -- im Planblatt zusätzlich zur bestehenden `is-weekend`-Markierung, im Jahresplan
+     als Rahmen um die Tageszelle.
 8. **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (aktuell: Ziehen auf
    eine belegte Zelle wird abgelehnt statt getauscht).
 9. **Mindestbesetzung pro Schicht/Node** definierbar machen und in der Regel-Engine warnen, wenn

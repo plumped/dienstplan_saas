@@ -709,6 +709,15 @@ class RuleEngineTests(TestCase):
 class AbsenceModelTests(TestCase):
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(17, 0),
+            break_minutes=60,
+        )
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -722,6 +731,52 @@ class AbsenceModelTests(TestCase):
         )
         with self.assertRaises(ValidationError):
             absence.clean()
+
+    # --- Bugfix 2026-08: Absenz darf nicht mit bestehenden Zuweisungen überlappen
+    # (umgekehrte Richtung zu ShiftAssignment._check_no_absence_conflict) ---
+
+    def test_approved_absence_overlapping_assignment_is_rejected(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 5), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 7),
+            status=Absence.Status.APPROVED,
+        )
+        with self.assertRaises(ValidationError):
+            absence.clean()
+
+    def test_pending_absence_overlapping_assignment_is_allowed(self):
+        # Nur genehmigte Absenzen blockieren -- ein offener Antrag soll die
+        # Planung nicht vorab einschränken (analog zu ShiftAssignment, das
+        # ebenfalls nur gegen APPROVED-Absenzen prüft).
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 5), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 7),
+            status=Absence.Status.PENDING,
+        )
+        absence.clean()  # darf nicht werfen
+
+    def test_approved_absence_without_conflict_passes(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 10), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 7),
+            status=Absence.Status.APPROVED,
+        )
+        absence.clean()  # kein überlappender Tag -- darf nicht werfen
 
 
 class TimeRecordTests(TestCase):
@@ -1560,6 +1615,29 @@ class EmployeeBalanceTests(APITestCase):
         # Soll: (7 Mo-Fr-Tage - 2 Krankheitstage) * 8.4h = 42h. Ist: 3*8h=24h.
         self.assertEqual(summary["saldo_hours"], -18.0)
 
+    def test_saldo_ignores_ist_from_assignment_conflicting_with_approved_absence(self):
+        # Bugfix 2026-08: Absence.clean() verhindert seit diesem Fix NEUE
+        # Überschneidungen, aber bereits bestehende (z. B. per Fixture/vor dem
+        # Fix angelegte) Daten dürfen den Saldo nicht verfälschen -- eine
+        # Zuweisung an einem genehmigten Absenztag darf NICHT als Ist-Zeit
+        # zählen (sonst "gratis" Überstunden ohne Gegen-Soll).
+        for d in (date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7), date(2026, 1, 8), date(2026, 1, 9)):
+            self._assign(self.employee, d)
+        # .create() statt full_clean() -- bewusst am neuen Validierungs-Schutz
+        # vorbei, um den "alten"/fehlerhaften Datenzustand nachzustellen.
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 1, 6),
+            end_date=date(2026, 1, 7),
+            type=Absence.Type.VACATION,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.time_account_summary(date(2026, 1, 9))
+        # Soll: (7 Mo-Fr-Tage - 2 Ferientage) * 8.4h = 42h. Ist zählt nur die
+        # 3 NICHT durch die Absenz abgedeckten Tage -- 3*8h=24h, nicht 5*8h=40h.
+        self.assertEqual(summary["saldo_hours"], -18.0)
+
     def test_saldo_pending_absence_does_not_reduce_soll(self):
         # Nur GENEHMIGTE Absenzen sind Soll-neutral -- eine offene Anfrage
         # darf den Saldo nicht schon beeinflussen.
@@ -2297,6 +2375,33 @@ class RoleBasedPermissionTests(APITestCase):
         response = self.client.post(f"/api/absences/{absence.id}/approve/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["status"], "approved")
+
+    def test_approve_rejects_absence_conflicting_with_existing_assignment(self):
+        # Bugfix 2026-08: alice_assignment (aus setUp) liegt am 2026-08-03 --
+        # eine Absenz über diesen Zeitraum darf nicht genehmigt werden,
+        # solange die Zuweisung nicht zuerst entfernt wurde.
+        absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 1), end_date=date(2026, 8, 5)
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/absences/{absence.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        absence.refresh_from_db()
+        self.assertEqual(absence.status, Absence.Status.PENDING)  # Status bleibt unverändert
+
+    def test_planner_created_absence_conflicting_with_existing_assignment_is_rejected(self):
+        # Bugfix 2026-08: von Admin/Planer angelegte Absenzen sind sofort
+        # APPROVED (siehe AbsenceViewSet.perform_create) -- der Konflikt-
+        # Check muss deshalb schon beim direkten Anlegen greifen, nicht erst
+        # bei approve() (AbsenceSerializer.validate() musste dafür den
+        # späteren Status vorwegnehmen, siehe Serializer-Docstring).
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            "/api/absences/",
+            {"employee": self.alice.id, "start_date": "2026-08-01", "end_date": "2026-08-05", "type": "vacation"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Absence.all_objects.filter(employee=self.alice, start_date=date(2026, 8, 1)).exists())
 
     def test_employee_created_absence_starts_pending_planner_created_is_approved(self):
         self.auth_as(self.alice_user)

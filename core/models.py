@@ -192,16 +192,19 @@ class Tenant(models.Model):
     def __str__(self):
         return self.name
 
-    def public_holidays(self, year):
+    def public_holidays_with_names(self, year):
         """
-        Menge der Feiertagsdaten (set[date]) für ein Kalenderjahr: kantonaler
-        Kalender (falls `canton` gesetzt) kombiniert mit den manuell
-        gepflegten TenantHolidayOverride-Einträgen (ADD/REMOVE) für lokale
-        Sonderfälle (z. B. eine Gemeinde-Patrozinie, die die Bibliothek nicht
-        kennt, oder ein kantonaler Feiertag, der für diesen Betrieb nicht
-        gilt). Ohne gesetzten Kanton nur die Overrides selbst.
+        Feiertagsdaten mit Namen (dict[date, str]) für ein Kalenderjahr:
+        kantonaler Kalender (falls `canton` gesetzt) kombiniert mit den
+        manuell gepflegten TenantHolidayOverride-Einträgen (ADD/REMOVE) für
+        lokale Sonderfälle (z. B. eine Gemeinde-Patrozinie, die die
+        Bibliothek nicht kennt, oder ein kantonaler Feiertag, der für diesen
+        Betrieb nicht gilt). Ohne gesetzten Kanton nur die Overrides selbst.
+        Basis für public_holidays() (nur die Daten, für die Saldo-Berechnung)
+        und core.views.TenantHolidaysView (mit Namen, fürs Planblatt/
+        Jahresplan).
         """
-        base = set(holidays.Switzerland(subdiv=self.canton, years=year)) if self.canton else set()
+        base = dict(holidays.Switzerland(subdiv=self.canton, years=year)) if self.canton else {}
         # Explizit über all_objects statt der reverse-Accessor-Default-Manager
         # (TenantScopedManager, ContextVar-gefiltert) -- self ist hier schon
         # eine konkrete Tenant-Instanz, das explizite tenant=self-Filter ist
@@ -211,10 +214,14 @@ class Tenant(models.Model):
         overrides = TenantHolidayOverride.all_objects.filter(tenant=self, date__year=year)
         for override in overrides:
             if override.kind == TenantHolidayOverride.Kind.ADD:
-                base.add(override.date)
+                base[override.date] = override.name or "Feiertag"
             else:
-                base.discard(override.date)
+                base.pop(override.date, None)
         return base
+
+    def public_holidays(self, year):
+        """Menge der Feiertagsdaten (set[date]) -- siehe public_holidays_with_names()."""
+        return set(self.public_holidays_with_names(year))
 
 
 class Membership(models.Model):

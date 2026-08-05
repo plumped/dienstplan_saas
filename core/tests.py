@@ -3,6 +3,7 @@ from datetime import date
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.test import RequestFactory, TestCase
+from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
@@ -262,6 +263,53 @@ class TenantConfigAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.canton, "ZH")
+
+
+class TenantHolidaysAPITests(APITestCase):
+    """
+    GET /api/tenant/holidays/ (Arbeitszeitmodell, README Block 2.7 Punkt 7):
+    aufgelöste Feiertagsdaten fürs Planblatt/Jahresplan -- siehe
+    core.views.TenantHolidaysView.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a", canton="ZH")
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _membership(self, username, role):
+        user = User.objects.create_user(username=username, password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=self.tenant, role=role)
+        return user
+
+    def test_returns_resolved_dates_for_given_year(self):
+        self.auth_as(self._membership("employee", Membership.Role.EMPLOYEE))
+        response = self.client.get("/api/tenant/holidays/?year=2026")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["year"], 2026)
+        self.assertIn("2026-01-01", [entry["date"] for entry in response.data["dates"]])
+        neujahr = next(entry for entry in response.data["dates"] if entry["date"] == "2026-01-01")
+        self.assertTrue(neujahr["name"])
+
+    def test_defaults_to_current_year_without_param(self):
+        self.auth_as(self._membership("employee", Membership.Role.EMPLOYEE))
+        response = self.client.get("/api/tenant/holidays/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["year"], timezone.localdate().year)
+
+    def test_rejects_invalid_year_param(self):
+        self.auth_as(self._membership("employee", Membership.Role.EMPLOYEE))
+        response = self.client.get("/api/tenant/holidays/?year=not-a-year")
+        self.assertEqual(response.status_code, 400)
+
+    def test_empty_without_canton(self):
+        self.tenant.canton = ""
+        self.tenant.save(update_fields=["canton"])
+        self.auth_as(self._membership("employee", Membership.Role.EMPLOYEE))
+        response = self.client.get("/api/tenant/holidays/?year=2026")
+        self.assertEqual(response.data["dates"], [])
 
 
 class TenantPublicHolidaysTests(TestCase):

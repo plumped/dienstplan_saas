@@ -1,5 +1,6 @@
+from django.utils import timezone
 from rest_framework import viewsets
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -10,6 +11,35 @@ from core.serializers import TenantHolidayOverrideSerializer, TenantSerializer
 from core.tenancy import resolve_membership_for_user
 
 _EMPTY_TASK_COUNTS = {"absences": 0, "trades": 0, "time_records": 0}
+
+
+class TenantScopedAPIMixin:
+    """
+    Gemeinsame initial()-Logik für core-Views, die auf request.tenant/
+    request.membership angewiesen sind (core.permissions), aber -- anders
+    als scheduling.views.TenantScopedViewSet -- kein scheduling importieren
+    dürfen (core bleibt die "unterste" App, siehe MeView-Docstring). request.
+    tenant wird bewusst hier gesetzt, NACH self.perform_authentication()
+    (Token-/Session-Login), nicht in einer Middleware, wo request.user bei
+    Token-Logins noch nicht aufgelöst wäre (siehe core/tenancy.py). Vorher
+    dreimal dupliziert (TenantView, TenantHolidayOverrideViewSet,
+    TenantHolidaysView) -- ab hier ein gemeinsamer Mixin.
+    """
+
+    def initial(self, request, *args, **kwargs):
+        self.format_kwarg = self.get_format_suffix(**kwargs)
+        neg = self.perform_content_negotiation(request)
+        request.accepted_renderer, request.accepted_media_type = neg
+        version, scheme = self.determine_version(request, *args, **kwargs)
+        request.version, request.versioning_scheme = version, scheme
+
+        self.perform_authentication(request)
+        membership = resolve_membership_for_user(request.user)
+        request.membership = membership
+        request.tenant = membership.tenant if membership else None
+
+        self.check_permissions(request)
+        self.check_throttles(request)
 
 
 def _task_counts(membership, employee):
@@ -95,7 +125,7 @@ class MeView(APIView):
         )
 
 
-class TenantView(APIView):
+class TenantView(TenantScopedAPIMixin, APIView):
     """
     Tenant-Konfiguration (MVP-Fahrplan Block 2, Punkt 14): GET liefert die
     numerischen ArG-/Zuschlags-Grenzwerte des eigenen Tenants (Lesen wie
@@ -103,31 +133,9 @@ class TenantView(APIView):
     (Admin-only, siehe core.permissions.IsTenantAdmin) -- bislang nur im
     Django-Admin editierbar. Single-Object-Endpoint analog zu MeView, kein
     ViewSet mit Liste: es gibt genau einen Tenant pro eingeloggtem Account.
-
-    request.membership wird hier wie in
-    scheduling.views.TenantScopedViewSet.initial() aufgelöst -- NACH der
-    Authentifizierung, VOR der Permission-Prüfung, weil core.permissions
-    das erwartet. Nicht in einer Middleware (siehe core/tenancy.py):
-    request.user ist an der Middleware-Stelle bei Token-Logins noch nicht
-    aufgelöst.
     """
 
     permission_classes = [IsAuthenticated, IsTenantAdmin]
-
-    def initial(self, request, *args, **kwargs):
-        self.format_kwarg = self.get_format_suffix(**kwargs)
-        neg = self.perform_content_negotiation(request)
-        request.accepted_renderer, request.accepted_media_type = neg
-        version, scheme = self.determine_version(request, *args, **kwargs)
-        request.version, request.versioning_scheme = version, scheme
-
-        self.perform_authentication(request)
-        membership = resolve_membership_for_user(request.user)
-        request.membership = membership
-        request.tenant = membership.tenant if membership else None
-
-        self.check_permissions(request)
-        self.check_throttles(request)
 
     def get(self, request):
         if not request.tenant:
@@ -143,38 +151,17 @@ class TenantView(APIView):
         return Response(serializer.data)
 
 
-class TenantHolidayOverrideViewSet(viewsets.ModelViewSet):
+class TenantHolidayOverrideViewSet(TenantScopedAPIMixin, viewsets.ModelViewSet):
     """
     Manuelle Feiertags-Ausnahmen zum kantonalen Kalender (Arbeitszeitmodell,
     README Block 2.7 Punkt 7, siehe Tenant.public_holidays()). Selbe
-    initial()/Berechtigungs-Struktur wie TenantView, da Teil derselben
-    Tenant-Konfiguration -- Lesen für alle vier Rollen offen, Schreiben nur
-    Admin (IsTenantAdmin).
-
-    Absichtlich kein scheduling.views.TenantScopedViewSet als Basis: core
-    bleibt die "unterste" App, die scheduling NICHT importiert (siehe
-    MeView-Docstring) -- deshalb hier derselbe initial()-Aufbau wie in
-    TenantView dupliziert statt eine Abhängigkeit in die andere Richtung zu
-    schaffen.
+    Berechtigungs-Struktur wie TenantView, da Teil derselben Tenant-
+    Konfiguration -- Lesen für alle vier Rollen offen, Schreiben nur Admin
+    (IsTenantAdmin).
     """
 
     serializer_class = TenantHolidayOverrideSerializer
     permission_classes = [IsAuthenticated, IsTenantAdmin]
-
-    def initial(self, request, *args, **kwargs):
-        self.format_kwarg = self.get_format_suffix(**kwargs)
-        neg = self.perform_content_negotiation(request)
-        request.accepted_renderer, request.accepted_media_type = neg
-        version, scheme = self.determine_version(request, *args, **kwargs)
-        request.version, request.versioning_scheme = version, scheme
-
-        self.perform_authentication(request)
-        membership = resolve_membership_for_user(request.user)
-        request.membership = membership
-        request.tenant = membership.tenant if membership else None
-
-        self.check_permissions(request)
-        self.check_throttles(request)
 
     def get_queryset(self):
         # Explizit über all_objects + request.tenant statt ContextVar-Manager
@@ -186,3 +173,34 @@ class TenantHolidayOverrideViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(tenant=self.request.tenant)
+
+
+class TenantHolidaysView(TenantScopedAPIMixin, APIView):
+    """
+    Aufgelöste Feiertagsdaten (inkl. Name) für ein Kalenderjahr
+    (Arbeitszeitmodell, README Block 2.7 Punkt 7) -- Grundlage für die
+    Feiertags-Markierung im Planblatt/Jahresplan (PlanGrid.jsx/YearPlan.jsx).
+    Anders als /api/tenant/ (dort steht nur der Kanton-Code) liefert dieser
+    Endpoint die vom Kanton + TenantHolidayOverride bereits aufgelöste Liste,
+    weil die eigentliche Berechnung (holidays-Bibliothek, bewegliche Feste)
+    bewusst nur im Backend passiert -- siehe
+    Tenant.public_holidays_with_names(). Lesen wie bei /api/tenant/ für alle
+    vier Rollen offen, kein eigener Schreibzugriff (die Konfiguration läuft
+    über canton/TenantHolidayOverride).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not request.tenant:
+            raise NotFound("Kein Tenant zugeordnet.")
+        year_param = request.query_params.get("year")
+        if year_param:
+            try:
+                year = int(year_param)
+            except ValueError:
+                raise ValidationError({"year": "Ungültiges Jahr."})
+        else:
+            year = timezone.localdate().year
+        entries = sorted(request.tenant.public_holidays_with_names(year).items())
+        return Response({"year": year, "dates": [{"date": d.isoformat(), "name": n} for d, n in entries]})

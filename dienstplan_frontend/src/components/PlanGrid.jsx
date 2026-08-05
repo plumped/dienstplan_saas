@@ -29,6 +29,10 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
   const [absences, setAbsences] = useState([]);
   const [timeRecords, setTimeRecords] = useState([]);
   const [preferences, setPreferences] = useState([]);
+  // Arbeitszeitmodell (Block 2.7 Punkt 7): Feiertage des Tenant-Kantons +
+  // manuelle Overrides (core.views.TenantHolidaysView) -- Map<isoDate, name>
+  // fürs Markieren der Spalten/Zellen unten.
+  const [holidays, setHolidays] = useState(new Map());
   const [loading, setLoading] = useState(true);
   // Mehrfachauswahl + Schicht-Stempel (README-Task, inspiriert von Polypoint):
   // Zellen markieren, dann per Klick auf einen Schichttyp alle markierten
@@ -72,8 +76,9 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
       api.getAbsences(),
       api.getTimeRecords(dateFrom, dateTo),
       preferencesRequest,
+      api.getTenantHolidays(year),
     ])
-      .then(([templatesRes, assignmentsRes, absencesRes, timeRecordsRes, preferencesRes]) => {
+      .then(([templatesRes, assignmentsRes, absencesRes, timeRecordsRes, preferencesRes, holidaysRes]) => {
         if (cancelled) return;
         setTemplates((templatesRes.results ?? templatesRes).filter((t) => t.node === nodeId));
         setAssignments(assignmentsRes.results ?? assignmentsRes);
@@ -84,6 +89,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
         setAbsences(absenceList.filter((a) => a.status === "approved"));
         setTimeRecords(timeRecordsRes.results ?? timeRecordsRes);
         setPreferences(preferencesRes.results ?? preferencesRes);
+        setHolidays(new Map(holidaysRes.dates.map((entry) => [entry.date, entry.name])));
       })
       .catch((e) => onError(e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -91,7 +97,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeId, dateFrom, dateTo, canManage, ownEmployeeId]);
+  }, [nodeId, dateFrom, dateTo, canManage, ownEmployeeId, year]);
 
   // Beendet einen laufenden Ziehvorgang auch dann, wenn die Maustaste
   // ausserhalb einer Zelle losgelassen wird (z. B. nach dem Verlassen des
@@ -439,8 +445,13 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
               <th className="col-employee">Mitarbeiter</th>
               {days.map((d) => {
                 const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
+                const holidayName = holidays.get(isoDate(year, month, d));
                 return (
-                  <th key={d} className={weekend ? "is-weekend" : ""}>
+                  <th
+                    key={d}
+                    className={[weekend && "is-weekend", holidayName && "is-holiday"].filter(Boolean).join(" ")}
+                    title={holidayName || undefined}
+                  >
                     <span className="day-num">{d}</span>
                     <span className="day-weekday">{weekdayLabel(year, month, d)}</span>
                   </th>
@@ -480,6 +491,7 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
                   const template = templates.find((t) => t.id === assignment?.template);
                   const absence = findAbsence(emp.id, date);
                   const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
+                  const holidayName = holidays.get(date);
                   const canOfferTrade = canManage || me?.employee?.id === emp.id;
                   // Block 1.13: Ist-Zeit-Badge nur auf der eigenen, bereits
                   // stattgefundenen Schicht -- unabhängig von canManage, damit
@@ -492,7 +504,11 @@ export default function PlanGrid({ nodeId, year, month, employees, me, onError }
                   const preference = preferenceMap.get(`${emp.id}:${date}`);
                   const canEditOwnWish = ownEmployeeId === emp.id && date >= todayIso;
                   return (
-                    <td key={d} className={weekend ? "is-weekend" : ""}>
+                    <td
+                      key={d}
+                      className={[weekend && "is-weekend", holidayName && "is-holiday"].filter(Boolean).join(" ")}
+                      title={holidayName || undefined}
+                    >
                       <ShiftCell
                         templates={templates}
                         selectedTemplateId={assignment?.template ?? null}

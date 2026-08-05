@@ -366,6 +366,10 @@ class AbsenceViewSet(TenantScopedViewSet):
         if absence.status != Absence.Status.PENDING:
             raise ValidationError("Nur offene Absenzanträge können genehmigt werden.")
         absence.status = Absence.Status.APPROVED
+        try:
+            absence.clean()
+        except DjangoValidationError as e:
+            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
         absence.save(update_fields=["status"])
         notify_absence_decision(absence)
         return Response(self.get_serializer(absence).data)

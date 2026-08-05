@@ -521,6 +521,10 @@ main {
   background: var(--primary-soft);
 }
 
+.plan-grid thead th.is-holiday {
+  background: #fde3c8;
+}
+
 .day-num {
   display: block;
   font-size: 13px;
@@ -661,6 +665,10 @@ thead .col-employee {
 
 .plan-grid td.is-weekend {
   background: #fbfcfb;
+}
+
+.plan-grid td.is-holiday {
+  background: #fef1e2;
 }
 
 .shift-chip-btn {
@@ -1518,6 +1526,11 @@ thead .col-employee {
 
 .year-day-cell.is-marked .year-day-fill {
   box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.year-day-cell.is-holiday .year-day-fill {
+  outline: 2px solid #e8963c;
+  outline-offset: -2px;
 }
 
 .year-day-cell.is-marked .select-check {

@@ -36,6 +36,14 @@ export default function AbsencePanel({ employees, me, onError }) {
   const defaultEmployeeId = canManage ? employees[0]?.id ?? "" : ownEmployeeId ?? "";
 
   const [absences, setAbsences] = useState([]);
+  // Bugfix: der Header-Badge (core.views._task_counts) zählt PENDING-Absenzen
+  // tenant-weit, die Liste unten filterte aber bisher immer auf die gerade
+  // gewählte Station -- eine offene Absenz aus einer anderen Station war für
+  // Admin/Planer dadurch nirgends sichtbar/genehmigbar und der Badge blieb
+  // dauerhaft hängen. allEmployeesById liefert die Namen dafür (die
+  // Stations-gescopte `employees`-Prop kennt fremde Stationen nicht), analog
+  // zu TradeRequestPanel.jsx, das aus demselben Grund schon tenant-weit lädt.
+  const [allEmployeesById, setAllEmployeesById] = useState(new Map());
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState(() => emptyForm(defaultEmployeeId));
   const [saving, setSaving] = useState(false);
@@ -46,15 +54,36 @@ export default function AbsencePanel({ employees, me, onError }) {
   }, [employees, canManage, ownEmployeeId]);
 
   useEffect(() => {
+    if (!canManage) return;
+    let cancelled = false;
+    api
+      .getEmployees()
+      .then((data) => {
+        if (cancelled) return;
+        const list = data.results ?? data;
+        setAllEmployeesById(new Map(list.map((e) => [e.id, e])));
+      })
+      .catch((e) => onError(e.message));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canManage]);
+
+  useEffect(() => {
     let cancelled = false;
     setLoading(true);
     api
       .getAbsences()
       .then((data) => {
         if (cancelled) return;
-        const employeeIds = new Set(employees.map((e) => e.id));
-        const list = (data.results ?? data).filter((a) => employeeIds.has(a.employee));
-        setAbsences(list);
+        const list = data.results ?? data;
+        if (canManage) {
+          setAbsences(list);
+        } else {
+          const employeeIds = new Set(employees.map((e) => e.id));
+          setAbsences(list.filter((a) => employeeIds.has(a.employee)));
+        }
       })
       .catch((e) => onError(e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -62,7 +91,7 @@ export default function AbsencePanel({ employees, me, onError }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees]);
+  }, [employees, canManage]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -116,7 +145,7 @@ export default function AbsencePanel({ employees, me, onError }) {
   }
 
   function employeeName(id) {
-    const employee = employees.find((e) => e.id === id);
+    const employee = canManage ? allEmployeesById.get(id) : employees.find((e) => e.id === id);
     return employee ? `${employee.first_name} ${employee.last_name}` : `#${id}`;
   }
 
@@ -204,7 +233,9 @@ export default function AbsencePanel({ employees, me, onError }) {
         {loading ? (
           <p className="loading-state">Wird geladen …</p>
         ) : absences.length === 0 ? (
-          <p className="empty-state">Keine Abwesenheiten für diese Station erfasst.</p>
+          <p className="empty-state">
+            {canManage ? "Keine Abwesenheiten erfasst." : "Keine Abwesenheiten für diese Station erfasst."}
+          </p>
         ) : (
           <ul className="entry-list">
             {absences.map((a) => {

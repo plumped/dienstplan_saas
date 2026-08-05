@@ -595,6 +595,22 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       `other`) -- im Jahresplan aktuell nicht separat abgebildet, siehe Diskussion oben. Eine
       read-only Mehr-Personen-Jahres-Heatmap pro Station (ursprünglich als Alternative skizziert)
       bleibt eine mögliche spätere Ergänzung, aber nachrangig.
+    - ✅ **Bugfix (2026-08)**: `YearPlan.jsx` fragte `api.getShiftAssignments(nodeId, dateFrom,
+      dateTo)` für ein **ganzes Kalenderjahr und die ganze Station** ab, aber `api.js` las nur
+      `response.results` -- die **erste Seite** der DRF-Pagination (`PAGE_SIZE = 50`, siehe
+      `config/settings.py`). Bei durchgehender Mo-Fr-Planung reichte das schon nach gut 10 Wochen
+      nicht mehr: alle weiteren Zuweisungen (z. B. im August) fehlten im Jahresplan kommentarlos,
+      obwohl sie im Planblatt (das nur je einen Monat abfragt, nie in die Nähe von 50 Einträgen
+      kommt) korrekt sichtbar waren. Fix: neue Funktion `requestAllPages()` in `api.js`, die den
+      `next`-Link der DRF-Pagination verfolgt und alle Seiten zu einem `{results: [...]}` zusammen-
+      führt -- bestehende Aufrufer (`data.results ?? data`) mussten dafür nicht angepasst werden.
+      Angewendet auf alle Listen-GET-Endpoints (`getShiftAssignments`, `getAbsences`,
+      `getShiftPreferences`, `getTimeRecords`, `getEmployees`, `getNodes`, `getSkills`,
+      `getTimeTemplates`, `getShiftTradeRequests`, `getTenantHolidayOverrides`), nicht nur an der
+      ursprünglich gemeldeten Stelle, weil derselbe Bug bei jedem dieser Endpoints latent
+      vorlag, sobald ein Tenant über 50 Datensätze in einer Liste ansammelt. Verifiziert per
+      Playwright: 51 Zuweisungen (50 Mo-Fr-Tage Jan-Mitte März + 1 im August) -- vor dem Fix fehlte
+      der August-Eintrag im Jahresplan, danach sichtbar.
 13. ✅ **Wunschfrei + Wunschdienst -- Mitarbeitende tragen eigene Wünsche selbst ein**: löst die in
     Punkt 12 offen gelassene Frage nach "Wunschfrei" auf. Bewusst **kein** neuer `Absence.Type`,
     sondern ein eigenständiges, leichtgewichtiges Modell `ShiftPreference` (`employee`, `date`,

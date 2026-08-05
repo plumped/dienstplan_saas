@@ -42,6 +42,24 @@ function notifyTasksChanged() {
   taskListeners.forEach((listener) => listener());
 }
 
+async function parseErrorResponse(res) {
+  const detail = await res.json().catch(() => ({}));
+  const message =
+    detail.non_field_errors?.[0] ||
+    detail.detail ||
+    Object.values(detail)[0]?.[0] ||
+    `Fehler (HTTP ${res.status})`;
+  const error = new Error(message);
+  // Block 2.16: DRF liefert Validierungsfehler strukturiert pro Feld
+  // (z. B. {"minimum_rest_hours": ["..."]}) -- .message bleibt wie bisher
+  // ein einzelner String für Aufrufer, die nur den globalen Fehlerbanner
+  // füllen; .fields gibt Formularen mit vielen Feldern (EmployeeSettings,
+  // TenantSettings) die Möglichkeit, Fehler direkt am betroffenen Feld
+  // statt nur global anzuzeigen.
+  error.fields = detail;
+  return error;
+}
+
 async function request(
   path,
   { method = "GET", body, base = API_BASE, affectsBalance = false, affectsTasks = false } = {}
@@ -60,27 +78,42 @@ async function request(
     setToken(null);
     throw new Error("unauthorized");
   }
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({}));
-    const message =
-      detail.non_field_errors?.[0] ||
-      detail.detail ||
-      Object.values(detail)[0]?.[0] ||
-      `Fehler (HTTP ${res.status})`;
-    const error = new Error(message);
-    // Block 2.16: DRF liefert Validierungsfehler strukturiert pro Feld
-    // (z. B. {"minimum_rest_hours": ["..."]}) -- .message bleibt wie bisher
-    // ein einzelner String für Aufrufer, die nur den globalen Fehlerbanner
-    // füllen; .fields gibt Formularen mit vielen Feldern (EmployeeSettings,
-    // TenantSettings) die Möglichkeit, Fehler direkt am betroffenen Feld
-    // statt nur global anzuzeigen.
-    error.fields = detail;
-    throw error;
-  }
+  if (!res.ok) throw await parseErrorResponse(res);
   if (affectsBalance) notifyBalanceChanged();
   if (affectsTasks) notifyTasksChanged();
   if (res.status === 204) return null;
   return res.json();
+}
+
+// Bugfix: Listen-Endpoints sind DRF-paginiert (PAGE_SIZE=50, siehe
+// config/settings.py) -- request() allein liefert nur die erste Seite.
+// Für Aufrufer, die z. B. ein ganzes Jahr an Zuweisungen für eine Station
+// abfragen (YearPlan.jsx), reicht eine Seite schnell nicht mehr (bereits ab
+// ca. 10 Wochen Mo-Fr-Diensten), und weiter zurückliegende Einträge fehlen
+// dann kommentarlos. requestAllPages() folgt die `next`-URLs der DRF-
+// Pagination und gibt alle Seiten zusammengeführt zurück, im selben
+// {results: [...]}-Format wie eine einzelne Seite -- bestehende Aufrufer
+// (`data.results ?? data`) müssen dafür nicht angepasst werden.
+async function requestAllPages(path, options = {}) {
+  const headers = { "Content-Type": "application/json" };
+  const token = getToken();
+  if (token) headers.Authorization = `Token ${token}`;
+
+  let url = `${API_BASE}${path}`;
+  const results = [];
+  while (url) {
+    const res = await fetch(url, { headers });
+    if (res.status === 401) {
+      setToken(null);
+      throw new Error("unauthorized");
+    }
+    if (!res.ok) throw await parseErrorResponse(res);
+    const data = await res.json();
+    if (Array.isArray(data)) return data; // unpaginierter Endpoint -- unverändert durchreichen
+    results.push(...(data.results ?? []));
+    url = data.next;
+  }
+  return { results };
 }
 
 export const api = {
@@ -108,35 +141,35 @@ export const api = {
 
   // Feiertags-Overrides (Arbeitszeitmodell, Block 2.7 Punkt 7): Ausnahmen
   // zum kantonalen Kalender, siehe core.views.TenantHolidayOverrideViewSet.
-  getTenantHolidayOverrides: () => request("/tenant-holiday-overrides/"),
+  getTenantHolidayOverrides: () => requestAllPages("/tenant-holiday-overrides/"),
   createTenantHolidayOverride: (payload) =>
     request("/tenant-holiday-overrides/", { method: "POST", body: payload }),
   deleteTenantHolidayOverride: (id) => request(`/tenant-holiday-overrides/${id}/`, { method: "DELETE" }),
 
-  getNodes: () => request("/nodes/"),
+  getNodes: () => requestAllPages("/nodes/"),
   createNode: (payload) => request("/nodes/", { method: "POST", body: payload }),
   updateNode: (id, payload) => request(`/nodes/${id}/`, { method: "PATCH", body: payload }),
   deleteNode: (id) => request(`/nodes/${id}/`, { method: "DELETE" }),
 
-  getSkills: () => request("/skills/"),
+  getSkills: () => requestAllPages("/skills/"),
   createSkill: (payload) => request("/skills/", { method: "POST", body: payload }),
   updateSkill: (id, payload) => request(`/skills/${id}/`, { method: "PATCH", body: payload }),
   deleteSkill: (id) => request(`/skills/${id}/`, { method: "DELETE" }),
 
-  getEmployees: () => request("/employees/"),
+  getEmployees: () => requestAllPages("/employees/"),
   createEmployee: (payload) => request("/employees/", { method: "POST", body: payload }),
   updateEmployee: (id, payload) =>
     request(`/employees/${id}/`, { method: "PATCH", body: payload, affectsBalance: true }),
   getEmployeeBalance: (id) => request(`/employees/${id}/balance/`),
   getEmployeeWeeklyOvertime: (id, week) => request(`/employees/${id}/weekly-overtime/?week=${week}`),
 
-  getTimeTemplates: () => request("/time-templates/"),
+  getTimeTemplates: () => requestAllPages("/time-templates/"),
   createTimeTemplate: (payload) => request("/time-templates/", { method: "POST", body: payload }),
   updateTimeTemplate: (id, payload) =>
     request(`/time-templates/${id}/`, { method: "PATCH", body: payload }),
   deleteTimeTemplate: (id) => request(`/time-templates/${id}/`, { method: "DELETE" }),
   getShiftAssignments: (nodeId, dateFrom, dateTo) =>
-    request(`/shift-assignments/?node=${nodeId}&date_from=${dateFrom}&date_to=${dateTo}`),
+    requestAllPages(`/shift-assignments/?node=${nodeId}&date_from=${dateFrom}&date_to=${dateTo}`),
   getShiftAssignment: (id) => request(`/shift-assignments/${id}/`),
   createShiftAssignment: (payload) =>
     request("/shift-assignments/", { method: "POST", body: payload, affectsBalance: true }),
@@ -146,7 +179,7 @@ export const api = {
     request(`/shift-assignments/${id}/`, { method: "DELETE", affectsBalance: true }),
 
   getAbsences: (employeeId) =>
-    request(employeeId ? `/absences/?employee=${employeeId}` : "/absences/"),
+    requestAllPages(employeeId ? `/absences/?employee=${employeeId}` : "/absences/"),
   createAbsence: (payload) =>
     request("/absences/", { method: "POST", body: payload, affectsBalance: true, affectsTasks: true }),
   deleteAbsence: (id) => request(`/absences/${id}/`, { method: "DELETE", affectsBalance: true }),
@@ -155,7 +188,7 @@ export const api = {
   rejectAbsence: (id) =>
     request(`/absences/${id}/reject/`, { method: "POST", affectsBalance: true, affectsTasks: true }),
 
-  getShiftTradeRequests: () => request("/shift-trade-requests/"),
+  getShiftTradeRequests: () => requestAllPages("/shift-trade-requests/"),
   createShiftTradeRequest: (payload) =>
     request("/shift-trade-requests/", { method: "POST", body: payload, affectsTasks: true }),
   acceptShiftTradeRequest: (id) =>
@@ -179,14 +212,14 @@ export const api = {
   // Wunschfrei/Wunschdienst (Block 2.13): reine Selbstauskunft, kein Effekt
   // auf den Saldo -- deshalb kein affectsBalance.
   getShiftPreferences: (employeeId) =>
-    request(employeeId ? `/shift-preferences/?employee=${employeeId}` : "/shift-preferences/"),
+    requestAllPages(employeeId ? `/shift-preferences/?employee=${employeeId}` : "/shift-preferences/"),
   createShiftPreference: (payload) => request("/shift-preferences/", { method: "POST", body: payload }),
   updateShiftPreference: (id, payload) =>
     request(`/shift-preferences/${id}/`, { method: "PATCH", body: payload }),
   deleteShiftPreference: (id) => request(`/shift-preferences/${id}/`, { method: "DELETE" }),
 
   getTimeRecords: (dateFrom, dateTo) =>
-    request(
+    requestAllPages(
       dateFrom && dateTo ? `/time-records/?date_from=${dateFrom}&date_to=${dateTo}` : "/time-records/"
     ),
   createTimeRecord: (payload) =>

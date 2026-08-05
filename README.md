@@ -739,6 +739,40 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       echten Nutzen.
     - Manuell im Browser verifiziert (Playwright): Kachel-Übersicht, Formular-Gliederung,
       Hint-Texte, Suchfilter (11 Testmitarbeitende, korrekt gefiltert), Rücksprung zur Übersicht.
+17. **Teams innerhalb einer gemeinsamen Station/Abteilung im Planblatt** -- Nutzer-Feedback
+    (2026-08, Beispiel ICT): eine Abteilung wie "ICT" hat oft mehrere Teams (z. B. Infrastruktur,
+    Applikationen, Support), die alle ein **gemeinsames Planblatt** teilen (dieselbe Station/derselbe
+    `Node`), aber im Alltag primär das **eigene Team** im Blick haben wollen, ohne den Überblick
+    über die ganze Abteilung zu verlieren. Aktuell zeigt das Planblatt pro Aufruf strikt genau
+    **einen** `Node` (`App.jsx`: `employees.filter(e => e.nodes.includes(nodeId))`, exakter
+    Treffer, keine Kind-Knoten) -- eine Abteilung mit Team-Aufteilung liesse sich also nur über
+    mehrere separate, flache Stationen abbilden, ohne die gewünschte "Gesamtansicht mit optischer
+    Gruppierung" in einer einzigen Tabelle.
+    - **Naheliegender Umsetzungsweg** (nicht implementiert, nur skizziert): `Node` ist bereits ein
+      Baum (`django-treebeard`/`MP_Node`, siehe `scheduling/models.py`), Teams liessen sich also
+      ohne neues Modell als **Kind-Knoten** unter der Abteilung abbilden (z. B. "ICT" →
+      "ICT/Infrastruktur", "ICT/Applikationen", "ICT/Support"), `Employee.nodes` (M2M) verweist wie
+      gehabt auf den konkreten Team-Knoten. Das Planblatt bräuchte dann für den Abteilungsknoten
+      einen Modus "inkl. Kind-Knoten anzeigen" (`node.get_descendants()`, treebeard bringt das
+      Baum-Tooling bereits mit), der die Mitarbeitendenliste weiterhin in einer gemeinsamen Tabelle
+      zeigt, aber nach Team-Zugehörigkeit gruppiert -- z. B. eine dezente Zwischenzeile/Trennlinie
+      mit Team-Namen zwischen den Blöcken (ähnlich der bestehenden `<th>`-Kopfzeile), statt separate
+      Tabellen, damit eine abteilungsweite Zeile (z. B. Ferien-Überschneidungen über Teams hinweg)
+      weiterhin auf einen Blick sichtbar bleibt.
+    - **Teamleiter-Highlighting**: dafür fehlt aktuell jedes Datenfeld -- am einfachsten ein neues
+      Boolean `is_team_lead` direkt auf `Employee` (analog zu den bestehenden Zusatzfeldern wie
+      `birth_date`) oder, falls eine Person in mehreren Teams unterschiedliche Rollen hat, ein
+      `through`-Modell auf `Employee.nodes` (`EmployeeNodeMembership` mit `is_lead`-Flag pro
+      Zuordnung) -- Letzteres sauberer, aber ein grösserer Umbau der bestehenden M2M-Beziehung.
+      Visuell im Planblatt z. B. als dezentes Badge/fette Schrift in der Mitarbeiter-Spalte
+      (`.employee-name`), konsistent mit der bestehenden Kennzeichnung von Pensum/Kopier-Button dort.
+    - **Bewusst offen/zu klären, sobald das umgesetzt wird**: gilt "inkl. Kind-Knoten" nur für
+      Admin/Planer (volle Abteilungssicht) oder auch für Mitarbeitende (aktuell sehen sie laut
+      Block 2.5 ohnehin nur ihre eigene(n) Station(en) -- eine Team-Gruppierung wäre für sie evtl.
+      nur innerhalb der eigenen Team-Knoten relevant, nicht abteilungsweit); ob der Jahresplan
+      (`YearPlan.jsx`, aktuell ebenfalls Ein-Knoten-Filter) dieselbe Gruppierung braucht; ob die
+      Node-Auswahl (`NodeSelector`) Abteilungs- und Team-Knoten weiterhin gleichberechtigt aufführt
+      oder Teams optisch als Unterpunkte einrückt.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

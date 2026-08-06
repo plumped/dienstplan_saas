@@ -99,6 +99,13 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
   // ist, unabhängig von der Rolle (Admin/Planer dürfen für andere Personen
   // zwar den Jahresplan ansehen/Schichten stempeln, aber keine Wünsche).
   const [markedDates, setMarkedDates] = useState(() => new Set());
+  // README (2026-08, Bugfix): der Jahresplan kannte pro Tag nur eine
+  // Zuweisung (assignmentByDate überschrieb eine zweite stillschweigend) und
+  // hatte dadurch keinen Weg, einen zweiten (Split-Shift-)Dienst zu stempeln
+  // -- anders als das Planblatt (PlanGrid.jsx, README Punkt 18) zeigte der
+  // Jahresplan Split-Shifts nicht einmal an. stampSecondSlot spiegelt den
+  // gleichnamigen Umschalter aus PlanGrid.jsx.
+  const [stampSecondSlot, setStampSecondSlot] = useState(false);
   // Ziehen mit gedrückter Maustaste markiert mehrere Tage am Stück (analog
   // zu PlanGrid.jsx): "mark"/"unmark" je nach Zustand des zuerst angeklickten
   // Tages, null = kein Ziehvorgang aktiv.
@@ -209,11 +216,24 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employeeId, selectedNode, selectedStationId, year]);
 
-  const assignmentByDate = useMemo(() => {
+  // README (2026-08, Bugfix): Array statt Einzelwert pro Datum -- ein Tag
+  // kann jetzt (Split-Shifts, README Punkt 18) mehr als eine Zuweisung
+  // haben. Chronologisch nach Beginnzeit sortiert, analog zu PlanGrid.jsx.
+  const assignmentsByDate = useMemo(() => {
     const map = new Map();
-    for (const a of assignments) map.set(a.date, a);
+    for (const a of assignments) {
+      if (!map.has(a.date)) map.set(a.date, []);
+      map.get(a.date).push(a);
+    }
+    for (const list of map.values()) {
+      list.sort((a, b) => {
+        const ta = templates.find((t) => t.id === a.template);
+        const tb = templates.find((t) => t.id === b.template);
+        return (ta?.start_time ?? "").localeCompare(tb?.start_time ?? "");
+      });
+    }
     return map;
-  }, [assignments]);
+  }, [assignments, templates]);
 
   // Absenzen sind Zeiträume (start_date/end_date) -- für die Tages-Zellen auf
   // eine Datum->Absenz-Map auflösen, damit jede Zelle in O(1) weiss, ob sie
@@ -260,12 +280,20 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
     applyMark(date, dragMarkModeRef.current === "mark");
   }
 
+  // README (2026-08, Bugfix): zielt bei aktivem stampSecondSlot auf den
+  // zweiten Slot (Split-Shift) statt den ersten -- ein Tag ohne ersten
+  // Dienst wird übersprungen (analog zu PlanGrid.jsx: handleStampAssign).
   async function handleStampShift(templateId) {
     const dates = Array.from(markedDates);
     const upserted = [];
     let skipped = 0;
     for (const date of dates) {
-      const existing = assignmentByDate.get(date);
+      const dayAssignments = assignmentsByDate.get(date) ?? [];
+      if (stampSecondSlot && !dayAssignments[0]) {
+        skipped += 1;
+        continue;
+      }
+      const existing = stampSecondSlot ? dayAssignments[1] : dayAssignments[0];
       try {
         if (existing) {
           upserted.push(await api.updateShiftAssignment(existing.id, { template: templateId }));
@@ -288,6 +316,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
       });
     }
     setMarkedDates(new Set());
+    setStampSecondSlot(false);
     if (skipped > 0) {
       onError(
         `${dates.length - skipped} von ${dates.length} Tagen zugewiesen, ${skipped} wegen Regel-Konflikten ` +
@@ -298,7 +327,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
 
   async function handleClearShifts() {
     const toDelete = Array.from(markedDates)
-      .map((d) => assignmentByDate.get(d))
+      .map((d) => (assignmentsByDate.get(d) ?? [])[stampSecondSlot ? 1 : 0])
       .filter(Boolean);
     const deletedIds = [];
     let failed = 0;
@@ -314,6 +343,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
       setAssignments((prev) => prev.filter((a) => !deletedIds.includes(a.id)));
     }
     setMarkedDates(new Set());
+    setStampSecondSlot(false);
     if (failed > 0) onError(`${failed} Schicht(en) konnten nicht entfernt werden.`);
   }
 
@@ -480,6 +510,16 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
         ) : (
           <span className="stamp-palette">
             <span className="multi-select-hint">{markedDates.size} markiert:</span>
+            {canManage && (
+              <label className="stamp-second-slot-toggle" title="Bestehenden ersten Dienst nicht ersetzen, sondern einen zweiten (Split-Shift) danebenstellen.">
+                <input
+                  type="checkbox"
+                  checked={stampSecondSlot}
+                  onChange={(e) => setStampSecondSlot(e.target.checked)}
+                />
+                Als zweiten Dienst hinzufügen
+              </label>
+            )}
             {canManage &&
               templates.map((t) => (
                 <button
@@ -549,7 +589,14 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                 </button>
               </>
             )}
-            <button type="button" className="btn-ghost" onClick={() => setMarkedDates(new Set())}>
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() => {
+                setMarkedDates(new Set());
+                setStampSecondSlot(false);
+              }}
+            >
               Auswahl aufheben
             </button>
           </span>
@@ -580,8 +627,14 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                   {cells.map((day, i) => {
                     if (day === null) return <span key={`blank-${i}`} className="year-day-cell is-empty" />;
                     const date = isoDate(year, month, day);
-                    const assignment = assignmentByDate.get(date);
+                    // README (2026-08, Bugfix): bis zu zwei Zuweisungen pro Tag
+                    // (Split-Shift, README Punkt 18) statt nur der ersten.
+                    const dayAssignments = assignmentsByDate.get(date) ?? [];
+                    const [assignment, secondAssignment] = dayAssignments;
                     const template = assignment ? templates.find((t) => t.id === assignment.template) : null;
+                    const secondTemplate = secondAssignment
+                      ? templates.find((t) => t.id === secondAssignment.template)
+                      : null;
                     const absence = absenceByDate.get(date);
                     const preference = preferenceByDate.get(date);
                     const wishedTemplate =
@@ -589,11 +642,15 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                     const marked = markedDates.has(date);
                     const kind = absence ? "absence" : assignment ? "shift" : "empty";
                     const color = absence ? "var(--ink-muted)" : template?.color;
+                    const secondColor = !absence ? secondTemplate?.color : null;
                     const holidayName = holidays.get(date);
                     let title = absence
                       ? `${date}: ${ABSENCE_TYPE_LABELS[absence.type] ?? absence.type} (${STATUS_LABELS[absence.status] ?? absence.status})`
                       : assignment && template
-                        ? `${date}: ${template.name} (${template.start_time.slice(0, 5)}–${template.end_time.slice(0, 5)})`
+                        ? `${date}: ${template.name} (${template.start_time.slice(0, 5)}–${template.end_time.slice(0, 5)})` +
+                          (secondTemplate
+                            ? ` + ${secondTemplate.name} (${secondTemplate.start_time.slice(0, 5)}–${secondTemplate.end_time.slice(0, 5)})`
+                            : "")
                         : `${date}: frei`;
                     if (preference) {
                       title +=
@@ -624,7 +681,16 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                           startMark(date);
                         }}
                       >
-                        <span className={`year-day-fill year-day-fill--${kind}`} style={color ? { "--chip-color": color } : undefined}>
+                        <span
+                          className={`year-day-fill year-day-fill--${kind}${secondColor ? " is-split" : ""}`}
+                          style={
+                            secondColor
+                              ? { "--chip-color": color, "--chip-color-2": secondColor }
+                              : color
+                                ? { "--chip-color": color }
+                                : undefined
+                          }
+                        >
                           {day}
                         </span>
                         {preference && <span className={`year-day-wish-dot is-${preference.type}`} aria-hidden="true" />}

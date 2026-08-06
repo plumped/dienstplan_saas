@@ -63,6 +63,12 @@ export default function ShiftCell({
   marked = false,
   onMarkStart,
   onMarkEnter,
+  // README (2026-08, Bugfix): zweiter (Split-Shift-)Dienst desselben Tages,
+  // nur zur Anzeige -- die Mehrfachauswahl stempelt weiterhin die ganze
+  // Zelle als Einheit (siehe stampSecondSlot in PlanGrid.jsx), aber ohne
+  // dieses Badge wäre nach dem Stempeln des zweiten Slots in der
+  // Mehrfachauswahl-Ansicht kein Unterschied zum einfachen Fall sichtbar.
+  secondTemplateInfo,
   // README Punkt 18 (Split-Shifts): assignmentId identifiziert, WELCHE der
   // (bis zu zwei) Zuweisungen dieses Tages diese ShiftCell-Instanz gerade
   // darstellt -- undefined für einen leeren Slot (dann legt onChange eine
@@ -293,6 +299,11 @@ export default function ShiftCell({
         ) : (
           <span className="shift-chip shift-chip--empty" aria-hidden="true">
             +
+          </span>
+        )}
+        {secondTemplateInfo && (
+          <span className="shift-chip" style={{ "--chip-color": secondTemplateInfo.color }}>
+            {secondTemplateInfo.name.slice(0, 3)}
           </span>
         )}
         {marked && (

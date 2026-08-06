@@ -1168,6 +1168,42 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       einem Request, PATCH ohne `skills`-Key lässt bestehende Skills unangetastet, Kombination aus
       Skills- und `employments`-Sync in einem Request (Sonderlogik aus Punkt 17 bleibt intakt).
 
+    - ✅ **Bugfix (2026-08): Mehrfachauswahl-Stempelleiste konnte keinen zweiten (Split-Shift-)
+      Dienst setzen -- weder im Planblatt noch im Jahresplan.** Nutzer-Feedback: "ich kann keinen
+      zweiten Dienst eintragen in der Mehrfachauswahl". Zwei unabhängige Ursachen:
+      1. **Datenbank-Constraint nicht nachgezogen**: Migration `0015_alter_shiftassignment_
+         unique_together` (lockert `unique_together` von `(employee, date)` auf
+         `(employee, date, template)`, siehe Split-Shifts oben) war zwar im Code vorhanden, aber
+         nie gegen die getrackte `db.sqlite3` ausgeführt worden -- jede zweite Zuweisung
+         desselben Mitarbeitenden/Tages schlug serverseitig mit `IntegrityError: UNIQUE constraint
+         failed` (HTTP 500) fehl, unabhängig vom Eingabeweg (Mehrfachauswahl UND Einzelzell-
+         Dropdown betroffen). Behoben durch `python manage.py migrate` gegen die getrackte
+         Datenbank; die Migration selbst musste nicht geändert werden.
+      2. **UI-seitig fehlte der Weg überhaupt**: die Stempelleiste zielte hart auf den ersten Slot
+         einer Zelle/eines Tages (`handleStampAssign`/`handleStampShift`), ein zweiter Dienst war
+         nur über das Einzelzell-Dropdown erreichbar -- im Jahresplan (`YearPlan.jsx`) sogar gar
+         nicht, weil dort *jeder* Tagesklick ohnehin der Mehrfachauswahl-Mechanismus ist (keine
+         Einzelzell-Alternative) und `assignmentByDate` pro Tag zusätzlich nur eine Zuweisung hielt
+         (eine zweite wurde beim Aufbau der Map stillschweigend überschrieben -- Split-Shifts waren
+         im Jahresplan dadurch nicht einmal sichtbar, nicht nur nicht stempelbar). Behoben durch
+         einen neuen Umschalter "Als zweiten Dienst hinzufügen" in beiden Stempelleisten
+         (`stampSecondSlot`-State): zielt aktiv auf den zweiten statt den ersten Slot, überspringt
+         Tage ohne bestehenden ersten Dienst (analog zum "+"-Slot im Einzelzell-Dropdown, der
+         ebenfalls erst ab einer vorhandenen ersten Zuweisung erscheint). `YearPlan.jsx`:
+         `assignmentByDate` (Einzelwert) → `assignmentsByDate` (Array pro Datum, chronologisch
+         sortiert wie in `PlanGrid.jsx`); die kompakte Jahres-Tageskachel zeigt einen Split-Shift
+         jetzt als diagonal zweigeteilte Füllung (beide Schichtfarben) mit beiden Diensten im
+         Tooltip. `PlanGrid.jsx`: die Mehrfachauswahl-Zelle (ein einzelnes `ShiftCell` pro Tag,
+         anders als die Normalansicht mit bis zu zwei `renderSlot`-Instanzen) zeigte nach dem
+         Stempeln des zweiten Slots weiterhin nur den ersten Chip -- `ShiftCell.jsx` bekam dafür
+         eine rein informative `secondTemplateInfo`-Prop für einen zweiten Chip in der
+         Mehrfachauswahl-Ansicht. Mit Playwright gegen die echten Testheim-Daten verifiziert:
+         zwei nicht überlappende Dienste (`Therapie Vormittag`/`Therapie Nachmittag`) per
+         Mehrfachauswahl auf denselben Tag gestempelt -- beide Chips im Planblatt, beide im
+         Jahresplan-Tooltip + geteilte Tageskachel-Füllung; ein Tag ohne ersten Dienst wird bei
+         aktivem Umschalter korrekt übersprungen statt einen "zweiten" Dienst ohne ersten
+         anzulegen.
+
 19. **Automatisierte Planung (One-Click Planning)** (noch nicht umgesetzt). Ziel: Admin/Planer
     wählen eine Station/einen Zeitraum und lassen das System selbständig einen vollständigen,
     regelkonformen Dienstplan-Entwurf erzeugen -- unter Einhaltung sämtlicher bereits vorhandener

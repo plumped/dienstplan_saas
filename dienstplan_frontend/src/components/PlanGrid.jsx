@@ -94,6 +94,12 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // nicht dessen Ersatz.
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [markedCells, setMarkedCells] = useState(() => new Set());
+  // README (2026-08, Bugfix): die Stempelleiste zielte fest auf den ersten
+  // Slot einer Zelle -- ein zweiter (Split-Shift-)Dienst war darüber nicht
+  // stempelbar, nur einzeln über das Zelle-für-Zelle-Dropdown. Dieser
+  // Umschalter lässt den Stempel stattdessen auf den zweiten Slot zielen,
+  // ohne den ersten anzutasten.
+  const [stampSecondSlot, setStampSecondSlot] = useState(false);
   // Ziehen mit gedrückter Maustaste markiert mehrere Zellen am Stück, statt
   // jede einzeln anklicken zu müssen: "mark" oder "unmark", je nachdem, ob
   // die Zelle, auf der die Maustaste gedrückt wurde, schon markiert war;
@@ -483,6 +489,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   function toggleMultiSelectMode() {
     setMultiSelectMode((v) => !v);
     setMarkedCells(new Set());
+    setStampSecondSlot(false);
   }
 
   function applyMark(key, shouldMark) {
@@ -519,6 +526,13 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // Zellen auf einmal zu. Läuft absichtlich sequenziell wie
   // handleCopyWeekPattern -- ein Konflikt (z. B. Ruhezeit) auf einer Zelle
   // soll die übrigen nicht blockieren, nur summarisch gemeldet werden.
+  //
+  // README (2026-08, Bugfix): zielt bei aktivem stampSecondSlot auf den
+  // zweiten Slot (Split-Shift) statt den ersten, analog zum "+"-Slot im
+  // Einzelzell-Dropdown (ShiftCell), der ebenfalls erst ab einer
+  // vorhandenen ersten Zuweisung als Split-Shift-Angebot erscheint -- eine
+  // Zelle ohne ersten Dienst wird deshalb übersprungen statt einen
+  // "zweiten" Dienst ohne ersten anzulegen.
   async function handleStampAssign(templateId) {
     const keys = Array.from(markedCells);
     const upserted = [];
@@ -529,12 +543,12 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
       const employeeId = Number(employeeIdStr);
       const rowNodeId = Number(rowNodeIdStr);
-      // README Punkt 18: die Mehrfachauswahl-Stempelleiste bleibt bewusst
-      // auf den ersten Slot dieser Zeile beschränkt (kein UI für "welchen
-      // von zwei Split-Shift-Slots stempeln" beim Massen-Zuweisen) -- ein
-      // zweiter Dienst pro Tag bleibt eine bewusste Einzelzell-Aktion im
-      // normalen Zuweisungs-Dropdown.
-      const existing = rowAssignmentsFor(employeeId, date, rowNodeId)[0];
+      const rowAssignments = rowAssignmentsFor(employeeId, date, rowNodeId);
+      if (stampSecondSlot && !rowAssignments[0]) {
+        skipped += 1;
+        continue;
+      }
+      const existing = stampSecondSlot ? rowAssignments[1] : rowAssignments[0];
       try {
         if (templateId === null) {
           if (existing) {
@@ -626,6 +640,14 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
               <span className="multi-select-hint">
                 {markedCells.size} markiert -- Schichttyp zum Zuweisen anklicken:
               </span>
+              <label className="stamp-second-slot-toggle" title="Bestehenden ersten Dienst nicht ersetzen, sondern einen zweiten (Split-Shift) danebenstellen.">
+                <input
+                  type="checkbox"
+                  checked={stampSecondSlot}
+                  onChange={(e) => setStampSecondSlot(e.target.checked)}
+                />
+                Als zweiten Dienst hinzufügen
+              </label>
               {stampTemplates.map((t) => (
                 <button
                   key={t.id}
@@ -840,6 +862,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                             assignableTemplates={rowAssignableTemplates}
                             selectedTemplateId={cellAssignments[0]?.template ?? null}
                             templateInfo={templates.find((t) => t.id === cellAssignments[0]?.template)}
+                            secondTemplateInfo={templates.find((t) => t.id === cellAssignments[1]?.template)}
                             employeeId={emp.id}
                             date={date}
                             absence={absence}

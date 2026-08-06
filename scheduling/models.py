@@ -852,9 +852,15 @@ class ShiftAssignment(TenantScopedModel):
     history = HistoricalRecords()
 
     class Meta:
-        # MVP-Annahme: ein Einsatz pro Mitarbeiter und Tag. Für Split-Shifts
-        # (mehrere Templates am selben Tag) müsste das gelockert werden.
-        unique_together = ("employee", "date")
+        # README Punkt 18 (2026-08): gelockert von ("employee", "date") auf
+        # ("employee", "date", "template") -- geteilte Dienste (Split-Shifts,
+        # z. B. Frühdienst 07-12 + Spätdienst 13-17:30 derselben Person am
+        # selben Tag) sind jetzt strukturell möglich; exakt dasselbe Template
+        # zweimal am selben Tag bleibt weiterhin sinnlos und blockiert.
+        # Echte Übe­rschneidungen verhindert stattdessen _check_no_overlap()
+        # in clean() -- eine reine DB-Constraint kann Zeit-Overlap nicht
+        # ausdrücken.
+        unique_together = ("employee", "date", "template")
         ordering = ["date"]
 
     def __str__(self):
@@ -960,6 +966,7 @@ class ShiftAssignment(TenantScopedModel):
         self._check_youth_protection()
         self._check_no_absence_conflict()
         self._check_node_has_no_children()
+        self._check_no_overlap()
 
     def _check_node_has_no_children(self):
         """
@@ -1061,14 +1068,99 @@ class ShiftAssignment(TenantScopedModel):
                 f"vorgeschrieben (Art. 15 ArG)."
             )
 
+    def _same_day_exclude_pks(self):
+        """
+        Welche Zuweisungen bei "was ist sonst noch an diesem Tag" (Tagesspanne,
+        Überschneidung) ignoriert werden -- normalerweise nur sich selbst.
+        swap()/ShiftTradeRequest.approve() setzen das transiente Attribut
+        _overlap_exclude_pks zusätzlich auf den jeweils anderen
+        Tauschpartner, dessen Datenbank-Zeile während der Transaktion noch
+        den Vor-Tausch-Stand zeigt und sonst fälschlich mitgezählt würde --
+        exakt dasselbe Muster wie validate_unique=False in denselben
+        Methoden. Gemeinsam genutzt von _check_daily_span() und
+        _check_no_overlap().
+        """
+        exclude_pks = getattr(self, "_overlap_exclude_pks", None)
+        if exclude_pks is None:
+            exclude_pks = [self.pk] if self.pk else []
+        return exclude_pks
+
     def _check_daily_span(self):
-        start, end = self._shift_datetimes(self.date, self.template)
-        span_hours = (end - start).total_seconds() / 3600
+        """
+        Art. 10 Abs. 3 ArG: Arbeitsbeginn bis Arbeitsende INKLUSIVE Pausen --
+        bei geteilten Diensten (README Punkt 18, Split-Shifts) ist das die
+        Spanne über ALLE Zuweisungen desselben Tages hinweg (erster
+        Arbeitsbeginn bis letztes Arbeitsende), nicht nur die Spanne dieser
+        einen Zuweisung -- sonst liesse sich die gesetzliche Tagesgrenze
+        durch Aufteilen in mehrere kurze Templates am selben Tag umgehen.
+        Ohne weitere Zuweisungen an diesem Tag (der bisherige Normalfall)
+        ist das Ergebnis identisch zur vorherigen, Template-einzelnen
+        Berechnung.
+        """
+        same_day = (
+            ShiftAssignment.all_objects.filter(employee=self.employee, date=self.date)
+            .exclude(pk__in=self._same_day_exclude_pks())
+            .select_related("template")
+        )
+        spans = [self._shift_datetimes(self.date, self.template)]
+        spans += [self._shift_datetimes(self.date, a.template) for a in same_day]
+        span_hours = (max(e for _, e in spans) - min(s for s, _ in spans)).total_seconds() / 3600
         maximum_daily_span_hours = self.tenant.maximum_daily_span_hours
         if span_hours > maximum_daily_span_hours:
             raise ValidationError(
-                f"Tagesspanne von '{self.template.name}' beträgt {span_hours:.1f}h, "
-                f"maximal {maximum_daily_span_hours}h erlaubt (Art. 10 ArG)."
+                f"Tagesspanne von {self.employee} am {self.date} beträgt {span_hours:.1f}h "
+                f"(erster Arbeitsbeginn bis letztes Arbeitsende), maximal {maximum_daily_span_hours}h "
+                "erlaubt (Art. 10 ArG)."
+            )
+
+    @staticmethod
+    def _shifts_overlap(date, template_a, template_b):
+        """Zeit-Überlappung zweier Templates am selben Tag (README Punkt 18)."""
+        a_start, a_end = ShiftAssignment._shift_datetimes(date, template_a)
+        b_start, b_end = ShiftAssignment._shift_datetimes(date, template_b)
+        return a_start < b_end and b_start < a_end
+
+    @classmethod
+    def _overlapping_conflict(cls, employee_id, date, template, exclude_pks):
+        """
+        Sucht unter den bestehenden Zuweisungen derselben Person am selben
+        Tag (ausser exclude_pks) eine, die sich zeitlich mit `template`
+        überschneidet. Gemeinsame Basis für _check_no_overlap() (Regel-Engine)
+        sowie die manuellen Konfliktchecks in swap()/ShiftTradeRequest.
+        approve() -- die wegen validate_unique=False (siehe dort) nicht auf
+        den eingebauten Unique-Check zurückgreifen können und vor Punkt 18
+        stattdessen naiv "irgendeine andere Zuweisung an diesem Tag" als
+        Konflikt werteten. Mit Split-Shifts ist das jetzt zu grob -- zwei
+        einander nicht überschneidende Zuweisungen am selben Tag sind gültig.
+        """
+        candidates = (
+            cls.all_objects.filter(employee_id=employee_id, date=date)
+            .exclude(pk__in=exclude_pks)
+            .select_related("template")
+        )
+        for other in candidates:
+            if cls._shifts_overlap(date, template, other.template):
+                return other
+        return None
+
+    def _check_no_overlap(self):
+        """
+        README Punkt 18 (Split-Shifts): mehrere Zuweisungen derselben Person
+        am selben Tag sind seit der Lockerung von unique_together erlaubt,
+        dürfen sich aber nicht zeitlich überschneiden (sonst wäre dieselbe
+        Person an zwei Orten gleichzeitig eingeplant). exclude_pks siehe
+        _same_day_exclude_pks().
+        """
+        exclude_pks = self._same_day_exclude_pks()
+        conflict = self._overlapping_conflict(
+            self.employee_id, self.date, self.template, exclude_pks=exclude_pks
+        )
+        if conflict:
+            raise ValidationError(
+                f"{self.employee} hat am {self.date} bereits '{conflict.template.name}' "
+                f"({conflict.template.start_time.strftime('%H:%M')}–"
+                f"{conflict.template.end_time.strftime('%H:%M')}), das sich zeitlich mit "
+                f"'{self.template.name}' überschneidet."
             )
 
     def _check_weekly_rest_day(self):
@@ -1149,17 +1241,15 @@ class ShiftAssignment(TenantScopedModel):
         rowNodeId ihrer eigenen Zeile hat (Team-Gruppierung, Punkt 17) --
         kein zusätzlicher Parameter nötig.
 
-        Der manuelle Drittkonflikt-Check unten ist für DIESE Methode
-        streng genommen unerreichbar (nicht nur defensiv): weil komplett
-        employee+date+node zwischen genau zwei bereits gültigen,
-        eindeutigen Zeilen getauscht wird, bleibt die Menge der belegten
-        (employee, date)-Paare vor und nach dem Tausch identisch -- ein
-        Drittes kann also nie kollidieren. Bewusst trotzdem drin gelassen
-        (Symmetrie zum inhaltlich anderen Fix in
-        ShiftTradeRequest.approve(), wo dieselbe Prüfung tatsächlich
-        greifen kann, weil dort nur employee_id tauscht und date fix
-        bleibt) -- günstige Absicherung gegen künftige Änderungen an
-        dieser Methode.
+        Seit README Punkt 18 (Split-Shifts) kann ein Tag mehr als eine
+        Zuweisung derselben Person haben -- ein "Konflikt" ist daher nicht
+        mehr "irgendeine andere Zuweisung an diesem Tag", sondern nur noch
+        eine, die sich zeitlich mit der (neuen) eigenen überschneidet (siehe
+        _overlapping_conflict()). Der manuelle Drittkonflikt-Check unten
+        bleibt als Absicherung drin, obwohl _check_no_overlap() (via
+        full_clean() unten, mit demselben Ausschluss beider Tauschpartner
+        über _overlap_exclude_pks) ihn strukturell bereits mit abdeckt --
+        günstige Absicherung gegen künftige Änderungen an dieser Methode.
         """
         first_id, second_id = int(first_id), int(second_id)
         if first_id == second_id:
@@ -1179,27 +1269,31 @@ class ShiftAssignment(TenantScopedModel):
             first.employee_id, first.date, first.node_id = second_orig
             second.employee_id, second.date, second.node_id = first_orig
 
-            # validate_unique=False: der eingebaute Check sieht während
-            # dieser Transaktion noch den unveränderten DB-Stand der
-            # jeweils anderen Zeile und würde beim Tauschen fälschlich
-            # einen Konflikt mit sich selbst melden. Konflikte mit echten
-            # Dritten werden unten separat geprüft (siehe Docstring oben).
+            # validate_unique=False + _overlap_exclude_pks: der eingebaute
+            # Unique-Check sowie _check_no_overlap() sähen während dieser
+            # Transaktion noch den unveränderten DB-Stand der jeweils
+            # anderen Zeile und würden beim Tauschen fälschlich einen
+            # Konflikt mit sich selbst melden. Konflikte mit echten Dritten
+            # werden unten separat geprüft (siehe Docstring oben).
+            first._overlap_exclude_pks = [first.pk, second.pk]
+            second._overlap_exclude_pks = [first.pk, second.pk]
             first.full_clean(validate_unique=False)
             second.full_clean(validate_unique=False)
             for assignment, other_pk in ((first, second.pk), (second, first.pk)):
-                conflict = (
-                    cls.all_objects.filter(employee_id=assignment.employee_id, date=assignment.date)
-                    .exclude(pk__in=[assignment.pk, other_pk])
-                    .exists()
+                conflict = cls._overlapping_conflict(
+                    assignment.employee_id, assignment.date, assignment.template,
+                    exclude_pks=[assignment.pk, other_pk],
                 )
                 if conflict:
                     raise ValidationError(
-                        f"{assignment.employee} hat am {assignment.date} bereits eine andere Zuweisung."
+                        f"{assignment.employee} hat am {assignment.date} bereits '{conflict.template.name}', "
+                        f"das sich zeitlich mit '{assignment.template.name}' überschneidet."
                     )
 
-            # DB-Constraint (employee, date) verlangt einen Zwischenschritt
-            # beim Tauschen zweier Zeilen -- sonst kollidiert das erste
-            # save() mit dem noch nicht aktualisierten zweiten Datensatz.
+            # DB-Constraint (employee, date, template) verlangt einen
+            # Zwischenschritt beim Tauschen zweier Zeilen -- sonst kollidiert
+            # das erste save() mit dem noch nicht aktualisierten zweiten
+            # Datensatz.
             cls.all_objects.filter(pk=first.pk).update(date=date.max)
             second.save()
             first.save()
@@ -1348,28 +1442,32 @@ class ShiftTradeRequest(TenantScopedModel):
                 )
                 requester_assignment.employee_id = self.target_employee_id
                 target_assignment.employee_id = original_employee_id
-                # validate_unique=False + manueller Konfliktcheck + Zwischenschritt:
-                # liegen beide Zuweisungen auf demselben Datum (der häufigste
-                # Tausch-Fall), sähe der eingebaute Unique-Check beim Prüfen der
-                # ersten Zuweisung noch den unveränderten DB-Stand der zweiten und
-                # würde fälschlich einen Konflikt mit sich selbst melden -- siehe
-                # ShiftAssignment.swap() für dasselbe Muster inkl. Begründung.
+                # validate_unique=False + _overlap_exclude_pks + manueller
+                # Konfliktcheck + Zwischenschritt: liegen beide Zuweisungen
+                # auf demselben Datum (der häufigste Tausch-Fall), sähen der
+                # eingebaute Unique-Check sowie _check_no_overlap() beim
+                # Prüfen der ersten Zuweisung noch den unveränderten DB-Stand
+                # der zweiten und würden fälschlich einen Konflikt mit sich
+                # selbst melden -- siehe ShiftAssignment.swap() für dasselbe
+                # Muster inkl. Begründung. Seit README Punkt 18 (Split-
+                # Shifts) ist "eine andere Zuweisung am selben Tag" für sich
+                # kein Konflikt mehr, nur eine zeitlich überschneidende.
+                requester_assignment._overlap_exclude_pks = [requester_assignment.pk, target_assignment.pk]
+                target_assignment._overlap_exclude_pks = [requester_assignment.pk, target_assignment.pk]
                 requester_assignment.full_clean(validate_unique=False)
                 target_assignment.full_clean(validate_unique=False)
                 for assignment, other_pk in (
                     (requester_assignment, target_assignment.pk),
                     (target_assignment, requester_assignment.pk),
                 ):
-                    conflict = (
-                        ShiftAssignment.all_objects.filter(
-                            employee_id=assignment.employee_id, date=assignment.date
-                        )
-                        .exclude(pk__in=[assignment.pk, other_pk])
-                        .exists()
+                    conflict = ShiftAssignment._overlapping_conflict(
+                        assignment.employee_id, assignment.date, assignment.template,
+                        exclude_pks=[assignment.pk, other_pk],
                     )
                     if conflict:
                         raise ValidationError(
-                            f"{assignment.employee} hat am {assignment.date} bereits eine andere Zuweisung."
+                            f"{assignment.employee} hat am {assignment.date} bereits '{conflict.template.name}', "
+                            f"das sich zeitlich mit '{assignment.template.name}' überschneidet."
                         )
                 ShiftAssignment.all_objects.filter(pk=requester_assignment.pk).update(date=date.max)
                 target_assignment.save()

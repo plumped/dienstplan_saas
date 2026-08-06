@@ -63,6 +63,19 @@ export default function ShiftCell({
   marked = false,
   onMarkStart,
   onMarkEnter,
+  // README Punkt 18 (Split-Shifts): assignmentId identifiziert, WELCHE der
+  // (bis zu zwei) Zuweisungen dieses Tages diese ShiftCell-Instanz gerade
+  // darstellt -- undefined für einen leeren Slot (dann legt onChange eine
+  // NEUE Zuweisung an, statt eine bestehende zu ändern/löschen). Wird 1:1
+  // an onMove/onOfferTrade durchgereicht, damit PlanGrid.jsx bei mehreren
+  // Zuweisungen am selben Tag weiss, welche konkret gemeint ist, statt sie
+  // wie bisher über employee+date (jetzt mehrdeutig) neu aufzulösen.
+  // showWishBadge blendet das Wunschfrei/Wunschdienst-Badge aus, wenn diese
+  // Instanz der ZWEITE Slot eines Tages ist -- ShiftPreference gilt
+  // personen-/tagesweise, nicht pro Zuweisung, ein zweites Badge wäre ein
+  // verwirrendes Duplikat.
+  assignmentId,
+  showWishBadge = true,
 }) {
   const [editing, setEditing] = useState(false);
   const [offering, setOffering] = useState(false);
@@ -111,6 +124,7 @@ export default function ShiftCell({
   // rein informativen, nicht klickbaren Hinweis, damit er die Wünsche beim
   // Ausfüllen des Plans vor Augen hat -- Bearbeiten bleibt höchstpersönlich.
   function renderWishBadge() {
+    if (!showWishBadge) return null;
     if (canEditOwnWish) {
       const hasWish = Boolean(preference);
       const glyph = hasWish ? WISH_GLYPHS[preference.type] : "?";
@@ -374,7 +388,10 @@ export default function ShiftCell({
   function handleDragStart(e) {
     if (!templateInfo) return;
     e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ employeeId, date }));
+    // README Punkt 18: assignmentId statt nur employeeId+date, damit die
+    // Zielzelle bei mehreren Zuweisungen desselben Tages (Split-Shifts)
+    // eindeutig weiss, welche der beiden konkret gezogen wurde.
+    e.dataTransfer.setData(DRAG_MIME, JSON.stringify({ employeeId, date, assignmentId }));
   }
 
   function handleDragOver(e) {
@@ -391,7 +408,7 @@ export default function ShiftCell({
     const raw = e.dataTransfer.getData(DRAG_MIME);
     if (!raw) return;
     const source = JSON.parse(raw);
-    onMove(source.employeeId, source.date, employeeId, date);
+    onMove(source.employeeId, source.date, source.assignmentId, employeeId, date, assignmentId);
   }
 
   return (

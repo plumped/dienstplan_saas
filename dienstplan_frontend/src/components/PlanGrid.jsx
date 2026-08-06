@@ -233,9 +233,18 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     return () => window.removeEventListener("mouseup", handleWindowMouseUp);
   }, []);
 
+  // README Punkt 18 (Split-Shifts): ein Schlüssel kann seit der Lockerung
+  // von ShiftAssignment.unique_together jetzt mehrere Zuweisungen liefern
+  // (z. B. Frühdienst + Spätdienst derselben Person am selben Tag) --
+  // deshalb ein Array statt eines einzelnen Werts, anders als vor Punkt 18.
   const assignmentMap = useMemo(() => {
     const map = new Map();
-    for (const a of assignments) map.set(`${a.employee}:${a.date}`, a);
+    for (const a of assignments) {
+      const key = `${a.employee}:${a.date}`;
+      const list = map.get(key);
+      if (list) list.push(a);
+      else map.set(key, [a]);
+    }
     return map;
   }, [assignments]);
 
@@ -347,19 +356,20 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     );
   }
 
-  async function handleAssign(employeeId, date, templateId, rowNodeId) {
-    const key = `${employeeId}:${date}`;
-    const existing = assignmentMap.get(key);
+  // README Punkt 18 (Split-Shifts): assignmentId identifiziert bei einer
+  // Zelle mit bis zu zwei Zuweisungen, WELCHE davon geändert/gelöscht
+  // werden soll -- undefined (leerer Slot) legt stattdessen eine neue an.
+  async function handleAssign(employeeId, date, templateId, rowNodeId, assignmentId) {
     try {
       if (templateId === null) {
-        if (!existing) return;
-        await api.deleteShiftAssignment(existing.id);
-        setAssignments((prev) => prev.filter((a) => a.id !== existing.id));
+        if (!assignmentId) return;
+        await api.deleteShiftAssignment(assignmentId);
+        setAssignments((prev) => prev.filter((a) => a.id !== assignmentId));
         return;
       }
-      if (existing) {
-        const updated = await api.updateShiftAssignment(existing.id, { template: templateId });
-        setAssignments((prev) => prev.map((a) => (a.id === existing.id ? updated : a)));
+      if (assignmentId) {
+        const updated = await api.updateShiftAssignment(assignmentId, { template: templateId });
+        setAssignments((prev) => prev.map((a) => (a.id === assignmentId ? updated : a)));
       } else {
         // README Punkt 17: rowNodeId ist bei einer Station mit Teams die
         // Team-Id der Zeile, sonst (keine Teams) die Station selbst -- eine
@@ -380,18 +390,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
-  async function handleMove(fromEmployeeId, fromDate, toEmployeeId, toDate, toRowNodeId) {
-    if (fromEmployeeId === toEmployeeId && fromDate === toDate) return;
-    const source = assignmentMap.get(`${fromEmployeeId}:${fromDate}`);
+  // README Punkt 18 (Split-Shifts): Quelle UND Ziel werden direkt über ihre
+  // assignmentId aufgelöst statt über employee+date (das ist bei mehreren
+  // Zuweisungen desselben Tages nicht mehr eindeutig) -- fromAssignmentId
+  // kommt aus dem Drag-Payload (ShiftCell.jsx), toAssignmentId/toRowNodeId
+  // aus dem Render-Closure der Zielzelle (PlanGrid kennt ihre eigene
+  // Zuweisung bereits, kein erneutes Suchen nötig, anders als früher).
+  async function handleMove(fromAssignmentId, toEmployeeId, toDate, toRowNodeId, toAssignmentId) {
+    if (!fromAssignmentId || fromAssignmentId === toAssignmentId) return;
+    const source = assignments.find((a) => a.id === fromAssignmentId);
     if (!source) return;
-    // README Block 2.8: die Zielzelle muss zusätzlich nach ihrem eigenen
-    // Team-Knoten aufgelöst werden, nicht nur nach employee+date -- bei
-    // Mehrfachanstellung (Punkt 17) kann dieselbe Person an diesem Tag
-    // bereits eine Zuweisung in einem ANDEREN Team haben, die optisch
-    // leere Zielzelle wäre sonst fälschlich "belegt".
-    const target = assignments.find(
-      (a) => a.employee === toEmployeeId && a.date === toDate && a.node === toRowNodeId
-    );
+    const target = toAssignmentId ? assignments.find((a) => a.id === toAssignmentId) : undefined;
     try {
       if (target) {
         // Echter Swap statt Ablehnung: tauscht employee/date/node zwischen
@@ -414,10 +423,21 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
+  // README Punkt 18 (Split-Shifts): eine Quellzeile kann jetzt mehrere
+  // Zuweisungen pro Tag haben (z. B. Früh- + Spätdienst) -- alle werden
+  // kopiert, nicht nur die erste. Zusätzlich (Nachbesserung, vorher latent
+  // falsch bei Mehrfachanstellung): nur die Zuweisungen DIESER Zeile
+  // (rowNodeId) zählen als Quelle/"schon belegt", eine Zuweisung derselben
+  // Person in einem ANDEREN Team an diesem Tag darf weder als Vorlage
+  // dienen noch das Kopieren blockieren.
+  function rowAssignmentsFor(employeeId, targetDate, rowNodeId) {
+    return (assignmentMap.get(`${employeeId}:${targetDate}`) ?? []).filter((a) => a.node === rowNodeId);
+  }
+
   async function handleCopyWeekPattern(employeeId, rowNodeId) {
     const sourceDays = days.filter((d) => d <= 7);
-    const hasSourceShift = sourceDays.some((d) =>
-      assignmentMap.has(`${employeeId}:${isoDate(year, month, d)}`)
+    const hasSourceShift = sourceDays.some(
+      (d) => rowAssignmentsFor(employeeId, isoDate(year, month, d), rowNodeId).length > 0
     );
     if (!hasSourceShift) {
       onError("Die erste Woche hat für diesen Mitarbeiter noch keine Schichten zum Kopieren.");
@@ -428,23 +448,25 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     let skippedByConflict = 0;
     for (let targetDay = 8; targetDay <= days.length; targetDay += 1) {
       const sourceDay = ((targetDay - 1) % 7) + 1;
-      const source = assignmentMap.get(`${employeeId}:${isoDate(year, month, sourceDay)}`);
-      if (!source) continue;
+      const sourceAssignments = rowAssignmentsFor(employeeId, isoDate(year, month, sourceDay), rowNodeId);
+      if (!sourceAssignments.length) continue;
       const targetDate = isoDate(year, month, targetDay);
-      if (assignmentMap.has(`${employeeId}:${targetDate}`)) continue; // bestehende Einträge nicht überschreiben
+      if (rowAssignmentsFor(employeeId, targetDate, rowNodeId).length > 0) continue; // bestehende Einträge nicht überschreiben
 
-      try {
-        const createdAssignment = await api.createShiftAssignment({
-          employee: employeeId,
-          node: rowNodeId ?? nodeId,
-          date: targetDate,
-          template: source.template,
-        });
-        created.push(createdAssignment);
-      } catch {
-        // z. B. Ruhezeit- oder Höchstarbeitszeit-Konflikt an diesem Tag -- Zelle
-        // überspringen, restliche Wochen trotzdem weiterkopieren.
-        skippedByConflict += 1;
+      for (const source of sourceAssignments) {
+        try {
+          const createdAssignment = await api.createShiftAssignment({
+            employee: employeeId,
+            node: rowNodeId ?? nodeId,
+            date: targetDate,
+            template: source.template,
+          });
+          created.push(createdAssignment);
+        } catch {
+          // z. B. Ruhezeit- oder Höchstarbeitszeit-Konflikt an diesem Tag -- Zuweisung
+          // überspringen, restliche Wochen/Slots trotzdem weiterkopieren.
+          skippedByConflict += 1;
+        }
       }
     }
 
@@ -453,7 +475,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
     if (skippedByConflict > 0) {
       onError(
-        `Wochenmuster kopiert, ${skippedByConflict} Tag(e) wegen Regel-Konflikten (z. B. Ruhezeit) übersprungen.`
+        `Wochenmuster kopiert, ${skippedByConflict} Zuweisung(en) wegen Regel-Konflikten (z. B. Ruhezeit) übersprungen.`
       );
     }
   }
@@ -507,8 +529,12 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
       const employeeId = Number(employeeIdStr);
       const rowNodeId = Number(rowNodeIdStr);
-      const assignmentKey = `${employeeId}:${date}`;
-      const existing = assignmentMap.get(assignmentKey);
+      // README Punkt 18: die Mehrfachauswahl-Stempelleiste bleibt bewusst
+      // auf den ersten Slot dieser Zeile beschränkt (kein UI für "welchen
+      // von zwei Split-Shift-Slots stempeln" beim Massen-Zuweisen) -- ein
+      // zweiter Dienst pro Tag bleibt eine bewusste Einzelzell-Aktion im
+      // normalen Zuweisungs-Dropdown.
+      const existing = rowAssignmentsFor(employeeId, date, rowNodeId)[0];
       try {
         if (templateId === null) {
           if (existing) {
@@ -553,12 +579,13 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
-  async function handleOfferTrade(employeeId, date, targetEmployeeId) {
-    const assignment = assignmentMap.get(`${employeeId}:${date}`);
-    if (!assignment) return;
+  // README Punkt 18: assignmentId statt employeeId+date -- bei mehreren
+  // Zuweisungen desselben Tages (Split-Shifts) ist jede unabhängig
+  // tauschbar, die frühere Ableitung über employee+date wäre mehrdeutig.
+  async function handleOfferTrade(assignmentId, targetEmployeeId) {
     try {
       await api.createShiftTradeRequest({
-        requester_assignment: assignment.id,
+        requester_assignment: assignmentId,
         target_employee: targetEmployeeId,
       });
       const targetName = employees.find((e) => e.id === targetEmployeeId);
@@ -726,52 +753,68 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                   </th>
                   {days.map((d) => {
                     const date = isoDate(year, month, d);
-                    const rawAssignment = assignmentMap.get(`${emp.id}:${date}`);
                     // README Punkt 17: bei mehreren Anstellungen derselben
                     // Person in unterschiedlichen Teams zeigt eine Zeile nur
-                    // die Zuweisung, die tatsächlich zu ihrem eigenen Team
-                    // gehört (assignment.node) -- die Schicht der jeweils
-                    // anderen Rolle bleibt in dieser Zeile korrekt leer.
-                    const assignment = rawAssignment && rawAssignment.node === rowNodeId ? rawAssignment : undefined;
-                    const template = templates.find((t) => t.id === assignment?.template);
+                    // die Zuweisungen, die tatsächlich zu ihrem eigenen Team
+                    // gehören (a.node) -- die Schicht(en) der jeweils
+                    // anderen Rolle bleiben in dieser Zeile korrekt leer.
+                    // README Punkt 18 (Split-Shifts): jetzt potenziell MEHR
+                    // als eine, chronologisch nach Beginnzeit sortiert, damit
+                    // die gestapelten Chips oben=früher/unten=später zeigen.
+                    const cellAssignments = rowAssignmentsFor(emp.id, date, rowNodeId)
+                      .slice()
+                      .sort((a, b) => {
+                        const ta = templates.find((t) => t.id === a.template);
+                        const tb = templates.find((t) => t.id === b.template);
+                        return (ta?.start_time ?? "").localeCompare(tb?.start_time ?? "");
+                      });
                     const absence = findAbsence(emp.id, date);
                     const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
                     const holidayName = holidays.get(date);
                     const canOfferTrade = canManage || me?.employee?.id === emp.id;
-                    // Block 1.13: Ist-Zeit-Badge nur auf der eigenen, bereits
-                    // stattgefundenen Schicht -- unabhängig von canManage, damit
-                    // auch ein Admin/Planer mit eigenem Employee-Profil seine
-                    // eigenen Schichten erfassen kann.
-                    const canRecordTime = Boolean(assignment) && date <= todayIso && ownEmployeeId === emp.id;
-                    const timeRecord = assignment ? timeRecordByAssignment.get(assignment.id) : undefined;
-                    // Block 2.13: höchstpersönlich -- nur die eigene Person darf
-                    // für einen heutigen/zukünftigen Tag einen Wunsch äussern.
-                    const preference = preferenceMap.get(`${emp.id}:${date}`);
-                    const canEditOwnWish = ownEmployeeId === emp.id && date >= todayIso;
-                    return (
-                      <td
-                        key={d}
-                        className={[weekend && "is-weekend", holidayName && "is-holiday"].filter(Boolean).join(" ")}
-                        title={holidayName || undefined}
-                      >
+                    // Zweiter Slot nur anzeigen, wenn er entweder schon eine
+                    // echte zweite Zuweisung enthält, oder (leer) als
+                    // "+"-Angebot für Admin/Planer, um einen Split-Shift
+                    // anzulegen -- ein nicht bedienbares leeres "+" für
+                    // reine Betrachter wäre nur verwirrend.
+                    const showSecondSlot =
+                      !absence && (cellAssignments.length >= 2 || (canManage && cellAssignments.length === 1));
+
+                    function renderSlot(assignment, slotIndex) {
+                      const template = templates.find((t) => t.id === assignment?.template);
+                      // Block 1.13: Ist-Zeit-Badge nur auf der eigenen, bereits
+                      // stattgefundenen Schicht -- unabhängig von canManage, damit
+                      // auch ein Admin/Planer mit eigenem Employee-Profil seine
+                      // eigenen Schichten erfassen kann.
+                      const canRecordTime = Boolean(assignment) && date <= todayIso && ownEmployeeId === emp.id;
+                      const timeRecord = assignment ? timeRecordByAssignment.get(assignment.id) : undefined;
+                      // Block 2.13: höchstpersönlich -- nur die eigene Person darf
+                      // für einen heutigen/zukünftigen Tag einen Wunsch äussern.
+                      // Gilt personen-/tagesweise (nicht pro Slot), siehe
+                      // showWishBadge unten.
+                      const preference = preferenceMap.get(`${emp.id}:${date}`);
+                      const canEditOwnWish = ownEmployeeId === emp.id && date >= todayIso;
+                      return (
                         <ShiftCell
+                          key={assignment?.id ?? `empty-${slotIndex}`}
                           templates={templates}
                           assignableTemplates={rowAssignableTemplates}
                           selectedTemplateId={assignment?.template ?? null}
                           templateInfo={template}
+                          assignmentId={assignment?.id}
                           employeeId={emp.id}
                           date={date}
                           absence={absence}
                           colleagues={employees.filter((e) => e.id !== emp.id)}
                           canEdit={canManage}
                           canOfferTrade={canOfferTrade}
-                          onChange={(templateId) => handleAssign(emp.id, date, templateId, rowNodeId)}
-                          onMove={(fromEmployeeId, fromDate, toEmployeeId, toDate) =>
-                            handleMove(fromEmployeeId, fromDate, toEmployeeId, toDate, rowNodeId)
+                          onChange={(templateId) =>
+                            handleAssign(emp.id, date, templateId, rowNodeId, assignment?.id)
                           }
-                          onOfferTrade={(targetEmployeeId) =>
-                            handleOfferTrade(emp.id, date, targetEmployeeId)
+                          onMove={(fromEmployeeId, fromDate, fromAssignmentId) =>
+                            handleMove(fromAssignmentId, emp.id, date, rowNodeId, assignment?.id)
                           }
+                          onOfferTrade={(targetEmployeeId) => handleOfferTrade(assignment.id, targetEmployeeId)}
                           timeRecord={timeRecord}
                           canRecordTime={canRecordTime}
                           onSaveTimeRecord={(payload) => handleSaveTimeRecord(assignment.id, timeRecord, payload)}
@@ -780,11 +823,37 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           canEditOwnWish={canEditOwnWish}
                           onSaveWish={(payload) => handleSaveWish(date, preference, payload)}
                           onDeleteWish={() => handleDeleteWish(preference)}
-                          selectionMode={multiSelectMode}
-                          marked={markedCells.has(`${emp.id}:${date}:${rowNodeId}`)}
-                          onMarkStart={() => startMark(emp.id, date, rowNodeId)}
-                          onMarkEnter={() => continueMark(emp.id, date, rowNodeId)}
+                          showWishBadge={slotIndex === 0}
                         />
+                      );
+                    }
+
+                    return (
+                      <td
+                        key={d}
+                        className={[weekend && "is-weekend", holidayName && "is-holiday"].filter(Boolean).join(" ")}
+                        title={holidayName || undefined}
+                      >
+                        {multiSelectMode ? (
+                          <ShiftCell
+                            templates={templates}
+                            assignableTemplates={rowAssignableTemplates}
+                            selectedTemplateId={cellAssignments[0]?.template ?? null}
+                            templateInfo={templates.find((t) => t.id === cellAssignments[0]?.template)}
+                            employeeId={emp.id}
+                            date={date}
+                            absence={absence}
+                            selectionMode
+                            marked={markedCells.has(`${emp.id}:${date}:${rowNodeId}`)}
+                            onMarkStart={() => startMark(emp.id, date, rowNodeId)}
+                            onMarkEnter={() => continueMark(emp.id, date, rowNodeId)}
+                          />
+                        ) : (
+                          <>
+                            {renderSlot(cellAssignments[0], 0)}
+                            {showSecondSlot && renderSlot(cellAssignments[1], 1)}
+                          </>
+                        )}
                       </td>
                     );
                   })}

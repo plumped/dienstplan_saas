@@ -3770,3 +3770,273 @@ class TimeTemplateMinimumStaffingAPITests(APITestCase):
         patch_response = self.client.patch(f"/api/time-templates/{template_id}/", {"minimum_staffing": 4})
         self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
         self.assertEqual(patch_response.data["minimum_staffing"], 4)
+
+
+class SplitShiftTests(TestCase):
+    """
+    README Punkt 18: geteilte Dienste (Split-Shifts) -- mehrere Zuweisungen
+    derselben Person am selben Tag, seit der Lockerung von unique_together
+    auf ("employee", "date", "template") möglich. Praxisfall aus dem
+    Feedback: Frühdienst 07:00-12:00 + Spätdienst 13:00-17:30 derselben
+    Person am selben Tag (ICT).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="ICT", tenant=self.tenant)
+        self.early = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst",
+            start_time=time(7, 0), end_time=time(12, 0), break_minutes=0,
+        )
+        self.late = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Spätdienst",
+            start_time=time(13, 0), end_time=time(17, 30), break_minutes=0,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+
+    def _assign(self, template, day=date(2026, 8, 3)):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=day, template=template
+        )
+
+    def test_two_non_overlapping_shifts_same_day_are_valid(self):
+        first = self._assign(self.early)
+        second = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=first.date, template=self.late
+        )
+        second.full_clean()  # keine Exception
+        second.save()
+        self.assertEqual(
+            ShiftAssignment.objects.filter(employee=self.employee, date=first.date).count(), 2
+        )
+
+    def test_overlapping_shifts_same_day_are_rejected(self):
+        self._assign(self.early)  # 07:00-12:00
+        overlapping = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Vormittag-Ueberlappung",
+            start_time=time(11, 0), end_time=time(14, 0), break_minutes=0,
+        )
+        conflict = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=overlapping,
+        )
+        with self.assertRaises(ValidationError):
+            conflict.full_clean()
+
+    def test_identical_template_twice_same_day_is_rejected(self):
+        self._assign(self.early)
+        duplicate = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.early,
+        )
+        with self.assertRaises(ValidationError):
+            duplicate.full_clean()
+
+    def test_adjacent_shifts_touching_exactly_are_not_overlapping(self):
+        # Ende Frühdienst (12:00) == Beginn eines fiktiven Templates ab
+        # 12:00 -- Grenzfall, gilt nicht als Überschneidung (halboffenes
+        # Intervall).
+        self._assign(self.early)  # 07:00-12:00
+        touching = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Direkt-Anschluss",
+            start_time=time(12, 0), end_time=time(17, 0), break_minutes=0,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=touching,
+        )
+        assignment.full_clean()  # keine Exception
+
+    def test_daily_span_considers_all_shifts_of_the_day_combined(self):
+        # Tenant-Default maximum_daily_span_hours ist 14h (siehe core.models).
+        # Früh (07-12) + Spät (13-17:30) ergibt zusammen 07:00-17:30 = 10.5h
+        # Gesamtspanne -- unproblematisch.
+        self._assign(self.early)
+        second = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.late,
+        )
+        second.full_clean()  # keine Exception
+
+        # Ein dritter, sehr spaeter Dienst am selben Tag reisst die
+        # Gesamtspanne (07:00 bis weit nach Mitternacht) ueber die
+        # Tenant-Grenze.
+        very_late = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Spaetester-Dienst",
+            start_time=time(22, 0), end_time=time(23, 59), break_minutes=0,
+        )
+        third = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=very_late,
+        )
+        with self.assertRaises(ValidationError):
+            third.full_clean()
+
+    def test_rest_period_check_ignores_same_day_gap(self):
+        # Kernentscheidung: die Mittagspause zwischen zwei Split-Shift-
+        # Diensten desselben Tages ist KEINE Ruhezeit im Sinne von Art. 15a
+        # ArG (die gilt zwischen Kalendertagen) -- nur 1h Luecke zwischen
+        # Frueh-Ende (12:00) und Spaet-Beginn (13:00) darf NICHT als
+        # Ruhezeit-Verstoss (Tenant-Default 11h) geahndet werden.
+        self._assign(self.early)
+        second = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.late,
+        )
+        second.full_clean()  # keine Exception -- wäre bei 11h-Ruhezeitpruefung sonst abgelehnt
+
+    def test_rest_period_still_checked_against_previous_and_next_day(self):
+        # Split-Shifts duerfen die normale Tag-zu-Tag-Ruhezeitpruefung nicht
+        # aushebeln: ein Spaetdienst bis 17:30, gefolgt von einem
+        # Fruehdienst am naechsten Tag ab 07:00, hat nur 13.5h Ruhezeit --
+        # das ist zwar ueber dem 11h-Minimum, aber ein zu frueher naechster
+        # Dienst (z. B. 04:00) muss weiterhin blockiert werden.
+        self._assign(self.late, day=date(2026, 8, 3))  # bis 17:30
+        too_early_next_day = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Zu-frueh",
+            start_time=time(4, 0), end_time=time(8, 0), break_minutes=0,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 4),
+            template=too_early_next_day,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.full_clean()
+
+    def test_weekly_and_monthly_summary_sum_both_shifts(self):
+        self._assign(self.early)  # 5h netto (07-12, keine Pause)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.late,  # 4.5h netto (13-17:30, keine Pause)
+        )
+        weekly = self.employee.weekly_hours_summary(date(2026, 8, 3))
+        self.assertEqual(weekly["ist_hours"], 9.5)
+        monthly = self.employee.monthly_summary(2026, 8)
+        self.assertEqual(monthly["ist_hours"], 9.5)
+
+    def test_swap_one_of_two_same_day_shifts(self):
+        # employee hat Frueh+Spaet am selben Tag; nur der Fruehdienst wird
+        # mit einer fremden Zuweisung (anderer Tag, anderes Template)
+        # getauscht -- der Spaetdienst bleibt als eigene Zeile unangetastet,
+        # und der Fruehdienst-Platz bekommt das eingetauschte (andere)
+        # Template.
+        early_assignment = self._assign(self.early)
+        late_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.late,
+        )
+        night = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtschicht",
+            start_time=time(20, 0), end_time=time(23, 0), break_minutes=0,
+        )
+        other_employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+        other_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=other_employee, node=self.node, date=date(2026, 8, 10),
+            template=night,
+        )
+        first, second = ShiftAssignment.swap(early_assignment.id, other_assignment.id)
+        self.assertEqual(first.employee_id, other_employee.id)
+        self.assertEqual(first.template_id, self.early.id)
+        self.assertEqual(second.employee_id, self.employee.id)
+        self.assertEqual(second.template_id, night.id)
+        # employee hat jetzt Spaet (unveraendert) + die eingetauschte Nachtschicht,
+        # nicht mehr den Fruehdienst.
+        remaining = set(
+            ShiftAssignment.objects.filter(employee=self.employee, date=date(2026, 8, 3)).values_list(
+                "id", "template_id"
+            )
+        )
+        self.assertEqual(remaining, {(late_assignment.id, self.late.id), (second.id, night.id)})
+
+    def test_swap_rejects_real_overlap_conflict(self):
+        # employee hat Frueh+Spaet am selben Tag UND eine dritte, unbeteiligte
+        # Nachtschicht an diesem Tag, die getauscht werden soll. Die
+        # eingetauschte Zuweisung (15:00-19:00) ueberschneidet sich mit dem
+        # bestehenden, NICHT am Tausch beteiligten Spaetdienst (13:00-17:30)
+        # -- muss abgelehnt werden.
+        self._assign(self.early, day=date(2026, 8, 3))
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.late,
+        )
+        night = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtschicht",
+            start_time=time(20, 0), end_time=time(23, 0), break_minutes=0,
+        )
+        employee_night = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=night,
+        )
+        overlapping = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Ueberlappt-mit-Spaet",
+            start_time=time(15, 0), end_time=time(19, 0), break_minutes=0,
+        )
+        other_employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+        other_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=other_employee, node=self.node, date=date(2026, 8, 10),
+            template=overlapping,
+        )
+        with self.assertRaises(ValidationError):
+            ShiftAssignment.swap(employee_night.id, other_assignment.id)
+
+
+class ShiftTradeRequestSplitShiftTests(TestCase):
+    """README Punkt 18: ShiftTradeRequest.approve() mit Split-Shift-Tagen."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="ICT", tenant=self.tenant)
+        self.early = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst",
+            start_time=time(7, 0), end_time=time(12, 0), break_minutes=0,
+        )
+        self.late = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Spätdienst",
+            start_time=time(13, 0), end_time=time(17, 30), break_minutes=0,
+        )
+        self.requester = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.target = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+
+    def test_approve_full_swap_same_day_with_existing_second_shift(self):
+        # requester hat an diesem Tag bereits einen Spaetdienst zusaetzlich
+        # zum zu tauschenden Fruehdienst -- der Tausch des Fruehdienstes
+        # darf nicht faelschlich mit dem eigenen Spaetdienst kollidieren.
+        requester_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.requester, node=self.node, date=date(2026, 8, 3),
+            template=self.early,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.requester, node=self.node, date=date(2026, 8, 3),
+            template=self.late,
+        )
+        target_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.target, node=self.node, date=date(2026, 8, 3),
+            template=self.early,
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=requester_assignment,
+            target_employee=self.target,
+            target_assignment=target_assignment,
+        )
+        trade.approve()
+        requester_assignment.refresh_from_db()
+        target_assignment.refresh_from_db()
+        self.assertEqual(requester_assignment.employee_id, self.target.id)
+        self.assertEqual(target_assignment.employee_id, self.requester.id)
+        # requesters Spaetdienst bleibt unveraendert bei ihr bestehen.
+        self.assertTrue(
+            ShiftAssignment.objects.filter(
+                employee=self.requester, date=date(2026, 8, 3), template=self.late
+            ).exists()
+        )

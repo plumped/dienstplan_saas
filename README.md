@@ -1047,56 +1047,99 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
         Vorab-Konfiguration zu erzwingen -- tippt man einen neuen Titel, wird er beim nächsten Mal
         einfach mit vorgeschlagen.
 
-18. **Geteilte Dienste (Split-Shifts): mehrere Zuweisungen pro Mitarbeiter und Tag** (noch nicht
-    umgesetzt). Nutzer-Feedback: in einer Vergleichsanwendung ("im Büro") lassen sich pro Tag zwei
-    Dienste einplanen -- konkreter Praxisfall ICT: Frühdienst (07:00–12:00) und Spätdienst
-    (13:00–17:30) werden am selben Tag von derselben Person geleistet, mit einer echten,
-    variablen Mittagspause dazwischen statt einer festen Pause innerhalb eines einzigen
-    Zeitfensters. Bewusst **nicht** über die bereits vorhandene Blockstruktur
-    (`TimeTemplateSegment`, Block 1.9/1.12) lösbar: Segmente gehören zu *einem* `TimeTemplate` mit
-    fixer Segmentanzahl/-reihenfolge und werden gemeinsam als eine Schicht geplant/getauscht/
-    bepunktet -- hier sind es zwei eigenständige, potenziell unterschiedliche Schichttypen (andere
-    Farbe, ggf. anderer `required_skill`, unabhängig tauschbar), die zufällig am selben Tag
-    derselben Person zugewiesen sind.
+18. ✅ **Geteilte Dienste (Split-Shifts): mehrere Zuweisungen pro Mitarbeiter und Tag** (2026-08).
+    Nutzer-Feedback: in einer Vergleichsanwendung ("im Büro") lassen sich pro Tag zwei Dienste
+    einplanen -- konkreter Praxisfall ICT: Frühdienst (07:00–12:00) und Spätdienst (13:00–17:30)
+    werden am selben Tag von derselben Person geleistet, mit einer echten, variablen Mittagspause
+    dazwischen statt einer festen Pause innerhalb eines einzigen Zeitfensters. Bewusst **nicht**
+    über die bereits vorhandene Blockstruktur (`TimeTemplateSegment`, Block 1.9/1.12) gelöst:
+    Segmente gehören zu *einem* `TimeTemplate` mit fixer Segmentanzahl/-reihenfolge -- hier sind es
+    zwei eigenständige, potenziell unterschiedliche Schichttypen (andere Farbe, ggf. anderer
+    `required_skill`, unabhängig tauschbar), die zufällig am selben Tag derselben Person zugewiesen
+    sind. Umgesetzt wie in der ursprünglichen Skizze geplant, mit einer während der Umsetzung
+    gefundenen Korrektur an der Ruhezeit-Prüfung (siehe unten).
 
-    - **Grundproblem**: `ShiftAssignment` hat `unique_together = ("employee", "date")` --
-      strukturell **eine** Zuweisung pro Person und Tag. Das ist der zentrale Sperrpunkt für alles
-      Weitere hier: `assignmentMap` im Planblatt-Grid ist nach `employee:date` geschlüsselt
-      (erwartet höchstens einen Treffer), `weekly_hours_summary`/`monthly_summary`/
-      `time_account_summary` iterieren "die" Zuweisung eines Tages statt über eine Menge, und
-      `TimeRecord` hängt 1:1 an genau einer `ShiftAssignment` (bleibt aber unverändert korrekt,
-      siehe unten).
-    - **Vorschlag (state of the art, angelehnt an gängige Dienstplan-Software mit
-      Split-Shift-Unterstützung)**: Constraint lockern zu `unique_together` über
-      `(employee, date, template)` (identische Schicht zweimal am selben Tag bleibt weiterhin
-      sinnlos und blockiert), dafür eine **neue Regel-Engine-Prüfung** `_check_no_overlap`, die
-      alle Zuweisungen derselben Person am selben Tag paarweise auf Zeit-Überlappung prüft
-      (`_shift_datetimes()` existiert bereits für genau diesen Zweck, siehe `_night_hours`). Die
-      bestehende Ruhezeit-Prüfung (`_check_minimum_rest_hours`) muss zusätzlich die Lücke
-      *zwischen* zwei Diensten desselben Tages einbeziehen, nicht nur zwischen aufeinanderfolgenden
-      Tagen -- eine zu knappe Mittagspause (z. B. 12:05–12:55 zwischen zwei ArG-relevanten
-      Schichten) ist rechtlich keine Pause, sondern eine (zu kurze) Ruhezeit zwischen zwei
-      getrennten Arbeitseinsätzen.
-    - **Planblatt-UX (ein Blick genügt, keine neue Bedienlogik)**: eine Tageszelle mit mehreren
-      Zuweisungen zeigt **zwei kompakte Chips übereinander statt eines** (analog zur bestehenden
-      `shift-chip`-Darstellung, nur gestapelt) -- kein separater "zweiter Dienst"-Modus, den
-      Planende erst lernen müssten. Das bestehende Ziehen/Ablegen (Block 2.8, echter Swap) und die
-      Mehrfachauswahl-Stempelleiste (Block 2.13-Vorläufer) funktionieren unverändert pro Chip, mit
-      demselben `stationScope()`/`assignableTemplates`-Muster wie heute (Block 17-Nachbesserung) --
-      ein Split-Dienst ist einfach "eine weitere Zuweisung in derselben Zelle", kein neues Konzept.
-    - **Auswertungen bleiben korrekt, ohne Sonderfall-Code**: `weekly_hours_summary`/
-      `monthly_summary`/`time_account_summary` summieren schon heute über
-      `ShiftAssignment.all_objects.filter(employee=..., date__range=...)` -- eine Änderung von
-      "erwartet höchstens eine Zeile pro Tag" zu "iteriert über alle Zeilen eines Tages" ist eine
-      lokale Anpassung der bestehenden Schleifen, keine neue Aggregationslogik. `TimeRecord` bleibt
-      unverändert 1:1 pro `ShiftAssignment` -- zwei Dienste ergeben automatisch zwei unabhängig
-      erfassbare Ist-Zeiten samt eigener Segmente, ohne jede Modelländerung an `TimeRecord` selbst.
-    - **Offene Entscheidung für die Umsetzung**: ob eine dritte, vierte... Zuweisung am selben Tag
-      technisch ebenfalls erlaubt sein soll (kein Modellgrund dagegen) oder ob UI/Regel-Engine
-      bewusst auf zwei begrenzt werden, um die Zelle nicht unübersichtlich werden zu lassen --
-      Praxisfälle mit mehr als zwei echten Diensteinheiten pro Tag/Person sind selten genug, dass
-      eine harte Grenze vertretbar sein könnte, sollte aber am realen Anwendungsfall (ICT und
-      ähnliche) verifiziert werden, bevor sie festgeschrieben wird.
+    - **Backend**: `ShiftAssignment.unique_together` gelockert von `("employee", "date")` auf
+      `("employee", "date", "template")` (Migration `0015`, rein additiv) -- identische Schicht
+      zweimal am selben Tag bleibt weiterhin sinnlos und blockiert. Neue Regel-Engine-Prüfung
+      `_check_no_overlap()` vergleicht alle Zuweisungen derselben Person am selben Tag paarweise
+      auf Zeit-Überlappung (`_shifts_overlap()`, nutzt das bereits vorhandene `_shift_datetimes()`).
+      `_check_daily_span()` (Art. 10 Abs. 3 ArG) wurde erweitert: die Tagesspanne ist jetzt "erster
+      Arbeitsbeginn bis letztes Arbeitsende" über **alle** Zuweisungen des Tages kombiniert, nicht
+      mehr nur die Spanne der einzelnen Zuweisung -- sonst liesse sich die gesetzliche Tagesgrenze
+      durch Aufteilen in mehrere kurze Templates umgehen.
+    - **Korrektur gegenüber der ursprünglichen Skizze**: die 11h-Ruhezeit-Prüfung
+      (`_check_rest_period`, Art. 15a ArG) wurde bewusst **nicht** verändert. Die erste Skizze
+      dieses Punkts nahm an, die Lücke zwischen zwei Diensten desselben Tages (die Mittagspause)
+      müsse ebenfalls gegen die 11h-Ruhezeit geprüft werden -- das ist rechtlich falsch: Art. 15a
+      ArG regelt die Ruhezeit *zwischen Kalendertagen*, nicht Pausen *innerhalb* eines
+      Arbeitstages. Eine 1h-Mittagspause zwischen Früh- und Spätdienst hätte sonst grundsätzlich
+      geblockt, was das Feature für den namensgebenden Anwendungsfall unbrauchbar gemacht hätte.
+      `_check_rest_period()` vergleicht wie bisher nur gegen Zuweisungen an `date - 1`/`date + 1`
+      (Vor-/Folgetag) -- Zuweisungen am selben Tag werden von dieser Abfrage strukturell gar nicht
+      erst erfasst, was sich beim Umsetzen als bereits korrekt herausstellte. Die Begrenzung des
+      Arbeitstages selbst übernimmt stattdessen die oben beschriebene erweiterte
+      `_check_daily_span()`.
+    - **Transienter Validierungs-Fallstrick beim Swap/Tausch**: `ShiftAssignment.swap()` (Block
+      2.8) und `ShiftTradeRequest.approve()` prüfen während einer laufenden Zwei-Zeilen-Transaktion
+      testweise per `full_clean(validate_unique=False)`, sähen dabei aber ohne Weiteres noch den
+      Vor-Tausch-Datenbankstand des jeweils anderen Tauschpartners und würden `_check_no_overlap()`
+      sowie die erweiterte `_check_daily_span()` fälschlich einen Konflikt mit sich selbst melden
+      lassen (dasselbe Muster wie beim bereits bekannten `validate_unique`-Problem, siehe Block
+      2.8). Gelöst über ein transientes (nicht persistiertes) Attribut `_overlap_exclude_pks`, das
+      beide Methoden vor dem `full_clean()`-Aufruf auf beide beteiligten Zeilen-IDs setzen -- im
+      Normalfall (Speichern über die API) ist das Attribut nicht gesetzt und es gilt schlicht "alle
+      anderen Zuweisungen ausser mir selbst". Die manuellen Drittkonflikt-Checks in beiden Methoden
+      wurden von "irgendeine andere Zuweisung am selben Tag" auf "eine zeitlich überschneidende"
+      umgestellt (`_overlapping_conflict()`, gemeinsam mit `_check_no_overlap()` genutzt).
+    - **Planblatt-UX**: eine Tageszelle mit mehreren Zuweisungen zeigt zwei kompakte Chips
+      übereinander (chronologisch nach Beginnzeit sortiert) statt eines -- technisch zwei
+      `ShiftCell`-Instanzen pro Zelle statt einer, jede mit vollem Funktionsumfang (Ziehen/Ablegen
+      inkl. echtem Swap, Diensttausch-Angebot, Ist-Zeit-Erfassung), da dieselbe, bereits bewährte
+      Komponente einfach zweimal instanziiert wird statt neu gebaut zu werden. Ein zweiter,
+      leerer "+"-Slot erscheint nur für Admin/Planer, sobald der erste Slot befüllt ist (kein
+      unbedienbares leeres "+" für reine Betrachter); das Wunschfrei/Wunschdienst-Badge erscheint
+      bewusst nur am ersten Slot (`ShiftPreference` gilt personen-/tagesweise, nicht pro
+      Zuweisung -- ein zweites Badge wäre ein irreführendes Duplikat).
+    - **Ziehen/Ablegen wurde auf Zuweisungs-IDs statt Person+Datum umgestellt**: da eine
+      Tageszelle jetzt mehrdeutig sein kann, trägt der Drag jetzt die konkrete `assignmentId` im
+      Payload statt sie beim Ablegen über employee+date neu (und seit Split-Shifts mehrdeutig)
+      aufzulösen -- eine sauberere, eindeutige Lösung statt eines Sonderfalls für "welcher von
+      zwei Diensten wurde gezogen".
+    - **Wochenmuster-Kopieren** (`handleCopyWeekPattern`) kopiert jetzt alle Zuweisungen eines
+      Quelltages (nicht mehr nur die erste) und wurde dabei zusätzlich auf die eigene Team-Zeile
+      eingeschränkt (`rowNodeId`-Filter) -- vorher las die Funktion die global erste Zuweisung
+      eines Tages unabhängig vom Team, was bei Mehrfachanstellung (Punkt 17) latent falsch war und
+      durch die Umstellung auf Arrays ohnehin entschieden werden musste.
+    - **Bewusst unverändert**: die Mehrfachauswahl-Stempelleiste (Block 2.13-Vorläufer) bleibt auf
+      den ersten Slot einer Zeile beschränkt -- kein UI für "welchen von zwei Slots stempeln" beim
+      Massen-Zuweisen, ein zweiter Dienst bleibt eine bewusste Einzelzell-Aktion im normalen
+      Zuweisungs-Dropdown. `weekly_hours_summary`/`monthly_summary`/`time_account_summary`
+      brauchten keine Änderung -- sie summierten schon vor diesem Punkt über eine Ergebnismenge
+      (nicht `.get()` einer einzelnen Zeile) und funktionieren dadurch bereits korrekt für mehrere
+      Zuweisungen pro Tag. `TimeRecord` bleibt unverändert 1:1 pro `ShiftAssignment` -- zwei
+      Dienste ergeben automatisch zwei unabhängig erfassbare Ist-Zeiten.
+    - **Bekannte Lücke**: `YearPlan.jsx` (Jahresplan-Tab) zeigt bei einem Split-Shift-Tag weiterhin
+      nur eine (die zuletzt geladene, nicht notwendigerweise chronologisch erste) Zuweisung --
+      `assignmentByDate` ist dort unverändert einwertig. Bewusst nicht in diesem Durchgang
+      mitgezogen: das Planblatt ist der primäre Bearbeitungsort für Split-Shifts, der Jahresplan
+      ein sekundärer Kalenderüberblick pro Person. Niedrigere Priorität, sollte aber nachgezogen
+      werden, falls Split-Shifts in der Praxis auch von dort aus verwaltet werden sollen.
+    - **Menge der Slots bewusst auf zwei begrenzt** (nicht technisch erzwungen -- die Regel-Engine
+      erlaubt beliebig viele nicht überlappende Zuweisungen pro Tag, nur das Planblatt-UI zeigt
+      höchstens zwei Chips): der genannte Praxisfall (Früh + Spät) braucht genau zwei, ein drittes
+      UI-Slot hätte die Zelle unnötig unübersichtlich gemacht, ohne einen bekannten realen
+      Bedarf zu bedienen.
+    - Getestet: `SplitShiftTests`/`ShiftTradeRequestSplitShiftTests` (`scheduling/tests.py`) --
+      nicht überlappende Zuweisungen gültig, überlappende abgelehnt, identisches Template zweimal
+      abgelehnt, exakt angrenzende Zuweisungen (Ende == Beginn) gültig, kombinierte Tagesspanne,
+      Ruhezeit ignoriert die Tageslücke aber greift weiterhin zum Vor-/Folgetag, Wochen-/
+      Monatsauswertung summiert beide Schichten, Swap eines von zwei Tages-Slots, Swap lehnt
+      echten Drittkonflikt ab, `ShiftTradeRequest.approve()` mit bereits vorhandenem zweitem
+      Dienst. Mit Playwright im Browser gegen die echten Testheim-Daten verifiziert: zwei Chips
+      übereinander nach Doppelzuweisung, Fehlermeldung bei Überlappungsversuch im UI (Banner statt
+      stillem Fehlschlag), Ziehen eines einzelnen Slots auf einen anderen Tag lässt den anderen
+      Slot unverändert zurück.
 
 19. **Automatisierte Planung (One-Click Planning)** (noch nicht umgesetzt). Ziel: Admin/Planer
     wählen eine Station/einen Zeitraum und lassen das System selbständig einen vollständigen,
@@ -1205,7 +1248,7 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 5. **Automatisierte Frontend-Tests**: `dienstplan_frontend` hat aktuell keine persistierte
    Testsuite -- jedes Feature wurde bei der Entwicklung manuell per Playwright im Browser
    verifiziert, aber nichts davon liegt als wiederholbarer Test im Repo. Regressionen im
-   Frontend fallen damit nicht automatisch auf, anders als im Backend (269 Tests, `python
+   Frontend fallen damit nicht automatisch auf, anders als im Backend (296 Tests, `python
    manage.py test`).
 
 ### 5. Datenschutz (revDSG) & Rechtliches

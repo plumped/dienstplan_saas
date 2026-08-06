@@ -1141,6 +1141,33 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       stillem Fehlschlag), Ziehen eines einzelnen Slots auf einen anderen Tag lässt den anderen
       Slot unverändert zurück.
 
+    - ✅ **Bugfix/Härtung (2026-08): `ManyToManyField`s in Serializern konnten `TypeError: Direct
+      assignment to the forward side of a many-to-many set is prohibited` auslösen.** Betroffen
+      war `EmployeeSerializer` (`Employee.skills`, echtes M2M-Feld) -- dessen eigene
+      `create()`/`update()`-Logik (nötig für die verschachtelte `employments`-Synchronisation,
+      Punkt 17 oben) reichte `validated_data` unverändert an `Employee.objects.create(**...)` bzw.
+      einen generischen `setattr(instance, field, value)`-Loop weiter. DRFs eigene
+      `ModelSerializer`-Basisklasse filtert M2M-Felder automatisch heraus, bevor sie das tut --
+      genau diesen Schutz hebelt jede eigene `create()`/`update()`-Überschreibung aus, sofern sie
+      ihn nicht selbst nachbaut. Live in Produktion: `EmployeeSettings.jsx` schickt `skills` bei
+      jedem Anlegen/Ändern eines Mitarbeitenden mit, kein bestehender Test rief je `POST
+      /api/employees/` auf, daher unbemerkt. Behoben durch zwei wiederverwendbare Helfer
+      (`pop_m2m_fields`/`set_m2m_fields` in `scheduling/serializers.py`, basierend auf
+      `Model._meta.many_to_many`-Introspektion statt hartkodierter Feldnamen): trennen alle
+      M2M-Felder aus `validated_data` heraus, bevor die Instanz erzeugt/gespeichert wird, und
+      synchronisieren sie danach explizit über `.set()`. Angewendet auf `EmployeeSerializer`
+      (der eigentliche Bug) sowie defensiv auf `TimeTemplateSerializer`/`TimeRecordSerializer`
+      (aktuell keine M2M-Felder, aber dieselbe eigene create()/update()-Struktur -- schützt
+      automatisch, falls dort je ein M2M-Feld dazukommt). Alle anderen Serializer mit
+      `setattr`-Nutzung (`ShiftAssignment`/`Absence`/`ShiftPreference`/`ShiftTradeRequest`) wurden
+      geprüft und sind unkritisch: sie schreiben nur ein festes Whitelist von Nicht-M2M-Feldern auf
+      eine Wegwerf-Instanz, rein um `clean()` vor dem eigentlichen Speichern zu triggern, und keines
+      der zugehörigen Models hat ein M2M-Feld. Getestet (`EmployeeSkillsM2MTests`,
+      `scheduling/tests.py`): POST mit initialer Skill-Zuweisung, POST mit leerer Skill-Liste,
+      PATCH ändert Skills, PATCH entfernt alle Skills, PATCH kombiniert normale Felder + Skills in
+      einem Request, PATCH ohne `skills`-Key lässt bestehende Skills unangetastet, Kombination aus
+      Skills- und `employments`-Sync in einem Request (Sonderlogik aus Punkt 17 bleibt intakt).
+
 19. **Automatisierte Planung (One-Click Planning)** (noch nicht umgesetzt). Ziel: Admin/Planer
     wählen eine Station/einen Zeitraum und lassen das System selbständig einen vollständigen,
     regelkonformen Dienstplan-Entwurf erzeugen -- unter Einhaltung sämtlicher bereits vorhandener

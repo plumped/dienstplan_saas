@@ -3085,6 +3085,114 @@ class EmployeeSerializerEmploymentSyncTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class EmployeeSkillsM2MTests(APITestCase):
+    """
+    Bugfix: Employee.skills (ManyToManyField) darf nie direkt per
+    Konstruktor-Kwarg oder setattr() gesetzt werden -- EmployeeSerializer.
+    create()/update() reichten `skills` bisher ungefiltert an
+    Employee.objects.create(**validated_data) bzw. eine generische
+    setattr()-Schleife durch und liessen dabei jeden Request mit einem
+    `skills`-Feld (das Frontend schickt es immer mit, auch als leere Liste)
+    mit `TypeError: Direct assignment to the forward side of a
+    many-to-many set is prohibited` abstürzen -- siehe pop_m2m_fields()/
+    set_m2m_fields() in serializers.py für den Fix.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.skill_a = Skill.objects.create(tenant=self.tenant, name="Reanimation")
+        self.skill_b = Skill.objects.create(tenant=self.tenant, name="Wundversorgung")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        self.planner_user = User.objects.create_user(username="planner-skills", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=self.planner_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_post_with_empty_skills_list_does_not_crash(self):
+        # Der wichtigste Regressionstest: das Frontend schickt `skills`
+        # IMMER mit (auch `[]`), das liess bislang jede Neuanlage scheitern.
+        response = self.client.post(
+            "/api/employees/",
+            {"first_name": "Anna", "last_name": "Berger", "employment_pct": 100, "skills": []},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        employee = Employee.objects.get(id=response.data["id"])
+        self.assertEqual(list(employee.skills.all()), [])
+
+    def test_post_with_initial_skills_assignment(self):
+        response = self.client.post(
+            "/api/employees/",
+            {
+                "first_name": "Anna",
+                "last_name": "Berger",
+                "employment_pct": 100,
+                "skills": [self.skill_a.id, self.skill_b.id],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        employee = Employee.objects.get(id=response.data["id"])
+        self.assertEqual(
+            set(employee.skills.values_list("id", flat=True)), {self.skill_a.id, self.skill_b.id}
+        )
+
+    def test_patch_changes_skills(self):
+        self.employee.skills.add(self.skill_a)
+        response = self.client.patch(
+            f"/api/employees/{self.employee.id}/", {"skills": [self.skill_b.id]}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.skills.values_list("id", flat=True)), [self.skill_b.id])
+
+    def test_patch_removes_all_skills(self):
+        self.employee.skills.add(self.skill_a, self.skill_b)
+        response = self.client.patch(f"/api/employees/{self.employee.id}/", {"skills": []}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.skills.all()), [])
+
+    def test_patch_combines_scalar_and_m2m_fields(self):
+        self.employee.skills.add(self.skill_a)
+        response = self.client.patch(
+            f"/api/employees/{self.employee.id}/",
+            {"first_name": "Petra", "skills": [self.skill_b.id]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.first_name, "Petra")
+        self.assertEqual(list(self.employee.skills.values_list("id", flat=True)), [self.skill_b.id])
+
+    def test_patch_without_skills_key_leaves_existing_untouched(self):
+        self.employee.skills.add(self.skill_a)
+        response = self.client.patch(f"/api/employees/{self.employee.id}/", {"first_name": "Petra"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.skills.values_list("id", flat=True)), [self.skill_a.id])
+
+    def test_patch_combines_skills_and_employments_in_one_request(self):
+        # Zwei unterschiedliche Sonderlogiken (M2M-Sync + verschachtelte
+        # employments-Zuweisung, README Punkt 17) in einem Request dürfen
+        # sich nicht gegenseitig stören.
+        node = Node.add_root(name="Team A", tenant=self.tenant)
+        response = self.client.patch(
+            f"/api/employees/{self.employee.id}/",
+            {
+                "skills": [self.skill_a.id],
+                "employments": [{"node": node.id, "pensum_pct": 80, "title": "", "is_team_lead": False}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.skills.values_list("id", flat=True)), [self.skill_a.id])
+        self.assertEqual(list(self.employee.nodes.values_list("id", flat=True)), [node.id])
+
+
 class ShiftPreferenceTests(APITestCase):
     """Wunschfrei/Wunschdienst (MVP-Fahrplan Block 2.13): höchstpersönliche Selbstauskunft."""
 

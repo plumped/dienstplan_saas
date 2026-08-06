@@ -18,6 +18,64 @@ from .models import (
 )
 
 
+def pop_m2m_fields(model, validated_data):
+    """
+    Trennt ManyToMany-Feldwerte aus validated_data heraus, BEVOR sie an
+    Model.objects.create(**validated_data) oder eine generische
+    setattr(instance, field, value)-Schleife weitergereicht werden -- beide
+    Wege akzeptieren M2M-Werte nicht direkt und würden mit
+    `TypeError: Direct assignment to the forward side of a many-to-many set
+    is prohibited. Use <feld>.set() instead.` abbrechen (Django-Modelle
+    erlauben M2M-Zuweisung nur über den Manager, nie per Konstruktor-Kwarg
+    oder Attribut-Zuweisung).
+
+    Wird `model._meta.many_to_many` befragt statt eine feste Feldliste zu
+    pflegen, damit jedes künftige M2M-Feld auf diesem Modell automatisch
+    sicher behandelt wird -- ein Serializer mit eigener create()/update()-
+    Logik muss dafür nicht mehr wissen, welche seiner Felder M2M sind.
+    Rückgabe: (validated_data ohne M2M-Einträge, {feldname: wert, ...} der
+    herausgetrennten M2M-Einträge, jeweils nur falls im Payload enthalten).
+
+    Verwendung (Standard-Pattern für jeden ModelSerializer mit eigener
+    create()/update()-Methode -- siehe EmployeeSerializer/
+    TimeTemplateSerializer/TimeRecordSerializer unten):
+
+        def create(self, validated_data):
+            validated_data, m2m_data = pop_m2m_fields(Employee, validated_data)
+            instance = Employee.objects.create(**validated_data)
+            set_m2m_fields(instance, m2m_data)
+            return instance
+
+        def update(self, instance, validated_data):
+            validated_data, m2m_data = pop_m2m_fields(Employee, validated_data)
+            for field, value in validated_data.items():
+                setattr(instance, field, value)
+            instance.save()
+            set_m2m_fields(instance, m2m_data)
+            return instance
+    """
+    m2m_field_names = {f.name for f in model._meta.many_to_many}
+    m2m_data = {name: validated_data.pop(name) for name in list(validated_data) if name in m2m_field_names}
+    return validated_data, m2m_data
+
+
+def set_m2m_fields(instance, m2m_data):
+    """
+    Wendet die von pop_m2m_fields() abgetrennten M2M-Werte über die
+    korrekte Relation-Methode (.set()) an -- erst NACHDEM instance
+    gespeichert ist (M2M braucht einen Primärschlüssel). .set() statt
+    .add()/.remove(), weil ein PATCH/PUT den kompletten Zielzustand des
+    Feldes im Payload trägt (DRF-Konvention bei many=True-Feldern), nicht
+    ein einzelnes Hinzufügen/Entfernen -- .set() synchronisiert das in
+    einem Aufruf (überzählige Einträge werden entfernt, fehlende ergänzt).
+    Ein Feld, das im Payload fehlt (z. B. bei einem partiellen PATCH ohne
+    dieses Feld), taucht in m2m_data gar nicht erst auf und bleibt
+    unangetastet.
+    """
+    for field_name, value in m2m_data.items():
+        getattr(instance, field_name).set(value)
+
+
 class NodeSerializer(serializers.ModelSerializer):
     # Bewusst kein PrimaryKeyRelatedField(queryset=Node.objects...): der
     # TenantScopedManager würde die Queryset-Filterung beim Laden dieses
@@ -94,17 +152,31 @@ class EmployeeSerializer(serializers.ModelSerializer):
         ]
 
     def create(self, validated_data):
+        # Bugfix: `skills` (ManyToManyField) darf nicht als Konstruktor-Kwarg
+        # an Employee.objects.create() durchgereicht werden -- siehe
+        # pop_m2m_fields()-Docstring oben. `nodes` ist zwar ebenfalls M2M,
+        # aber oben read_only deklariert und taucht daher nie in
+        # validated_data auf; pop_m2m_fields() findet trotzdem nur, was
+        # tatsächlich vorhanden ist.
+        validated_data, m2m_data = pop_m2m_fields(Employee, validated_data)
         employments_data = validated_data.pop("employments", None)
         instance = Employee.objects.create(**validated_data)
+        set_m2m_fields(instance, m2m_data)
         if employments_data:
             self._sync_employments(instance, employments_data)
         return instance
 
     def update(self, instance, validated_data):
+        # Bugfix: dieselbe setattr()-Schleife wie unten würde für `skills`
+        # mit "TypeError: Direct assignment to the forward side of a
+        # many-to-many set is prohibited" abbrechen -- siehe
+        # pop_m2m_fields()-Docstring oben.
+        validated_data, m2m_data = pop_m2m_fields(Employee, validated_data)
         employments_data = validated_data.pop("employments", None)
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.save()
+        set_m2m_fields(instance, m2m_data)
         if employments_data is not None:
             self._sync_employments(instance, employments_data)
         return instance
@@ -243,17 +315,25 @@ class TimeTemplateSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
+        # TimeTemplate hat aktuell kein ManyToManyField -- pop_m2m_fields()
+        # ist hier ein No-Op, hält das Muster aber konsistent mit
+        # EmployeeSerializer und schützt automatisch, falls hier je ein
+        # M2M-Feld ergänzt wird (siehe pop_m2m_fields()-Docstring oben).
+        validated_data, m2m_data = pop_m2m_fields(TimeTemplate, validated_data)
         segments_data = validated_data.pop("segments", None)
         instance = TimeTemplate.objects.create(**validated_data)
+        set_m2m_fields(instance, m2m_data)
         if segments_data:
             self._sync_segments(instance, segments_data)
         return instance
 
     def update(self, instance, validated_data):
+        validated_data, m2m_data = pop_m2m_fields(TimeTemplate, validated_data)
         segments_data = validated_data.pop("segments", None)
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.save()
+        set_m2m_fields(instance, m2m_data)
         if segments_data is not None:
             self._sync_segments(instance, segments_data)
         return instance
@@ -452,17 +532,24 @@ class TimeRecordSerializer(serializers.ModelSerializer):
         return attrs
 
     def create(self, validated_data):
+        # TimeRecord hat aktuell kein ManyToManyField -- siehe Kommentar in
+        # TimeTemplateSerializer.create() für die Begründung, warum das
+        # Muster trotzdem konsistent angewendet wird.
+        validated_data, m2m_data = pop_m2m_fields(TimeRecord, validated_data)
         segments_data = validated_data.pop("segments", None)
         instance = TimeRecord.objects.create(**validated_data)
+        set_m2m_fields(instance, m2m_data)
         if segments_data:
             self._sync_segments(instance, segments_data)
         return instance
 
     def update(self, instance, validated_data):
+        validated_data, m2m_data = pop_m2m_fields(TimeRecord, validated_data)
         segments_data = validated_data.pop("segments", None)
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.save()
+        set_m2m_fields(instance, m2m_data)
         if segments_data is not None:
             self._sync_segments(instance, segments_data)
         return instance

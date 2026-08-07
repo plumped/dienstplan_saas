@@ -1845,12 +1845,20 @@ thead .col-employee {
    .day-cell fasst Slot-Zeile + Spezialitäten-Zeile pro Tageszelle zusammen.
 
    Nutzer-Feedback (2026-08, "genau wie Polypoint"): .day-cell-slots (vorher
-   .shift-slots-row, flex) ist jetzt ein CSS-Grid mit zwei GLEICH GROSSEN
-   Spalten innerhalb der (seit table-layout: fixed oben) unveränderlich
-   breiten Tagesspalte -- zwei Dienste teilen sich die Breite EINER Zelle
-   (Links/Rechts), statt dass die Spalte pro Split-Shift-Tag breiter wird.
+   .shift-slots-row, flex) ist ein CSS-Grid innerhalb der (seit
+   table-layout: fixed oben) unveränderlich breiten Tagesspalte -- die
+   Spalte wird NIE breiter, egal wie viele Dienste an einem Tag liegen.
    Ein einzelner Dienst ("Ganz") bekommt die Modifier-Klasse
-   .cell-wrap--span und spannt via grid-column: 1 / 3 beide Spalten. */
+   .cell-wrap--span und spannt via grid-column: 1 / 3 beide Spalten.
+
+   Nutzer-Feedback (2026-08, Nachbesserung): zwei Dienste nebeneinander
+   waren anfangs ein reiner Links/Rechts-Spaltensplit (je ~20px) -- ohne
+   gesetztes Icon lief der Zwei-Buchstaben-Fallback dabei sichtbar
+   ineinander (siehe chipGlyph.js). Jetzt stattdessen diagonal wie im
+   Jahresplan (.year-day-fill--shift.is-split unten): .day-cell-slots--
+   diagonal, jeder Chip in seiner eigenen Ecke (oben/links, unten/rechts)
+   statt in einer festen Spaltenbreite -- mehr Platz pro Glyph, gleiche
+   visuelle Sprache wie "zwei Dienste an einem Tag" im Jahresplan. */
 .day-cell {
   display: flex;
   flex-direction: column;
@@ -1868,6 +1876,75 @@ thead .col-employee {
 
 .day-cell-slots .cell-wrap--span {
   grid-column: 1 / 3;
+}
+
+/* Nutzer-Feedback (2026-08, Nachbesserung): ein reiner Links/Rechts-
+   Spaltensplit zwang beide Glyphen in eine ~20px schmale Spalte -- ohne
+   gesetztes Icon (Fallback: 1 Buchstabe) lief das noch, ein manuell
+   gesetztes zweistelliges Icon oder generell mehr Platz war darin nicht
+   drin. Diagonal wie im Jahresplan (siehe .year-day-fill--shift.is-split
+   weiter unten) statt Spalten: jeder Chip sitzt in seiner eigenen Ecke
+   statt in einer festen Spaltenbreite -- dadurch mehr nutzbarer Platz pro
+   Glyph bei gleicher Zellgrösse, und dieselbe visuelle Sprache wie im
+   Jahresplan für "zwei Dienste an einem Tag". */
+.day-cell-slots--diagonal {
+  display: block;
+  position: relative;
+  /* Bugfix (Playwright-Verifikation): bei 20px Höhe (wie ein einzelner
+     Chip) lagen "top: 0" und "bottom: 0" exakt übereinander -- der zweite
+     Chip war komplett vom ersten verdeckt. Container jetzt höher als ein
+     einzelner Chip (16px, s. u.), damit oben/unten wirklich getrennte
+     Zeilen ergeben, nicht dieselbe. */
+  height: 30px;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.day-cell-slots--diagonal .diag-bg {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--chip-color) 22%, white) 50%,
+    color-mix(in srgb, var(--chip-color-2) 22%, white) 50%
+  );
+  pointer-events: none;
+}
+
+/* Bugfix (Playwright-Verifikation): ShiftCell.jsx wickelt sein eigenes
+   Markup zusätzlich in ein <span className="cell-wrap"> (für den
+   Tausch-Button-Ankerpunkt) -- ein ungescoptes ".cell-wrap" hier hätte
+   also auch DIESES innere, unmodifizierte cell-wrap getroffen und
+   position:absolute ohne jeden Offset gegeben. Damit verlor der äussere
+   (shrink-to-fit) Wrapper seinen einzigen normalen Flow-Inhalt, kollabierte
+   auf 0x0, und der zweite Chip verschwand komplett. Nur auf die beiden
+   Modifier-Klassen scopen, die ausschliesslich am äusseren Wrapper hängen. */
+.day-cell-slots--diagonal .cell-wrap--diag-tl,
+.day-cell-slots--diagonal .cell-wrap--diag-br {
+  position: absolute;
+  width: auto;
+  min-width: 0;
+}
+
+.day-cell-slots--diagonal .cell-wrap--diag-tl {
+  top: 0;
+  left: 1px;
+}
+
+.day-cell-slots--diagonal .cell-wrap--diag-br {
+  bottom: 0;
+  right: 1px;
+}
+
+.day-cell-slots--diagonal .shift-chip-btn {
+  width: auto;
+  height: 16px;
+}
+
+.day-cell-slots--diagonal .shift-chip {
+  width: auto;
+  min-width: 14px;
+  padding: 0 4px;
 }
 
 .special-strip {

@@ -1289,16 +1289,37 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                         ) : (
                           <div className="day-cell">
                             {/* Polypoint-Vorbild (2026-08): die Zelle bleibt IMMER
-                                gleich breit (table-layout: fixed) -- zwei Dienste
-                                teilen sich Links/Rechts EINE feste Breite statt die
-                                Spalte wachsen zu lassen. Nur ein Dienst ("Ganz")
-                                spannt beide Hälften (cell-wrap--span). */}
-                            <div className="day-cell-slots">
-                              <div className={`cell-wrap${!showSecondSlot ? " cell-wrap--span" : ""}`}>
+                                gleich breit (table-layout: fixed) statt zu wachsen.
+                                Nutzer-Feedback (2026-08, Nachbesserung): ein reiner
+                                Links/Rechts-Spalten-Split zwang beide Glyphen in eine
+                                ~20px schmale Spalte -- bei zwei Zeichen (Fallback ohne
+                                gesetztes Icon) liefen die Chips sichtbar ineinander.
+                                Diagonal wie im Jahresplan (.year-day-fill--shift.
+                                is-split) statt Spalten: jeder Chip sitzt in seiner
+                                eigenen Ecke (oben/links bzw. unten/rechts) und ist
+                                dadurch nicht auf eine feste Spaltenbreite beschränkt --
+                                mehr Platz pro Glyph bei gleicher Zellgrösse. Nur ein
+                                Dienst ("Ganz") spannt weiterhin die ganze Breite. */}
+                            <div className={`day-cell-slots${showSecondSlot ? " day-cell-slots--diagonal" : ""}`}>
+                              {showSecondSlot && (
+                                <span
+                                  className="diag-bg"
+                                  aria-hidden="true"
+                                  style={{
+                                    "--chip-color": templates.find((t) => t.id === regularAssignments[0]?.template)?.color ?? "var(--border)",
+                                    "--chip-color-2": templates.find((t) => t.id === regularAssignments[1]?.template)?.color ?? "var(--border)",
+                                  }}
+                                />
+                              )}
+                              <div
+                                className={`cell-wrap${
+                                  showSecondSlot ? " cell-wrap--diag-tl" : " cell-wrap--span"
+                                }`}
+                              >
                                 {renderSlot(regularAssignments[0], 0)}
                               </div>
                               {showSecondSlot && (
-                                <div className="cell-wrap">{renderSlot(regularAssignments[1], 1)}</div>
+                                <div className="cell-wrap cell-wrap--diag-br">{renderSlot(regularAssignments[1], 1)}</div>
                               )}
                             </div>
                             {/* Nutzer-Feedback (2026-08, Nachbesserung): Spezialitäten

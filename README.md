@@ -423,6 +423,14 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    die Zustimmung der Zielperson, `approve`/`reject` durch Admin/Planer vollziehen/verwerfen den
    Tausch tatsächlich) haben jetzt eine Planer-Freigabe-Stufe. Details siehe Architektur-Abschnitt
    oben (Absenzen/Diensttausch) und Frontend-Abschnitt (Genehmigungs-Workflow).
+
+   - ✅ **UX-Bugfix (2026-08): Diensttausch-Tab derselbe Fliesstext-Effekt wie der
+     Zeiterfassung-Tab** (siehe dort, Block 1.10) -- "X bietet Schicht ... an Y im Tausch gegen
+     deren Schicht ..." mit Status-Badge davor als ein einziger Satz war schwer scannbar
+     (`TradeRequestPanel.jsx`). Behoben nach demselben Muster: Kopfzeile mit beiden beteiligten
+     Personen + Status, darunter je eine beschriftete Zeile "Bietet"/"Gegen" (letztere nur bei
+     einem echten Swap, also gesetztem `target_assignment`) mit Schichttyp-Chip + Datum statt
+     Fliesstext, Notiz als eigene Zeile darunter.
 4. ✅ **Benachrichtigungen** bei neuer Absenz-/Tauschanfrage und deren Genehmigung/Ablehnung, in
    zwei Kanälen:
    - **E-Mail** (`core/notifications.py`): neue Absenz → Admin/Planer; Absenz-Entscheid →

@@ -66,11 +66,9 @@ export default function TradeRequestPanel({ me, onError }) {
     return employee ? `${employee.first_name} ${employee.last_name}` : `#${id}`;
   }
 
-  function describeAssignment(id) {
+  function templateForAssignment(id) {
     const assignment = assignmentsById.get(id);
-    if (!assignment) return "…";
-    const template = templatesById.get(assignment.template);
-    return `${assignment.date}${template ? ` (${template.name})` : ""}`;
+    return assignment ? templatesById.get(assignment.template) : undefined;
   }
 
   async function runAction(id, action) {
@@ -109,19 +107,47 @@ export default function TradeRequestPanel({ me, onError }) {
                 !canManage && ownEmployeeId !== null && r.target_employee === ownEmployeeId;
               const isEmployeeRequester =
                 !canManage && ownEmployeeId !== null && requesterAssignment?.employee === ownEmployeeId;
+              const requesterTemplate = templateForAssignment(r.requester_assignment);
+              const targetAssignment = r.target_assignment ? assignmentsById.get(r.target_assignment) : undefined;
+              const targetTemplate = templateForAssignment(r.target_assignment);
               return (
-                <li key={r.id} className="entry-list-item entry-list-item--trade">
-                  <span className={`status-badge status-badge--${r.status}`}>
-                    {STATUS_LABELS[r.status] ?? r.status}
-                  </span>
+                <li key={r.id} className="entry-list-item entry-list-item--trade trade-entry">
                   <span className="entry-main">
-                    <strong>{requesterAssignment ? employeeName(requesterAssignment.employee) : "…"}</strong>{" "}
-                    bietet Schicht {describeAssignment(r.requester_assignment)} an{" "}
-                    <strong>{employeeName(r.target_employee)}</strong>
-                    {r.target_assignment && (
-                      <> im Tausch gegen deren Schicht {describeAssignment(r.target_assignment)}</>
+                    <div className="trade-header">
+                      <strong>{requesterAssignment ? employeeName(requesterAssignment.employee) : "…"}</strong>
+                      <span className="trade-arrow" aria-hidden="true">⇄</span>
+                      <strong>{employeeName(r.target_employee)}</strong>
+                      <span className={`status-badge status-badge--${r.status}`}>
+                        {STATUS_LABELS[r.status] ?? r.status}
+                      </span>
+                    </div>
+                    <div className="trade-shifts">
+                      <span className="trade-shift-row">
+                        <span className="trade-shift-label">Bietet</span>
+                        {requesterTemplate && (
+                          <span className="shift-chip" style={{ "--chip-color": requesterTemplate.color }}>
+                            {requesterTemplate.name}
+                          </span>
+                        )}
+                        <span className="entry-date">{requesterAssignment?.date ?? "…"}</span>
+                      </span>
+                      {r.target_assignment && (
+                        <span className="trade-shift-row">
+                          <span className="trade-shift-label">Gegen</span>
+                          {targetTemplate && (
+                            <span className="shift-chip" style={{ "--chip-color": targetTemplate.color }}>
+                              {targetTemplate.name}
+                            </span>
+                          )}
+                          <span className="entry-date">{targetAssignment?.date ?? "…"}</span>
+                        </span>
+                      )}
+                    </div>
+                    {r.note && (
+                      <div className="time-record-notes">
+                        <span className="entry-note">{r.note}</span>
+                      </div>
                     )}
-                    {r.note && <span className="entry-note"> · {r.note}</span>}
                   </span>
                   {canManage && isOpen && (
                     <span className="entry-actions">

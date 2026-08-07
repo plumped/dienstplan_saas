@@ -946,6 +946,14 @@ thead .col-employee {
   border-radius: 5px;
   font-size: 12px;
   font-weight: 800;
+  /* Bugfix (2026-08): ohne overflow:hidden liess flexbox ein zu breites
+     Kürzel (z. B. ein manuell gesetztes zweistelliges Icon) über die
+     ~20px schmale Zellhälfte hinaus sichtbar in den Nachbar-Chip
+     hineinlaufen -- reine Sicherheitsnetz-Regel, der Regelfall (ein
+     Zeichen, siehe chipGlyph.js) passt ohnehin ohne zu clippen. */
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
 }
 
 .cell-select {

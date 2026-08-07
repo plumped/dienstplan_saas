@@ -155,29 +155,50 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
             const canEditRecord = canEditThis && (!record || record.status === "submitted");
             const isEditing = editingId === a.id;
             return (
-              <li key={a.id} className="entry-list-item entry-list-item--trade">
-                {record && (
-                  <span className={`status-badge status-badge--${record.status}`}>
-                    {STATUS_LABELS[record.status] ?? record.status}
-                  </span>
-                )}
+              <li key={a.id} className="entry-list-item entry-list-item--trade time-record-entry">
                 <span className="entry-main">
-                  <strong>{employeeName(a.employee)}</strong> · {a.date} · Geplant{" "}
-                  {plannedSegments.map((s) => `${s.start_time.slice(0, 5)}–${s.end_time.slice(0, 5)}`).join(", ")}
-                  {record ? (
-                    <>
-                      {" "}
-                      · Ist{" "}
-                      {recordSegments.map((s) => `${s.actual_start.slice(0, 5)}–${s.actual_end.slice(0, 5)}`).join(", ")}{" "}
-                      ({formatDeviation(record.deviation_minutes)}
-                      {plannedSegments.length > 1 && ` / ${formatDeviation(record.end_deviation_minutes)}`})
+                  <div className="time-record-header">
+                    {template && (
+                      <span className="shift-chip" style={{ "--chip-color": template.color }}>
+                        {template.name}
+                      </span>
+                    )}
+                    <strong>{employeeName(a.employee)}</strong>
+                    <span className="entry-date">{a.date}</span>
+                    {record && (
+                      <span className={`status-badge status-badge--${record.status}`}>
+                        {STATUS_LABELS[record.status] ?? record.status}
+                      </span>
+                    )}
+                  </div>
+                  <div className="time-record-times">
+                    <span className="time-record-row">
+                      <span className="time-record-row-label">Geplant</span>
+                      {plannedSegments.map((s) => `${s.start_time.slice(0, 5)}–${s.end_time.slice(0, 5)}`).join(", ")}
+                    </span>
+                    {record ? (
+                      <span className="time-record-row">
+                        <span className="time-record-row-label">Ist</span>
+                        {recordSegments.map((s) => `${s.actual_start.slice(0, 5)}–${s.actual_end.slice(0, 5)}`).join(", ")}
+                        <span className="time-record-deviation">
+                          ({formatDeviation(record.deviation_minutes)}
+                          {plannedSegments.length > 1 && ` / ${formatDeviation(record.end_deviation_minutes)}`})
+                        </span>
+                      </span>
+                    ) : (
+                      <span className="time-record-row time-record-row--missing">
+                        <span className="time-record-row-label">Ist</span>
+                        noch nicht erfasst
+                      </span>
+                    )}
+                  </div>
+                  {(record?.break_below_minimum || record?.note) && (
+                    <div className="time-record-notes">
                       {record.break_below_minimum && (
-                        <span className="entry-note"> · Pause unter Art.-15-Minimum</span>
+                        <span className="entry-note entry-note--warn">Pause unter Art.-15-Minimum</span>
                       )}
-                      {record.note && <span className="entry-note"> · {record.note}</span>}
-                    </>
-                  ) : (
-                    <span className="entry-note"> · noch nicht erfasst</span>
+                      {record.note && <span className="entry-note">{record.note}</span>}
+                    </div>
                   )}
                 </span>
                 {isEditing ? (

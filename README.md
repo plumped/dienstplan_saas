@@ -360,6 +360,18 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     `FloatingPopover` (React-Portal auf `document.body`, an den Viewport geklemmt) ausserhalb des
     Tabellen-Scrollcontainers gerendert -- sonst würde es bei Zellen nahe dem rechten Rand vom
     horizontalen Grid-Scrolling abgeschnitten.
+
+    - ✅ **UX-Bugfix (2026-08): Zeiterfassung-Tab war unübersichtlich, Schichtname fehlte ganz.**
+      Nutzer-Feedback: "zu unübersichtlich ... nicht intuitiv aus Sicht Anwender". Jede Zeile
+      presste Status-Badge, Name, Datum, Geplant-/Ist-Zeiten, Abweichung und Hinweise in einen
+      einzigen, per " · " getrennten Fliesstext -- und `TimeTemplate` wurde zwar geladen
+      (`templateFor(a.template)`), aber nirgends angezeigt: welcher Schichttyp (Früh-/Spätdienst
+      etc.) überhaupt erfasst wird, war aus der Liste nicht ersichtlich. Behoben durch klare
+      Struktur pro Eintrag (`TimeRecordPanel.jsx`): Kopfzeile mit farbigem Schichttyp-Chip (analog
+      zum `.shift-chip` im Planblatt) + Name + Datum + Status, darunter je eine beschriftete Zeile
+      "Geplant"/"Ist" statt Fliesstext, Hinweise (Notiz, Pause-unter-Minimum-Warnung) in einem
+      eigenen, farblich abgesetzten Block darunter. Keine Änderung an Daten/Logik, rein am Markup
+      (`.time-record-entry`) und CSS.
 11. ✅ **Überzeitarbeit**: Soll/Ist-Vergleich pro Woche + Zuschlag (Art. 13 ArG). Bewusst nicht
     Teil der Regel-Engine selbst (`ShiftAssignment.clean` lehnt nichts deswegen ab), sondern reine
     Auswertung -- `Employee.weekly_hours_summary(reference_date)` normalisiert auf die

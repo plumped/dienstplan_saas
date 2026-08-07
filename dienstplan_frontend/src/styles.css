@@ -1140,6 +1140,73 @@ thead .col-employee {
   color: var(--ink-muted);
 }
 
+.entry-note--warn {
+  color: var(--warn);
+}
+
+/* README (2026-08, UX-Bugfix): der Zeiterfassung-Tab (TimeRecordPanel.jsx)
+   presste bisher alles -- Schichttyp (fehlte sogar ganz), Name, Datum,
+   Geplant-/Ist-Zeiten, Abweichung, Hinweise -- in eine einzige, per " · "
+   getrennte Fliesstext-Zeile. Klare Kopfzeile (Schichttyp-Chip + Name +
+   Datum + Status) getrennt von den Zeiten (je eine beschriftete Zeile für
+   Geplant/Ist statt Fliesstext), analog zur Spalten-Optik im Planblatt. */
+.time-record-entry .entry-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.time-record-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.entry-date {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.time-record-times {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.time-record-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.time-record-row-label {
+  flex-shrink: 0;
+  min-width: 50px;
+  color: var(--ink-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.time-record-row--missing {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.time-record-deviation {
+  color: var(--ink-muted);
+}
+
+.time-record-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
 .entry-actions {
   display: flex;
   gap: 6px;

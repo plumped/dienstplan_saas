@@ -784,6 +784,33 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       statt `[]`, damit auch die "Dienste"-Zeile nicht nachträglich wächst. Per Playwright verifiziert
       (Bounding-Box-Vergleich): Tabellen-Position verschiebt sich beim Umschalten auf Mehrfachauswahl
       genau einmal (vorhersagbar), danach beim Markieren des ersten Tages um 0px.
+    - ✅ **Absenzarten sind jetzt ein tenant-eigener Katalog** (2026-08, weiteres Nutzer-Feedback):
+      Ferien/Krankheit/Sonstiges waren als `Absence.Type`-`TextChoices` mit genau drei festen Werten
+      hartcodiert -- der Nutzer wollte eigene Absenzarten erfassen können (z. B. "Militärdienst"),
+      analog zu Schichttypen. Neues Modell `AbsenceType(TenantScopedModel)` (Felder `name`, `color`,
+      `deducts_vacation_days`), `Absence.type` von `CharField(choices=...)` zu
+      `ForeignKey(AbsenceType, on_delete=PROTECT)` umgestellt -- per dreistufiger, handgeschriebener
+      Migration (`0017`-`0019`: Tabelle anlegen, nullable FK + Datenmigration mit Seed dreier
+      Standard-Absenzarten pro Tenant mit bestehenden Absenzen inkl. `HistoricalAbsence`-Backfill,
+      alte Spalte entfernen/umbenennen/non-nullable machen) statt der von `makemigrations`
+      vorgeschlagenen direkten `AlterField`, die die bestehenden String-Werte ("vacation" etc.) beim
+      Spaltentyp-Wechsel verloren hätte. `Employee.vacation_balance()` filtert jetzt auf
+      `type__deducts_vacation_days=True` statt auf den hartcodierten `Type.VACATION`-Wert -- die
+      einzige Stelle mit echter Geschäftslogik auf dem Absenztyp (Regel-Engine, Notifications,
+      `task_counts` werten nur `status` aus, nicht `type`). Neuer Endpoint `/api/absence-types/`
+      (`AbsenceTypeViewSet`, gleiche Berechtigung wie Schichttypen: Lesen für alle, Schreiben nur
+      Admin/Planer) + neues Settings-Modul `AbsenceTypeSettings.jsx` (Name/Farbe/Checkbox "zieht
+      Ferientage ab"). Die hartcodierten `ABSENCE_TYPES`/`ABSENCE_TYPE_LABELS`/`TYPE_OPTIONS`-
+      Konstanten und `type-badge--vacation/--sick/--other`-CSS-Klassen sind aus allen fünf
+      betroffenen Komponenten (`PlanGrid.jsx`, `YearPlan.jsx`, `AbsencePanel.jsx`, `Dashboard.jsx`,
+      `ShiftCell.jsx`) entfernt -- Absenzarten werden jetzt überall per `api.getAbsenceTypes()`
+      geladen und Farben über das bereits etablierte `--chip-color`-Custom-Property-Muster
+      dargestellt (analog zu `TimeTemplate.color`), funktioniert automatisch für beliebig viele neue
+      Absenzarten. Getestet (`AbsenceTypeTests`, `AbsenceTypeAPITests`: Defaults, Tenant-Isolation,
+      Serializer-Roundtrip, Berechtigungen) sowie alle bestehenden Tests auf die neue FK umgestellt
+      (335 Tests grün). Mit Playwright gegen die echten Testheim-Daten verifiziert: Absenzarten-
+      Verwaltung, Stempelleiste (Planblatt + Jahresplan), Abwesenheiten-Formular-Dropdown und
+      Dashboard-Badge zeigen alle korrekt die geladenen Typen samt Farbe/Kurzcode.
     - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
       entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
       wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim

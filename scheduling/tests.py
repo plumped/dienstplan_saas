@@ -16,6 +16,7 @@ from core.models import Membership, Tenant
 
 from .models import (
     Absence,
+    AbsenceType,
     Employee,
     Employment,
     Node,
@@ -79,6 +80,13 @@ class TwoTenantFixtureMixin:
             name="Frühdienst",
             start_time=time(7, 0),
             end_time=time(15, 0),
+        )
+
+        self.absence_type_a = AbsenceType.objects.create(
+            tenant=self.tenant_a, name="Ferien", deducts_vacation_days=True
+        )
+        self.absence_type_b = AbsenceType.objects.create(
+            tenant=self.tenant_b, name="Ferien", deducts_vacation_days=True
         )
 
     def auth_as(self, user):
@@ -203,12 +211,14 @@ class CrossTenantIsolationTests(TwoTenantFixtureMixin, APITestCase):
             employee=self.employee_a,
             start_date=date(2026, 8, 1),
             end_date=date(2026, 8, 5),
+            type=self.absence_type_a,
         )
         Absence.objects.create(
             tenant=self.tenant_b,
             employee=self.employee_b,
             start_date=date(2026, 8, 1),
             end_date=date(2026, 8, 5),
+            type=self.absence_type_b,
         )
         self.auth_as(self.user_a)
         response = self.client.get("/api/absences/")
@@ -393,12 +403,13 @@ class RuleEngineTests(TestCase):
         saturday_shift.clean()  # keine Exception
 
     def test_absence_conflict_is_rejected(self):
+        vacation = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
         Absence.objects.create(
             tenant=self.tenant,
             employee=self.employee,
             start_date=date(2026, 8, 1),
             end_date=date(2026, 8, 10),
-            type=Absence.Type.VACATION,
+            type=vacation,
             status=Absence.Status.APPROVED,
         )
         assignment = ShiftAssignment(
@@ -414,11 +425,13 @@ class RuleEngineTests(TestCase):
     def test_api_validate_runs_rule_engine(self):
         # Bestätigt, dass die Regel-Engine auch über den ShiftAssignmentSerializer
         # greift (validate() ruft clean() auf), nicht nur im Admin.
+        vacation = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
         Absence.objects.create(
             tenant=self.tenant,
             employee=self.employee,
             start_date=date(2026, 8, 1),
             end_date=date(2026, 8, 10),
+            type=vacation,
             status=Absence.Status.APPROVED,
         )
         from unittest.mock import MagicMock
@@ -781,6 +794,77 @@ class AbsenceModelTests(TestCase):
             status=Absence.Status.APPROVED,
         )
         absence.clean()  # kein überlappender Tag -- darf nicht werfen
+
+
+class AbsenceTypeTests(TestCase):
+    """
+    Nutzer-Feedback (2026-08): Absenzarten sollen frei definierbar sein statt
+    hartcodiert (Ferien/Krankheit/Sonstiges) -- analog zu TimeTemplate als
+    tenant-eigener Katalog. deducts_vacation_days ersetzt den alten
+    `type=Absence.Type.VACATION`-Vergleich in Employee.vacation_balance().
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+
+    def test_defaults(self):
+        absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Sonstiges")
+        self.assertEqual(absence_type.color, "#64748b")
+        self.assertFalse(absence_type.deducts_vacation_days)
+
+    def test_str_returns_name(self):
+        absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+        self.assertEqual(str(absence_type), "Militärdienst")
+
+    def test_ordering_is_alphabetical_by_name(self):
+        AbsenceType.objects.create(tenant=self.tenant, name="Sonstiges")
+        AbsenceType.objects.create(tenant=self.tenant, name="Ferien")
+        AbsenceType.objects.create(tenant=self.tenant, name="Krankheit")
+        names = list(AbsenceType.objects.filter(tenant=self.tenant).values_list("name", flat=True))
+        self.assertEqual(names, ["Ferien", "Krankheit", "Sonstiges"])
+
+
+class AbsenceTypeAPITests(APITestCase):
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_create_and_round_trip_through_serializer(self):
+        create_response = self.client.post(
+            "/api/absence-types/",
+            {"name": "Militärdienst", "color": "#336699", "deducts_vacation_days": False},
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data["name"], "Militärdienst")
+        self.assertEqual(create_response.data["color"], "#336699")
+
+        type_id = create_response.data["id"]
+        patch_response = self.client.patch(f"/api/absence-types/{type_id}/", {"deducts_vacation_days": True})
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(patch_response.data["deducts_vacation_days"])
+
+    def test_list_is_scoped_to_own_tenant(self):
+        AbsenceType.objects.create(tenant=self.tenant, name="Ferien")
+        other_tenant, _ = make_tenant_with_planner("klinik-b", "planner_b")
+        AbsenceType.objects.create(tenant=other_tenant, name="Ferien B")
+
+        response = self.client.get("/api/absence-types/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [item["name"] for item in response.data["results"]]
+        self.assertEqual(names, ["Ferien"])
+
+    def test_employee_can_read_but_not_write(self):
+        employee_user = User.objects.create_user(username="employee_a", password="pw-not-real-123!")
+        Membership.objects.create(user=employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        token, _ = Token.objects.get_or_create(user=employee_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        self.assertEqual(self.client.get("/api/absence-types/").status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self.client.post("/api/absence-types/", {"name": "Sonstiges"}).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
 
 
 class TimeRecordTests(TestCase):
@@ -1541,6 +1625,10 @@ class EmployeeBalanceTests(APITestCase):
         )
         self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
         Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        self.vacation_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Ferien", deducts_vacation_days=True
+        )
+        self.sick_type = AbsenceType.objects.create(tenant=self.tenant, name="Krankheit")
 
     def auth_as(self, user):
         token, _ = Token.objects.get_or_create(user=user)
@@ -1638,7 +1726,7 @@ class EmployeeBalanceTests(APITestCase):
             employee=self.employee,
             start_date=date(2026, 6, 15),
             end_date=date(2026, 6, 15),
-            type=Absence.Type.VACATION,
+            type=self.vacation_type,
             status=Absence.Status.APPROVED,
         )
         ShiftAssignment.objects.create(  # .create() bewusst am Absence.clean()-Schutz vorbei
@@ -1657,7 +1745,7 @@ class EmployeeBalanceTests(APITestCase):
             employee=self.employee,
             start_date=date(2026, 1, 6),
             end_date=date(2026, 1, 7),
-            type=Absence.Type.SICK,
+            type=self.sick_type,
             status=Absence.Status.APPROVED,
         )
         for d in (date(2026, 1, 5), date(2026, 1, 8), date(2026, 1, 9)):
@@ -1681,7 +1769,7 @@ class EmployeeBalanceTests(APITestCase):
             employee=self.employee,
             start_date=date(2026, 1, 6),
             end_date=date(2026, 1, 7),
-            type=Absence.Type.VACATION,
+            type=self.vacation_type,
             status=Absence.Status.APPROVED,
         )
         summary = self.employee.time_account_summary(date(2026, 1, 9))
@@ -1697,7 +1785,7 @@ class EmployeeBalanceTests(APITestCase):
             employee=self.employee,
             start_date=date(2026, 1, 6),
             end_date=date(2026, 1, 7),
-            type=Absence.Type.SICK,
+            type=self.sick_type,
             status=Absence.Status.PENDING,
         )
         self._assign(self.employee, date(2026, 1, 5))
@@ -1787,7 +1875,7 @@ class EmployeeBalanceTests(APITestCase):
             employee=self.employee,
             start_date=date(2026, 8, 3),  # Montag
             end_date=date(2026, 8, 9),  # Sonntag -- volle Woche, aber nur 5 Werktage
-            type=Absence.Type.VACATION,
+            type=self.vacation_type,
             status=Absence.Status.APPROVED,
         )
         summary = self.employee.vacation_balance(2026)
@@ -1800,7 +1888,7 @@ class EmployeeBalanceTests(APITestCase):
             employee=self.employee,
             start_date=date(2026, 8, 3),
             end_date=date(2026, 8, 7),
-            type=Absence.Type.VACATION,
+            type=self.vacation_type,
             status=Absence.Status.PENDING,
         )
         Absence.objects.create(
@@ -1808,7 +1896,7 @@ class EmployeeBalanceTests(APITestCase):
             employee=self.employee,
             start_date=date(2026, 8, 10),
             end_date=date(2026, 8, 14),
-            type=Absence.Type.SICK,
+            type=self.sick_type,
             status=Absence.Status.APPROVED,
         )
         summary = self.employee.vacation_balance(2026)
@@ -1820,7 +1908,7 @@ class EmployeeBalanceTests(APITestCase):
             employee=self.employee,
             start_date=date(2026, 12, 28),  # Montag
             end_date=date(2027, 1, 2),  # Samstag -- 4 Werktage 2026, 1 Werktag 2027
-            type=Absence.Type.VACATION,
+            type=self.vacation_type,
             status=Absence.Status.APPROVED,
         )
         self.assertEqual(self.employee.vacation_balance(2026)["used_days"], 4)
@@ -1836,7 +1924,7 @@ class EmployeeBalanceTests(APITestCase):
             employee=self.employee,
             start_date=date(2026, 1, 12),
             end_date=date(2026, 1, 16),
-            type=Absence.Type.VACATION,
+            type=self.vacation_type,
             status=Absence.Status.APPROVED,
         )
         self.auth_as(self.planner_user)
@@ -1985,12 +2073,13 @@ class MonthlySummaryTests(APITestCase):
     def test_approved_absence_is_soll_neutral(self):
         # Ferien Mo-Fr 1.-5.6. -- 5 Arbeitstage weniger Soll, keine Ist-Zeit
         # dafuer erwartet.
+        vacation_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
         Absence.objects.create(
             tenant=self.tenant,
             employee=self.employee,
             start_date=date(2026, 6, 1),
             end_date=date(2026, 6, 5),
-            type=Absence.Type.VACATION,
+            type=vacation_type,
             status=Absence.Status.APPROVED,
         )
         summary = self.employee.monthly_summary(2026, 6)
@@ -2404,6 +2493,9 @@ class RoleBasedPermissionTests(APITestCase):
         self.bob_assignment = ShiftAssignment.objects.create(
             tenant=self.tenant, employee=self.bob, node=self.node, date=date(2026, 8, 4), template=self.template
         )
+        self.vacation_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Ferien", deducts_vacation_days=True
+        )
         # Für TimeRecord-Tests: eine bereits stattgefundene Schicht (TimeRecord.clean()
         # lehnt Ist-Erfassung für Schichten in der Zukunft ab). Bewusst ein fixes Datum
         # statt "gestern" (timezone.localdate() - 1 Tag): das kollidierte mit dem
@@ -2478,7 +2570,7 @@ class RoleBasedPermissionTests(APITestCase):
                 "employee": self.alice.id,
                 "start_date": "2026-09-01",
                 "end_date": "2026-09-05",
-                "type": "vacation",
+                "type": self.vacation_type.id,
             },
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -2491,17 +2583,19 @@ class RoleBasedPermissionTests(APITestCase):
                 "employee": self.bob.id,
                 "start_date": "2026-09-01",
                 "end_date": "2026-09-05",
-                "type": "vacation",
+                "type": self.vacation_type.id,
             },
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_employee_can_delete_own_absence_not_others(self):
         own_absence = Absence.objects.create(
-            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2)
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2),
+            type=self.vacation_type,
         )
         other_absence = Absence.objects.create(
-            tenant=self.tenant, employee=self.bob, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2)
+            tenant=self.tenant, employee=self.bob, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2),
+            type=self.vacation_type,
         )
         self.auth_as(self.alice_user)
         self.assertEqual(
@@ -2607,7 +2701,8 @@ class RoleBasedPermissionTests(APITestCase):
 
     def test_employee_cannot_approve_or_reject_own_absence(self):
         absence = Absence.objects.create(
-            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2)
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2),
+            type=self.vacation_type,
         )
         self.auth_as(self.alice_user)
         self.assertEqual(
@@ -2621,7 +2716,8 @@ class RoleBasedPermissionTests(APITestCase):
 
     def test_planner_can_approve_absence(self):
         absence = Absence.objects.create(
-            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2)
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2),
+            type=self.vacation_type,
         )
         self.auth_as(self.planner_user)
         response = self.client.post(f"/api/absences/{absence.id}/approve/")
@@ -2633,7 +2729,8 @@ class RoleBasedPermissionTests(APITestCase):
         # eine Absenz über diesen Zeitraum darf nicht genehmigt werden,
         # solange die Zuweisung nicht zuerst entfernt wurde.
         absence = Absence.objects.create(
-            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 1), end_date=date(2026, 8, 5)
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 1), end_date=date(2026, 8, 5),
+            type=self.vacation_type,
         )
         self.auth_as(self.planner_user)
         response = self.client.post(f"/api/absences/{absence.id}/approve/")
@@ -2650,7 +2747,7 @@ class RoleBasedPermissionTests(APITestCase):
         self.auth_as(self.planner_user)
         response = self.client.post(
             "/api/absences/",
-            {"employee": self.alice.id, "start_date": "2026-08-01", "end_date": "2026-08-05", "type": "vacation"},
+            {"employee": self.alice.id, "start_date": "2026-08-01", "end_date": "2026-08-05", "type": self.vacation_type.id},
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertFalse(Absence.all_objects.filter(employee=self.alice, start_date=date(2026, 8, 1)).exists())
@@ -2659,14 +2756,14 @@ class RoleBasedPermissionTests(APITestCase):
         self.auth_as(self.alice_user)
         employee_response = self.client.post(
             "/api/absences/",
-            {"employee": self.alice.id, "start_date": "2026-09-10", "end_date": "2026-09-11", "type": "vacation"},
+            {"employee": self.alice.id, "start_date": "2026-09-10", "end_date": "2026-09-11", "type": self.vacation_type.id},
         )
         self.assertEqual(employee_response.data["status"], "pending")
 
         self.auth_as(self.planner_user)
         planner_response = self.client.post(
             "/api/absences/",
-            {"employee": self.bob.id, "start_date": "2026-09-10", "end_date": "2026-09-11", "type": "vacation"},
+            {"employee": self.bob.id, "start_date": "2026-09-10", "end_date": "2026-09-11", "type": self.vacation_type.id},
         )
         self.assertEqual(planner_response.data["status"], "approved")
 
@@ -2676,6 +2773,7 @@ class RoleBasedPermissionTests(APITestCase):
             employee=self.alice,
             start_date=date(2026, 9, 1),
             end_date=date(2026, 9, 2),
+            type=self.vacation_type,
             status=Absence.Status.APPROVED,
         )
         self.auth_as(self.alice_user)
@@ -3415,6 +3513,9 @@ class NotificationsAndTaskCountsTests(APITestCase):
         self.bob = Employee.objects.create(
             tenant=self.tenant, user=self.bob_user, first_name="Bob", last_name="B", employment_pct=100
         )
+        self.vacation_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Ferien", deducts_vacation_days=True
+        )
         mail.outbox.clear()
 
     def auth_as(self, user):
@@ -3431,7 +3532,7 @@ class NotificationsAndTaskCountsTests(APITestCase):
                 "employee": self.alice.id,
                 "start_date": "2026-08-10",
                 "end_date": "2026-08-12",
-                "type": "vacation",
+                "type": self.vacation_type.id,
             },
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -3446,7 +3547,7 @@ class NotificationsAndTaskCountsTests(APITestCase):
                 "employee": self.alice.id,
                 "start_date": "2026-08-10",
                 "end_date": "2026-08-12",
-                "type": "vacation",
+                "type": self.vacation_type.id,
             },
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
@@ -3454,7 +3555,8 @@ class NotificationsAndTaskCountsTests(APITestCase):
 
     def test_absence_approval_notifies_requester(self):
         absence = Absence.objects.create(
-            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12)
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12),
+            type=self.vacation_type,
         )
         mail.outbox.clear()
         self.auth_as(self.admin_user)
@@ -3465,7 +3567,8 @@ class NotificationsAndTaskCountsTests(APITestCase):
 
     def test_absence_rejection_notifies_requester(self):
         absence = Absence.objects.create(
-            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12)
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12),
+            type=self.vacation_type,
         )
         mail.outbox.clear()
         self.auth_as(self.admin_user)
@@ -3576,14 +3679,16 @@ class NotificationsAndTaskCountsTests(APITestCase):
 
     def test_admin_sees_pending_absence_count(self):
         Absence.objects.create(
-            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12)
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12),
+            type=self.vacation_type,
         )
         response = self.auth_and_get_me(self.admin_user)
         self.assertEqual(response.data["task_counts"]["absences"], 1)
 
     def test_employee_sees_zero_absence_count(self):
         Absence.objects.create(
-            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12)
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12),
+            type=self.vacation_type,
         )
         response = self.auth_and_get_me(self.alice_user)
         self.assertEqual(response.data["task_counts"]["absences"], 0)
@@ -3631,7 +3736,8 @@ class NotificationsAndTaskCountsTests(APITestCase):
 
     def test_hr_sees_zero_task_counts(self):
         Absence.objects.create(
-            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12)
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12),
+            type=self.vacation_type,
         )
         hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
         Membership.objects.create(user=hr_user, tenant=self.tenant, role=Membership.Role.HR)
@@ -4210,6 +4316,185 @@ class SplitShiftTests(TestCase):
         )
         with self.assertRaises(ValidationError):
             ShiftAssignment.swap(employee_night.id, other_assignment.id)
+
+
+class SpecialAssignmentStackingTests(TestCase):
+    """
+    Nutzer-Feedback (2026-08): eine Spezialität (TimeTemplate.category ==
+    "special", z. B. Pikettdienst) ist ein additiver Zusatz zu einem
+    regulären Dienst, kein Slot-Konkurrent -- ein Frühdienst UND ein
+    Pikettdienst gleichzeitig am selben Tag müssen möglich sein, ohne dass
+    Ruhezeit-/Überschneidungs-/Tagesspannen-/Höchstarbeitszeit-Prüfung
+    dazwischenfunkt, und ohne dass die Spezialität in Sollstunden/Ist-
+    Stunden einfliesst (geklärte Design-Entscheidung: rein informativ).
+    Qualifikation/Jugendschutz/Absenz-Konflikt gelten dagegen weiterhin.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.day_shift = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst",
+            start_time=time(7, 0), end_time=time(15, 0), break_minutes=30,
+        )
+        self.pikett = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikettdienst",
+            start_time=time(7, 0), end_time=time(15, 0), break_minutes=0,
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        self.other_pikett = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett Arzt",
+            start_time=time(0, 0), end_time=time(23, 59), break_minutes=0,
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+
+    def test_special_alongside_regular_shift_same_time_is_valid(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.day_shift,
+        )
+        special = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        special.full_clean()  # keine Exception trotz identischer Zeitspanne
+        special.save()
+        self.assertEqual(
+            ShiftAssignment.objects.filter(employee=self.employee, date=date(2026, 8, 3)).count(), 2
+        )
+
+    def test_two_specials_same_day_are_valid(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        second = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.other_pikett,
+        )
+        second.full_clean()  # keine Exception
+
+    def test_special_does_not_block_next_day_rest_period(self):
+        # Nachtschicht direkt gefolgt von einem Pikettdienst am nächsten Tag
+        # wäre bei einem regulären Dienst eine Ruhezeit-Verletzung.
+        night = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtdienst",
+            start_time=time(20, 0), end_time=time(8, 0), break_minutes=60,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=night,
+        )
+        special_next_day = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 4), template=self.pikett,
+        )
+        special_next_day.full_clean()  # keine Exception
+
+    def test_special_does_not_block_weekly_hours_limit(self):
+        self.tenant.maximum_weekly_hours = 45
+        self.tenant.save()
+        long_special = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Langer Pikett",
+            start_time=time(0, 0), end_time=time(23, 59), break_minutes=0,
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        for offset in range(5):
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node,
+                date=date(2026, 8, 3) + timedelta(days=offset), template=self.day_shift,
+            )
+        special = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=long_special,
+        )
+        special.full_clean()  # keine Exception trotz fast 24h Zusatz
+
+    def test_special_only_day_still_counts_as_weekly_rest_day(self):
+        monday = date(2026, 8, 3)
+        for offset in range(6):  # Mo-Sa reguläre Dienste
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node,
+                date=monday + timedelta(days=offset), template=self.day_shift,
+            )
+        sunday_special = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=monday + timedelta(days=6), template=self.pikett,
+        )
+        sunday_special.full_clean()  # keine Exception -- Sonntag bleibt "frei" trotz Pikett
+
+    def test_special_hours_excluded_from_weekly_hours_summary(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.day_shift,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        summary = self.employee.weekly_hours_summary(date(2026, 8, 3))
+        # Nur der Frühdienst (7.5h netto), nicht zusätzlich der zeitgleiche Pikett.
+        self.assertEqual(summary["ist_hours"], 7.5)
+
+    def test_special_hours_excluded_from_time_account_summary(self):
+        self.employee.employment_start_date = date(2026, 1, 1)
+        self.employee.save()
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.day_shift,
+        )
+        with_pikett = self.employee.time_account_summary(as_of_date=date(2026, 8, 3))
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        with_and_without = self.employee.time_account_summary(as_of_date=date(2026, 8, 3))
+        self.assertEqual(with_pikett["saldo_hours"], with_and_without["saldo_hours"])
+
+    def test_special_still_blocked_during_approved_absence(self):
+        vacation_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
+        Absence.objects.create(
+            tenant=self.tenant, employee=self.employee,
+            start_date=date(2026, 8, 3), end_date=date(2026, 8, 3),
+            type=vacation_type, status=Absence.Status.APPROVED,
+        )
+        special = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        with self.assertRaises(ValidationError):
+            special.clean()
+
+    def test_special_still_requires_skill(self):
+        skill = Skill.objects.create(tenant=self.tenant, name="Pikett-berechtigt")
+        self.pikett.required_skill = skill
+        self.pikett.save()
+        special = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        with self.assertRaises(ValidationError):
+            special.clean()
+
+    def test_special_still_blocked_for_minor_at_night(self):
+        night_special = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nacht-Pikett",
+            start_time=time(23, 0), end_time=time(6, 0), break_minutes=0,
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        minor = Employee.objects.create(
+            tenant=self.tenant, first_name="Timo", last_name="T", employment_pct=100,
+            birth_date=date(2010, 1, 1),  # minderjährig am 2026-08-03
+        )
+        special = ShiftAssignment(
+            tenant=self.tenant, employee=minor, node=self.node,
+            date=date(2026, 8, 3), template=night_special,
+        )
+        with self.assertRaises(ValidationError):
+            special.clean()
 
 
 class ShiftTradeRequestSplitShiftTests(TestCase):

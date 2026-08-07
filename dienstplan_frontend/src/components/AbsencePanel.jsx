@@ -2,26 +2,18 @@ import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
 
-const TYPE_OPTIONS = [
-  { value: "vacation", label: "Ferien" },
-  { value: "sick", label: "Krankheit" },
-  { value: "other", label: "Sonstiges" },
-];
-
-const TYPE_LABELS = Object.fromEntries(TYPE_OPTIONS.map((t) => [t.value, t.label]));
-
 const STATUS_LABELS = {
   pending: "Offen",
   approved: "Genehmigt",
   rejected: "Abgelehnt",
 };
 
-function emptyForm(defaultEmployeeId) {
+function emptyForm(defaultEmployeeId, defaultTypeId) {
   return {
     employee: defaultEmployeeId ?? "",
     start_date: "",
     end_date: "",
-    type: "vacation",
+    type: defaultTypeId ?? "",
     note: "",
   };
 }
@@ -35,6 +27,8 @@ export default function AbsencePanel({ employees, me, onError }) {
   const canWrite = canManage || me?.role === "employee";
   const defaultEmployeeId = canManage ? employees[0]?.id ?? "" : ownEmployeeId ?? "";
 
+  const [absenceTypes, setAbsenceTypes] = useState([]);
+  const absenceTypesById = new Map(absenceTypes.map((t) => [t.id, t]));
   const [absences, setAbsences] = useState([]);
   // Bugfix: der Header-Badge (core.views._task_counts) zählt PENDING-Absenzen
   // tenant-weit, die Liste unten filterte aber bisher immer auf die gerade
@@ -49,9 +43,21 @@ export default function AbsencePanel({ employees, me, onError }) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    setForm(emptyForm(defaultEmployeeId));
+    setForm((prev) => ({ ...emptyForm(defaultEmployeeId, absenceTypes[0]?.id), type: prev.type || absenceTypes[0]?.id || "" }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, canManage, ownEmployeeId]);
+  }, [employees, canManage, ownEmployeeId, absenceTypes]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getAbsenceTypes()
+      .then((data) => !cancelled && setAbsenceTypes(data.results ?? data))
+      .catch((e) => onError(e.message));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!canManage) return;
@@ -105,11 +111,11 @@ export default function AbsencePanel({ employees, me, onError }) {
         employee: Number(form.employee),
         start_date: form.start_date,
         end_date: form.end_date,
-        type: form.type,
+        type: Number(form.type),
         note: form.note,
       });
       setAbsences((prev) => [created, ...prev]);
-      setForm((prev) => ({ ...emptyForm(defaultEmployeeId), employee: prev.employee }));
+      setForm((prev) => ({ ...emptyForm(defaultEmployeeId, absenceTypes[0]?.id), employee: prev.employee }));
     } catch (e) {
       onError(e.message);
     } finally {
@@ -186,9 +192,9 @@ export default function AbsencePanel({ employees, me, onError }) {
                 value={form.type}
                 onChange={(e) => setForm((prev) => ({ ...prev, type: e.target.value }))}
               >
-                {TYPE_OPTIONS.map((t) => (
-                  <option key={t.value} value={t.value}>
-                    {t.label}
+                {absenceTypes.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
                   </option>
                 ))}
               </select>
@@ -244,7 +250,9 @@ export default function AbsencePanel({ employees, me, onError }) {
               const canDelete = canManage || isOwnPending;
               return (
                 <li key={a.id} className="entry-list-item">
-                  <span className={`type-badge type-badge--${a.type}`}>{TYPE_LABELS[a.type] ?? a.type}</span>
+                  <span className="type-badge" style={{ "--chip-color": absenceTypesById.get(a.type)?.color }}>
+                    {absenceTypesById.get(a.type)?.name ?? a.type}
+                  </span>
                   <span className={`status-badge status-badge--${a.status}`}>
                     {STATUS_LABELS[a.status] ?? a.status}
                   </span>

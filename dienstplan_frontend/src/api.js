@@ -200,6 +200,14 @@ export const api = {
   // DRF-Pagination-Envelope -- request() statt requestAllPages() reicht.
   getUnderstaffedShifts: () => request("/understaffed-shifts/"),
 
+  // Nutzer-Feedback (2026-08): Absenzarten sind ein tenant-eigener Katalog
+  // (analog Schichttypen), keine hartcodierten Ferien/Krankheit/Sonstiges mehr.
+  getAbsenceTypes: () => requestAllPages("/absence-types/"),
+  createAbsenceType: (payload) => request("/absence-types/", { method: "POST", body: payload }),
+  updateAbsenceType: (id, payload) =>
+    request(`/absence-types/${id}/`, { method: "PATCH", body: payload }),
+  deleteAbsenceType: (id) => request(`/absence-types/${id}/`, { method: "DELETE" }),
+
   getAbsences: (employeeId) =>
     requestAllPages(employeeId ? `/absences/?employee=${employeeId}` : "/absences/"),
   createAbsence: (payload) =>

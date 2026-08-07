@@ -32,6 +32,7 @@ from core.views import TenantScopedAPIMixin
 
 from .models import (
     Absence,
+    AbsenceType,
     Employee,
     Node,
     ShiftAssignment,
@@ -43,6 +44,7 @@ from .models import (
 )
 from .serializers import (
     AbsenceSerializer,
+    AbsenceTypeSerializer,
     EmployeeBalanceSerializer,
     EmployeeSerializer,
     MonthlySummarySerializer,
@@ -326,6 +328,18 @@ class EmployeeViewSet(TenantScopedViewSet):
             month = today.month
         summary = employee.monthly_summary(year, month)
         return Response(MonthlySummarySerializer(summary).data)
+
+
+class AbsenceTypeViewSet(TenantScopedViewSet):
+    """
+    Nutzer-Feedback (2026-08): Absenzarten (bisher hartcodiert Ferien/
+    Krankheit/Sonstiges) sind jetzt ein tenant-eigener Katalog, analog
+    TimeTemplateViewSet -- Lesen für alle Rollen, Schreiben nur Admin/Planer.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsTenantManager]
+    queryset = AbsenceType.all_objects.all()
+    serializer_class = AbsenceTypeSerializer
 
 
 class TimeTemplateViewSet(TenantScopedViewSet):

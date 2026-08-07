@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule, isTenantAdmin } from "../roles.js";
+import AbsenceTypeSettings from "./AbsenceTypeSettings.jsx";
 import EmployeeSettings from "./EmployeeSettings.jsx";
 import MonthlySummaryPanel from "./MonthlySummaryPanel.jsx";
 import NodeSettings from "./NodeSettings.jsx";
@@ -13,6 +14,11 @@ const MODULES = [
     id: "templates",
     label: "Schichttypen",
     description: "Frühdienst, Spätdienst & Co. definieren, inkl. optionaler Blockstruktur für die Ist-Erfassung.",
+  },
+  {
+    id: "absenceTypes",
+    label: "Absenzarten",
+    description: "Ferien, Krankheit & Co. definieren -- frei erweiterbar, z. B. um Militärdienst oder Weiterbildung.",
   },
   {
     id: "employees",
@@ -122,6 +128,7 @@ export default function SettingsPanel({ me, onError }) {
       </nav>
 
       {module === "templates" && <TimeTemplateSettings nodes={nodes} skills={skills} onError={onError} />}
+      {module === "absenceTypes" && <AbsenceTypeSettings onError={onError} />}
       {module === "employees" && <EmployeeSettings nodes={nodes} skills={skills} onError={onError} />}
       {module === "nodes" && (
         <NodeSettings

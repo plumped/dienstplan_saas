@@ -9,20 +9,12 @@ const WISH_LABELS = { wunschfrei: "Wunschfrei", wunschdienst: "Wunschdienst" };
 
 const DRAG_MIME = "application/x-dienstplan-shift";
 
-const ABSENCE_LABELS = {
-  vacation: "FER",
-  sick: "KRA",
-  other: "SON",
-};
-
-const ABSENCE_NAMES = {
-  vacation: "Ferien",
-  sick: "Krankheit",
-  other: "Sonstiges",
-};
-
 export default function ShiftCell({
   templates,
+  // Nutzer-Feedback (2026-08): Absenzarten sind ein tenant-eigener Katalog
+  // (AbsenceType) statt hartcodiert -- absence.type ist die numerische
+  // AbsenceType-ID, absenceTypes liefert dazu Name/Farbe fürs Badge.
+  absenceTypes = [],
   // README Punkt 17 Nachbesserung: templates bleibt der volle, stationsweite
   // Katalog (für Namens-/Farb-Lookups z. B. beim Wunschdienst, der
   // personenweit gilt und nicht auf das eigene Team beschränkt ist).
@@ -83,6 +75,7 @@ export default function ShiftCell({
   assignmentId,
   showWishBadge = true,
 }) {
+  const absenceType = absence ? absenceTypes.find((t) => t.id === absence.type) : null;
   const [editing, setEditing] = useState(false);
   const [offering, setOffering] = useState(false);
   const [recordingTime, setRecordingTime] = useState(false);
@@ -283,7 +276,7 @@ export default function ShiftCell({
         aria-pressed={marked}
         title={
           absence
-            ? `${ABSENCE_NAMES[absence.type] ?? absence.type} (${absence.start_date} – ${absence.end_date}) -- ` +
+            ? `${absenceType?.name ?? absence.type} (${absence.start_date} – ${absence.end_date}) -- ` +
               (marked ? "Markierung aufheben" : "Für Absenz entfernen markieren")
             : marked
               ? "Markierung aufheben"
@@ -294,8 +287,8 @@ export default function ShiftCell({
         onClick={handleClick}
       >
         {absence ? (
-          <span className="shift-chip shift-chip--absence">
-            {ABSENCE_LABELS[absence.type] ?? absence.type.slice(0, 3).toUpperCase()}
+          <span className="shift-chip shift-chip--absence" style={{ "--chip-color": absenceType?.color }}>
+            {absenceType?.name.slice(0, 3).toUpperCase() ?? absence.type}
           </span>
         ) : templateInfo ? (
           <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>
@@ -324,10 +317,10 @@ export default function ShiftCell({
     return (
       <span
         className="shift-chip-btn is-absence"
-        title={`${ABSENCE_NAMES[absence.type] ?? absence.type} (${absence.start_date} – ${absence.end_date})`}
+        title={`${absenceType?.name ?? absence.type} (${absence.start_date} – ${absence.end_date})`}
       >
-        <span className="shift-chip shift-chip--absence">
-          {ABSENCE_LABELS[absence.type] ?? absence.type.slice(0, 3).toUpperCase()}
+        <span className="shift-chip shift-chip--absence" style={{ "--chip-color": absenceType?.color }}>
+          {absenceType?.name.slice(0, 3).toUpperCase() ?? absence.type}
         </span>
       </span>
     );

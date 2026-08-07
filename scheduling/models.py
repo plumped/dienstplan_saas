@@ -221,9 +221,14 @@ class Employee(TenantScopedModel):
         week_start = reference_date - timedelta(days=reference_date.weekday())
         week_end = week_start + timedelta(days=6)
 
-        assignments = ShiftAssignment.all_objects.filter(
-            employee=self, date__range=[week_start, week_end]
-        ).select_related("template", "time_record")
+        # Spezialitäten (TimeTemplate.category == "special", z. B.
+        # Pikettdienst) sind rein informativ und zählen nicht zu den
+        # Stunden -- siehe ShiftAssignment._check_rest_period.
+        assignments = (
+            ShiftAssignment.all_objects.filter(employee=self, date__range=[week_start, week_end])
+            .exclude(template__category=TimeTemplate.Category.SPECIAL)
+            .select_related("template", "time_record")
+        )
 
         ist_hours = 0.0
         sunday_hours = 0.0
@@ -285,10 +290,12 @@ class Employee(TenantScopedModel):
         blockiert nichts (siehe ShiftAssignment.sunday_replacement_rest_missing).
         """
         window_end = sunday_date + timedelta(days=13)
+        # Spezialitäten zählen nicht als Arbeitstag, konsistent mit
+        # ShiftAssignment._check_weekly_rest_day.
         worked_dates = set(
-            ShiftAssignment.all_objects.filter(
-                employee=self, date__range=[sunday_date, window_end]
-            ).values_list("date", flat=True)
+            ShiftAssignment.all_objects.filter(employee=self, date__range=[sunday_date, window_end])
+            .exclude(template__category=TimeTemplate.Category.SPECIAL)
+            .values_list("date", flat=True)
         )
         free_days = sum(
             1 for offset in range(14) if (sunday_date + timedelta(days=offset)) not in worked_dates
@@ -515,9 +522,13 @@ class Employee(TenantScopedModel):
         # (siehe _approved_absence_dates-Docstring) -- ein solcher Tag ist
         # per Definition arbeitsfrei, unabhängig davon, ob versehentlich
         # trotzdem eine Zuweisung dafür existiert.
+        # Spezialitäten (TimeTemplate.category == "special", z. B.
+        # Pikettdienst) sind rein informativ und zählen nicht zu den
+        # Stunden -- siehe ShiftAssignment._check_rest_period.
         assignments = (
             ShiftAssignment.all_objects.filter(employee=self, date__gte=period_start, date__lte=as_of_date)
             .exclude(date__in=absence_dates)
+            .exclude(template__category=TimeTemplate.Category.SPECIAL)
             .select_related("template", "time_record")
         )
         ist_kumuliert = 0.0
@@ -544,6 +555,7 @@ class Employee(TenantScopedModel):
             future_assignments = (
                 ShiftAssignment.all_objects.filter(employee=self, date__gt=as_of_date, date__lte=year_end)
                 .exclude(date__in=future_absence_dates)
+                .exclude(template__category=TimeTemplate.Category.SPECIAL)
                 .select_related("template")
             )
             for assignment in future_assignments:
@@ -576,9 +588,12 @@ class Employee(TenantScopedModel):
         year_start = date(year, 1, 1)
         year_end = date(year, 12, 31)
 
+        # Nutzer-Feedback (2026-08): "vacation" war ein hartcodierter Absenz-
+        # Typ -- jetzt zieht jeder AbsenceType mit deducts_vacation_days=True
+        # Tage vom Ferienanspruch ab, nicht nur ein fest benannter.
         absences = Absence.all_objects.filter(
             employee=self,
-            type=Absence.Type.VACATION,
+            type__deducts_vacation_days=True,
             status=Absence.Status.APPROVED,
             start_date__lte=year_end,
             end_date__gte=year_start,
@@ -750,6 +765,31 @@ class Employment(TenantScopedModel):
         return f"{self.employee} – {self.node.name} ({self.pensum_pct}%)"
 
 
+class AbsenceType(TenantScopedModel):
+    """
+    Nutzer-Feedback (2026-08): Absenzarten (bisher hartcodiert Ferien/
+    Krankheit/Sonstiges) sollen genauso frei definierbar sein wie
+    Schichttypen (TimeTemplate) -- z. B. "Militärdienst" oder
+    "Weiterbildung" als eigene Art. `deducts_vacation_days` ersetzt die
+    frühere Sonderbehandlung von "vacation" in Employee.vacation_balance():
+    nur Absenzen eines Typs mit dieser Flag ziehen Tage vom Ferienanspruch
+    ab, alle anderen Typen sind reine Kategorisierung ohne Auswirkung.
+    """
+
+    name = models.CharField(max_length=100)
+    color = models.CharField(max_length=7, default="#64748b", help_text="Hex-Farbe für Chips/Badges")
+    deducts_vacation_days = models.BooleanField(
+        default=False,
+        help_text="Genehmigte Tage dieses Typs zählen als Ferienbezug (Employee.vacation_balance()).",
+    )
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self):
+        return self.name
+
+
 class Absence(TenantScopedModel):
     """
     Ferien/Krankheit/Sonstiges (Abschnitt 6). Blockiert Schichtzuweisungen im
@@ -770,11 +810,6 @@ class Absence(TenantScopedModel):
     ausgenommen wurde -- ein stiller Überstunden-Bonus ohne Gegenwert.
     """
 
-    class Type(models.TextChoices):
-        VACATION = "vacation", "Ferien"
-        SICK = "sick", "Krankheit"
-        OTHER = "other", "Sonstiges"
-
     class Status(models.TextChoices):
         PENDING = "pending", "Offen"
         APPROVED = "approved", "Genehmigt"
@@ -783,7 +818,13 @@ class Absence(TenantScopedModel):
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="absences")
     start_date = models.DateField()
     end_date = models.DateField()
-    type = models.CharField(max_length=20, choices=Type.choices, default=Type.VACATION)
+    # Nutzer-Feedback (2026-08): war ein hartcodiertes CharField(choices=...)
+    # mit genau drei Werten (vacation/sick/other) -- jetzt FK auf den
+    # tenant-eigenen AbsenceType-Katalog (analog TimeTemplate). PROTECT statt
+    # CASCADE/SET_NULL: eine Absenz braucht immer einen Typ, ein versehentlich
+    # gelöschter, noch verwendeter Typ soll nicht historische Absenzen
+    # kaputt machen, sondern der Admin bekommt einen klaren Fehler.
+    type = models.ForeignKey(AbsenceType, on_delete=models.PROTECT, related_name="absences")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     note = models.CharField(max_length=200, blank=True)
 
@@ -793,7 +834,7 @@ class Absence(TenantScopedModel):
         ordering = ["-start_date"]
 
     def __str__(self):
-        return f"{self.employee} – {self.get_type_display()} ({self.start_date}–{self.end_date})"
+        return f"{self.employee} – {self.type.name} ({self.start_date}–{self.end_date})"
 
     def clean(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
@@ -1049,6 +1090,17 @@ class ShiftAssignment(TenantScopedModel):
             )
 
     def _check_rest_period(self):
+        # Nutzer-Feedback (2026-08): eine Spezialität (TimeTemplate.category
+        # == "special", z. B. Pikettdienst) ist ein Zusatz zu einem
+        # regulären Dienst, kein Ersatz -- sie soll weder selbst eine
+        # Ruhezeit einhalten müssen, noch als "Schicht" die Ruhezeit vor/
+        # nach einem echten Dienst verkürzen. Gilt für alle zeit-/stunden-
+        # bezogenen Prüfungen unten (Ruhezeit, Höchstarbeitszeit, Pausen,
+        # Tagesspanne, wöchentlicher freier Tag) -- bewusst NICHT für
+        # Qualifikation/Jugendschutz/Absenz-Konflikt, die weiterhin auch für
+        # Spezialitäten gelten (siehe jeweilige Methode).
+        if self.template.category == TimeTemplate.Category.SPECIAL:
+            return
         this_start, this_end = self._shift_datetimes(self.date, self.template)
 
         neighbours = (
@@ -1057,6 +1109,7 @@ class ShiftAssignment(TenantScopedModel):
                 date__in=[self.date - timedelta(days=1), self.date + timedelta(days=1)],
             )
             .exclude(pk=self.pk)
+            .exclude(template__category=TimeTemplate.Category.SPECIAL)
             .select_related("template")
         )
 
@@ -1079,6 +1132,9 @@ class ShiftAssignment(TenantScopedModel):
                 )
 
     def _check_maximum_weekly_hours(self):
+        # Spezialitäten zählen nicht zu den Stunden (siehe _check_rest_period).
+        if self.template.category == TimeTemplate.Category.SPECIAL:
+            return
         week_start = self.date - timedelta(days=self.date.weekday())  # Montag
         week_end = week_start + timedelta(days=6)  # Sonntag
 
@@ -1088,6 +1144,7 @@ class ShiftAssignment(TenantScopedModel):
                 date__range=[week_start, week_end],
             )
             .exclude(pk=self.pk)
+            .exclude(template__category=TimeTemplate.Category.SPECIAL)
             .select_related("template")
         )
 
@@ -1102,6 +1159,9 @@ class ShiftAssignment(TenantScopedModel):
             )
 
     def _check_break_minutes(self):
+        # Spezialitäten zählen nicht zu den Stunden (siehe _check_rest_period).
+        if self.template.category == TimeTemplate.Category.SPECIAL:
+            return
         segments = _segment_datetimes(self.date, self.template.effective_segments())
         net_work_minutes = sum((end - start).total_seconds() / 60 for start, end in segments)
         required = self._required_break_minutes(net_work_minutes)
@@ -1153,9 +1213,13 @@ class ShiftAssignment(TenantScopedModel):
         ist das Ergebnis identisch zur vorherigen, Template-einzelnen
         Berechnung.
         """
+        # Spezialitäten zählen nicht zu den Stunden (siehe _check_rest_period).
+        if self.template.category == TimeTemplate.Category.SPECIAL:
+            return
         same_day = (
             ShiftAssignment.all_objects.filter(employee=self.employee, date=self.date)
             .exclude(pk__in=self._same_day_exclude_pks())
+            .exclude(template__category=TimeTemplate.Category.SPECIAL)
             .select_related("template")
         )
         spans = [self._shift_datetimes(self.date, self.template)]
@@ -1188,10 +1252,20 @@ class ShiftAssignment(TenantScopedModel):
         stattdessen naiv "irgendeine andere Zuweisung an diesem Tag" als
         Konflikt werteten. Mit Split-Shifts ist das jetzt zu grob -- zwei
         einander nicht überschneidende Zuweisungen am selben Tag sind gültig.
+
+        Nutzer-Feedback (2026-08): eine Spezialität (category == "special",
+        z. B. Pikettdienst) ist additiv zu einem regulären Dienst, kein
+        Slot-Konkurrent -- sie kann daher nie in Konflikt geraten, weder als
+        die neue Zuweisung (früher Return) noch als vorhandener Kandidat
+        (aus der Kandidatenliste ausgeschlossen). Gilt automatisch auch für
+        swap()/ShiftTradeRequest.approve(), die diese Methode mitverwenden.
         """
+        if template.category == TimeTemplate.Category.SPECIAL:
+            return None
         candidates = (
             cls.all_objects.filter(employee_id=employee_id, date=date)
             .exclude(pk__in=exclude_pks)
+            .exclude(template__category=TimeTemplate.Category.SPECIAL)
             .select_related("template")
         )
         for other in candidates:
@@ -1220,6 +1294,10 @@ class ShiftAssignment(TenantScopedModel):
             )
 
     def _check_weekly_rest_day(self):
+        # Spezialitäten zählen nicht als Arbeitstag (siehe _check_rest_period)
+        # -- ein Tag mit nur einem Pikettdienst bleibt ein freier Tag.
+        if self.template.category == TimeTemplate.Category.SPECIAL:
+            return
         week_start = self.date - timedelta(days=self.date.weekday())  # Montag
         week_dates = {week_start + timedelta(days=i) for i in range(7)}
 
@@ -1229,6 +1307,7 @@ class ShiftAssignment(TenantScopedModel):
                 date__range=[week_start, week_start + timedelta(days=6)],
             )
             .exclude(pk=self.pk)
+            .exclude(template__category=TimeTemplate.Category.SPECIAL)
             .values_list("date", flat=True)
         )
         occupied_dates.add(self.date)
@@ -1272,11 +1351,11 @@ class ShiftAssignment(TenantScopedModel):
             status=Absence.Status.APPROVED,
             start_date__lte=self.date,
             end_date__gte=self.date,
-        ).first()
+        ).select_related("type").first()
         if conflict:
             raise ValidationError(
                 f"{self.employee} hat am {self.date} eine genehmigte Abwesenheit "
-                f"({conflict.get_type_display()}, {conflict.start_date}–{conflict.end_date})."
+                f"({conflict.type.name}, {conflict.start_date}–{conflict.end_date})."
             )
 
     @classmethod

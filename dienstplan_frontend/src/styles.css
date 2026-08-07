@@ -1383,19 +1383,10 @@ thead .col-employee {
   letter-spacing: 0.02em;
 }
 
-.type-badge--vacation {
-  background: var(--primary-soft);
-  color: var(--primary);
-}
-
-.type-badge--sick {
-  background: var(--warn-soft);
-  color: var(--warn);
-}
-
-.type-badge--other {
-  background: #eee;
-  color: var(--ink-muted);
+.type-badge {
+  --chip-color: var(--ink-muted);
+  background: color-mix(in srgb, var(--chip-color) 16%, white);
+  color: color-mix(in srgb, var(--chip-color) 80%, black);
 }
 
 .status-badge--pending {

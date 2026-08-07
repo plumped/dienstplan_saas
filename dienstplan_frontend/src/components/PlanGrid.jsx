@@ -44,15 +44,6 @@ function DayStaffingBadge({ shortfalls }) {
 
 const WEEKDAYS_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 
-// README (2026-08, Bugfix): fehlte bisher komplett -- Absenzen liessen sich
-// über die Mehrfachauswahl nur im Jahresplan (YearPlan.jsx), nicht im
-// Planblatt eintragen. Gleiche Liste/Labels wie dort.
-const ABSENCE_TYPES = [
-  { value: "vacation", label: "Ferien" },
-  { value: "sick", label: "Krankheit" },
-  { value: "other", label: "Sonstiges" },
-];
-
 function pad(n) {
   return String(n).padStart(2, "0");
 }
@@ -117,6 +108,7 @@ function stationScope(nodes, nodeId) {
 
 export default function PlanGrid({ nodeId, nodes, year, month, employees, me, onError }) {
   const [templates, setTemplates] = useState([]);
+  const [absenceTypes, setAbsenceTypes] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [absences, setAbsences] = useState([]);
   const [timeRecords, setTimeRecords] = useState([]);
@@ -239,15 +231,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
         : Promise.resolve([]);
     Promise.all([
       api.getTimeTemplates(),
+      api.getAbsenceTypes(),
       api.getShiftAssignments(nodeId, dateFrom, dateTo),
       api.getAbsences(),
       api.getTimeRecords(dateFrom, dateTo),
       preferencesRequest,
       api.getTenantHolidays(year),
     ])
-      .then(([templatesRes, assignmentsRes, absencesRes, timeRecordsRes, preferencesRes, holidaysRes]) => {
+      .then(([templatesRes, absenceTypesRes, assignmentsRes, absencesRes, timeRecordsRes, preferencesRes, holidaysRes]) => {
         if (cancelled) return;
         setTemplates((templatesRes.results ?? templatesRes).filter((t) => templateScopeIds.includes(t.node)));
+        setAbsenceTypes(absenceTypesRes.results ?? absenceTypesRes);
         setAssignments(assignmentsRes.results ?? assignmentsRes);
         // Nur genehmigte Absenzen blockieren/zeigen sich im Grid (siehe
         // ShiftAssignment._check_no_absence_conflict im Backend) -- offene
@@ -820,16 +814,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
               </span>
               <span className="stamp-row">
                 <span className="stamp-row-label">Abwesenheiten</span>
-                {ABSENCE_TYPES.map((t) => (
+                {absenceTypes.map((t) => (
                   <button
-                    key={t.value}
+                    key={t.id}
                     type="button"
                     className="stamp-chip stamp-chip--absence"
+                    style={{ "--chip-color": t.color }}
                     disabled={markedCells.size === 0}
-                    title={`${t.label} für alle markierten Tage eintragen`}
-                    onClick={() => handleStampAbsence(t.value)}
+                    title={`${t.name} für alle markierten Tage eintragen`}
+                    onClick={() => handleStampAbsence(t.id)}
                   >
-                    {t.label}
+                    {t.name}
                   </button>
                 ))}
                 <button
@@ -1026,6 +1021,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           employeeId={emp.id}
                           date={date}
                           absence={absence}
+                          absenceTypes={absenceTypes}
                           colleagues={employees.filter((e) => e.id !== emp.id)}
                           canEdit={canManage}
                           canOfferTrade={canOfferTrade}
@@ -1065,6 +1061,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                             employeeId={emp.id}
                             date={date}
                             absence={absence}
+                            absenceTypes={absenceTypes}
                             selectionMode
                             marked={markedCells.has(`${emp.id}:${date}:${rowNodeId}`)}
                             onMarkStart={() => startMark(emp.id, date, rowNodeId)}

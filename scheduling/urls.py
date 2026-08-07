@@ -1,6 +1,7 @@
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    AbsenceTypeViewSet,
     AbsenceViewSet,
     EmployeeViewSet,
     NodeViewSet,
@@ -17,6 +18,7 @@ router.register("nodes", NodeViewSet, basename="node")
 router.register("skills", SkillViewSet, basename="skill")
 router.register("employees", EmployeeViewSet, basename="employee")
 router.register("time-templates", TimeTemplateViewSet, basename="timetemplate")
+router.register("absence-types", AbsenceTypeViewSet, basename="absencetype")
 router.register("shift-assignments", ShiftAssignmentViewSet, basename="shiftassignment")
 router.register("absences", AbsenceViewSet, basename="absence")
 router.register("shift-preferences", ShiftPreferenceViewSet, basename="shiftpreference")

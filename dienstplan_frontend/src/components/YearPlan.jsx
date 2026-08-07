@@ -9,12 +9,6 @@ const MONTH_NAMES = [
   "Juli", "August", "September", "Oktober", "November", "Dezember",
 ];
 
-const ABSENCE_TYPES = [
-  { value: "vacation", label: "Ferien" },
-  { value: "sick", label: "Krankheit" },
-  { value: "other", label: "Sonstiges" },
-];
-const ABSENCE_TYPE_LABELS = Object.fromEntries(ABSENCE_TYPES.map((t) => [t.value, t.label]));
 const STATUS_LABELS = { pending: "offen", approved: "genehmigt", rejected: "abgelehnt" };
 
 function pad(n) {
@@ -86,6 +80,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
   // dessen Zuweisungen tatsächlich geladen werden (siehe Datenabruf unten).
   const [employmentKey, setEmploymentKey] = useState(null);
   const [templates, setTemplates] = useState([]);
+  const [absenceTypes, setAbsenceTypes] = useState([]);
   const [assignments, setAssignments] = useState([]);
   const [absences, setAbsences] = useState([]);
   const [preferences, setPreferences] = useState([]);
@@ -180,13 +175,15 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
     const dateTo = `${year}-12-31`;
     Promise.all([
       api.getTimeTemplates(),
+      api.getAbsenceTypes(),
       api.getShiftAssignments(selectedNode, dateFrom, dateTo),
       api.getAbsences(employeeId),
       api.getShiftPreferences(employeeId),
       api.getTenantHolidays(year),
     ])
-      .then(([templatesRes, assignmentsRes, absencesRes, preferencesRes, holidaysRes]) => {
+      .then(([templatesRes, absenceTypesRes, assignmentsRes, absencesRes, preferencesRes, holidaysRes]) => {
         if (cancelled) return;
+        setAbsenceTypes(absenceTypesRes.results ?? absenceTypesRes);
         // Nachbesserung: TimeTemplate.node kann sowohl die Station (geteilter
         // Katalog, für JEDES Team der Station sichtbar) als auch ein
         // einzelnes Team sein (exklusiv, siehe PlanGrid.jsx). Nur nach
@@ -222,6 +219,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
   // gleiches Muster in PlanGrid.jsx).
   const regularTemplates = useMemo(() => templates.filter((t) => t.category !== "special"), [templates]);
   const specialTemplates = useMemo(() => templates.filter((t) => t.category === "special"), [templates]);
+  const absenceTypesById = useMemo(() => new Map(absenceTypes.map((t) => [t.id, t])), [absenceTypes]);
 
   // README (2026-08, Bugfix): Array statt Einzelwert pro Datum -- ein Tag
   // kann jetzt (Split-Shifts, README Punkt 18) mehr als eine Zuweisung
@@ -561,16 +559,17 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
           )}
           <span className="stamp-row">
             <span className="stamp-row-label">Abwesenheiten</span>
-            {ABSENCE_TYPES.map((t) => (
+            {absenceTypes.map((t) => (
               <button
-                key={t.value}
+                key={t.id}
                 type="button"
                 className="stamp-chip stamp-chip--absence"
+                style={{ "--chip-color": t.color }}
                 disabled={markedDates.size === 0}
-                title={`${t.label} für alle markierten Tage eintragen`}
-                onClick={() => handleStampAbsence(t.value)}
+                title={`${t.name} für alle markierten Tage eintragen`}
+                onClick={() => handleStampAbsence(t.id)}
               >
-                {t.label}
+                {t.name}
               </button>
             ))}
             <button
@@ -691,11 +690,11 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                       preference?.type === "wunschdienst" ? templates.find((t) => t.id === preference.template) : null;
                     const marked = markedDates.has(date);
                     const kind = absence ? "absence" : assignment ? "shift" : "empty";
-                    const color = absence ? "var(--ink-muted)" : template?.color;
+                    const color = absence ? absenceTypesById.get(absence.type)?.color ?? "var(--ink-muted)" : template?.color;
                     const secondColor = !absence ? secondTemplate?.color : null;
                     const holidayName = holidays.get(date);
                     let title = absence
-                      ? `${date}: ${ABSENCE_TYPE_LABELS[absence.type] ?? absence.type} (${STATUS_LABELS[absence.status] ?? absence.status})`
+                      ? `${date}: ${absenceTypesById.get(absence.type)?.name ?? absence.type} (${STATUS_LABELS[absence.status] ?? absence.status})`
                       : assignment && template
                         ? `${date}: ${template.name} (${template.start_time.slice(0, 5)}–${template.end_time.slice(0, 5)})` +
                           (secondTemplate

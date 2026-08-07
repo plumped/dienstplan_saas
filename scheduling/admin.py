@@ -6,6 +6,7 @@ from core.admin import TenantScopedAdminMixin
 
 from .models import (
     Absence,
+    AbsenceType,
     Employee,
     Employment,
     Node,
@@ -81,6 +82,12 @@ class ShiftAssignmentAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["employee", "date", "template", "node", "tenant"]
     list_filter = ["tenant", "node", "date"]
     date_hierarchy = "date"
+
+
+@admin.register(AbsenceType)
+class AbsenceTypeAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
+    list_display = ["name", "color", "deducts_vacation_days", "tenant"]
+    list_filter = ["tenant"]
 
 
 @admin.register(Absence)

@@ -44,7 +44,7 @@ def notify_new_absence_request(absence):
     """Mitarbeiter hat eine Absenz beantragt (PENDING) -- Admin/Planer informieren."""
     _send(
         f"Neue Abwesenheitsanfrage: {absence.employee}",
-        f"{absence.employee} hat eine Abwesenheit beantragt ({absence.get_type_display()}, "
+        f"{absence.employee} hat eine Abwesenheit beantragt ({absence.type.name}, "
         f"{absence.start_date} bis {absence.end_date}) und wartet auf Genehmigung.",
         _manager_emails(absence.tenant),
     )
@@ -55,7 +55,7 @@ def notify_absence_decision(absence):
     decision = "genehmigt" if absence.status == absence.Status.APPROVED else "abgelehnt"
     _send(
         f"Deine Abwesenheitsanfrage wurde {decision}",
-        f"Deine Abwesenheit ({absence.get_type_display()}, {absence.start_date} bis "
+        f"Deine Abwesenheit ({absence.type.name}, {absence.start_date} bis "
         f"{absence.end_date}) wurde {decision}.",
         [_employee_email(absence.employee)],
     )

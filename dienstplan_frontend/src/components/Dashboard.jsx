@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 
-const ABSENCE_TYPE_LABELS = { vacation: "Ferien", sick: "Krankheit", other: "Sonstiges" };
-
 function isoToday() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -18,6 +16,7 @@ function isoToday() {
 // (PlanGrid.jsx, Block 2.9).
 export default function Dashboard({ me, onNavigate, onError }) {
   const [absences, setAbsences] = useState([]);
+  const [absenceTypesById, setAbsenceTypesById] = useState(new Map());
   const [trades, setTrades] = useState([]);
   const [employeesById, setEmployeesById] = useState(new Map());
   const [assignmentsById, setAssignmentsById] = useState(new Map());
@@ -35,13 +34,15 @@ export default function Dashboard({ me, onNavigate, onError }) {
     setLoading(true);
 
     async function load() {
-      const [absencesRes, tradesRes, employeesRes, understaffedRes] = await Promise.all([
+      const [absencesRes, absenceTypesRes, tradesRes, employeesRes, understaffedRes] = await Promise.all([
         api.getAbsences(),
+        api.getAbsenceTypes(),
         api.getShiftTradeRequests(),
         api.getEmployees(),
         api.getUnderstaffedShifts(),
       ]);
       const absenceList = absencesRes.results ?? absencesRes;
+      const absenceTypeList = absenceTypesRes.results ?? absenceTypesRes;
       const tradeList = tradesRes.results ?? tradesRes;
       const employeeList = employeesRes.results ?? employeesRes;
 
@@ -56,6 +57,7 @@ export default function Dashboard({ me, onNavigate, onError }) {
 
       if (cancelled) return;
       setAbsences(absenceList);
+      setAbsenceTypesById(new Map(absenceTypeList.map((t) => [t.id, t])));
       setTrades(tradeList);
       setEmployeesById(new Map(employeeList.map((e) => [e.id, e])));
       setAssignmentsById(new Map(assignments.map((a) => [a.id, a])));
@@ -158,8 +160,8 @@ export default function Dashboard({ me, onNavigate, onError }) {
             <ul className="entry-list">
               {openAbsences.map((a) => (
                 <li key={a.id} className="entry-list-item">
-                  <span className={`type-badge type-badge--${a.type}`}>
-                    {ABSENCE_TYPE_LABELS[a.type] ?? a.type}
+                  <span className="type-badge" style={{ "--chip-color": absenceTypesById.get(a.type)?.color }}>
+                    {absenceTypesById.get(a.type)?.name ?? a.type}
                   </span>
                   <span className="entry-main">
                     <strong>{employeeName(a.employee)}</strong> · {a.start_date} – {a.end_date}
@@ -232,8 +234,8 @@ export default function Dashboard({ me, onNavigate, onError }) {
             <ul className="entry-list">
               {absentToday.map((a) => (
                 <li key={a.id} className="entry-list-item">
-                  <span className={`type-badge type-badge--${a.type}`}>
-                    {ABSENCE_TYPE_LABELS[a.type] ?? a.type}
+                  <span className="type-badge" style={{ "--chip-color": absenceTypesById.get(a.type)?.color }}>
+                    {absenceTypesById.get(a.type)?.name ?? a.type}
                   </span>
                   <span className="entry-main">
                     <strong>{employeeName(a.employee)}</strong> · bis {a.end_date}

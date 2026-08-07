@@ -4,6 +4,7 @@ from core.models import Membership
 
 from .models import (
     Absence,
+    AbsenceType,
     Employee,
     Employment,
     Node,
@@ -396,6 +397,12 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
         instance.tenant = self.context["request"].tenant
         instance.clean()
         return attrs
+
+
+class AbsenceTypeSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = AbsenceType
+        fields = ["id", "name", "color", "deducts_vacation_days"]
 
 
 class AbsenceSerializer(serializers.ModelSerializer):

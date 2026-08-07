@@ -4225,6 +4225,15 @@ class UnderstaffedShiftsViewTests(APITestCase):
         response = self.client.get("/api/understaffed-shifts/")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_no_templates_configured_reports_has_configured_templates_false(self):
+        # README (2026-08, UX-Bugfix): "nichts konfiguriert" muss sich vom
+        # Dashboard klar von "alles besetzt" unterscheiden lassen -- beide
+        # sahen vorher identisch aus (leere Liste).
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["has_configured_templates"])
+        self.assertEqual(response.data["shortfalls"], [])
+
     def test_template_without_minimum_staffing_never_listed(self):
         template = TimeTemplate.objects.create(
             tenant=self.tenant, node=self.node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
@@ -4232,7 +4241,24 @@ class UnderstaffedShiftsViewTests(APITestCase):
         self.assertEqual(template.minimum_staffing, 0)
         response = self.client.get("/api/understaffed-shifts/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data, [])
+        self.assertFalse(response.data["has_configured_templates"])
+        self.assertEqual(response.data["shortfalls"], [])
+
+    def test_configured_templates_report_has_configured_templates_true(self):
+        # has_configured_templates ist True, sobald mindestens ein Schichttyp
+        # eine Mindestbesetzung hat -- unabhängig davon, ob es aktuell auch
+        # tatsaechlich einen Engpass gibt (siehe die anderen Tests oben/unten
+        # fuer den Engpass-Fall selbst).
+        TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=1,
+        )
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertTrue(response.data["has_configured_templates"])
 
     def test_reports_shortfall_within_upcoming_window(self):
         # README: die Auswertung läuft bewusst über ALLE Tage des Fensters,
@@ -4255,7 +4281,8 @@ class UnderstaffedShiftsViewTests(APITestCase):
         )
         response = self.client.get("/api/understaffed-shifts/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        by_date = {e["date"]: e for e in response.data}
+        self.assertTrue(response.data["has_configured_templates"])
+        by_date = {e["date"]: e for e in response.data["shortfalls"]}
         entry = by_date[target_date.isoformat()]
         self.assertEqual(entry["node_id"], self.node.id)
         self.assertEqual(entry["node_name"], "Station A")
@@ -4277,7 +4304,7 @@ class UnderstaffedShiftsViewTests(APITestCase):
             tenant=self.tenant, employee=self.employee, node=self.node, date=target_date, template=template
         )
         response = self.client.get("/api/understaffed-shifts/")
-        dates = [e["date"] for e in response.data]
+        dates = [e["date"] for e in response.data["shortfalls"]]
         self.assertNotIn(target_date.isoformat(), dates)
 
     def test_shortfall_outside_upcoming_window_not_listed(self):
@@ -4294,7 +4321,7 @@ class UnderstaffedShiftsViewTests(APITestCase):
             tenant=self.tenant, employee=self.employee, node=self.node, date=far_future, template=template
         )
         response = self.client.get("/api/understaffed-shifts/")
-        dates = [e["date"] for e in response.data]
+        dates = [e["date"] for e in response.data["shortfalls"]]
         self.assertNotIn(far_future.isoformat(), dates)
         self.assertTrue(all(d <= (self.today + timedelta(days=6)).isoformat() for d in dates))
 
@@ -4312,7 +4339,7 @@ class UnderstaffedShiftsViewTests(APITestCase):
             tenant=self.tenant, employee=self.employee, node=self.node, date=yesterday, template=template
         )
         response = self.client.get("/api/understaffed-shifts/")
-        dates = [e["date"] for e in response.data]
+        dates = [e["date"] for e in response.data["shortfalls"]]
         self.assertNotIn(yesterday.isoformat(), dates)
         self.assertTrue(all(d >= self.today.isoformat() for d in dates))
 
@@ -4333,5 +4360,5 @@ class UnderstaffedShiftsTenantIsolationTests(TwoTenantFixtureMixin, APITestCase)
 
         self.auth_as(self.user_a)
         response = self.client.get("/api/understaffed-shifts/")
-        self.assertGreater(len(response.data), 0)
-        self.assertTrue(all(e["node_name"] == "Station A" for e in response.data))
+        self.assertGreater(len(response.data["shortfalls"]), 0)
+        self.assertTrue(all(e["node_name"] == "Station A" for e in response.data["shortfalls"]))

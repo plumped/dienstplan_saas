@@ -1029,6 +1029,17 @@ thead .col-employee {
   margin-bottom: 8px;
 }
 
+/* README (2026-08, UX-Bugfix): bewusst eigene, kompakte Klasse statt
+   .empty-state -- .empty-state ist für den Vollseiten-"Übersicht wird
+   geladen"-Fall gedacht (grosser Innenabstand, zentriert), eine leere
+   Dashboard-Sektion braucht nur eine ruhige, linksbündige Bestätigungszeile
+   zwischen den anderen Sektionen. */
+.dashboard-empty {
+  color: var(--ink-muted);
+  font-size: 13px;
+  padding: 4px 0;
+}
+
 .panel-form-row label {
   flex: 1;
 }

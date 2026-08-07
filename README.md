@@ -1388,6 +1388,28 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       verifiziert: Tab nur für Admin/Planer sichtbar, alle vier Kategorien zeigen echte Daten
       korrekt an, Genehmigen/Ablehnen-Quick-Actions funktionieren und aktualisieren die Liste
       reaktiv, Deep-Link zu einer unterbesetzten Schicht wechselt Tab UND Station korrekt.
+    - **UX-Bugfix (2026-08)**: Nutzer-Feedback ("Das Dashboard 'Übersicht' ist nichtssagend, ich
+      sehe nur 'Heute Abwesend' sonst gar nichts") -- kein echter Datenfehler, aber ein reales
+      UX-Problem. `Dashboard.jsx` blendete eine Sektion komplett aus, sobald ihre Liste leer war,
+      statt aktiv "alles im grünen Bereich" zu bestätigen -- bei wenig offenen Fällen (der
+      Normalzustand) wirkte die Seite dadurch wie kaputt/leer statt informativ. Jede der vier
+      Sektionen wird jetzt immer gerendert und zeigt bei leerer Liste eine eigene, positive
+      Bestätigungszeile (z. B. "Keine offenen Absenzanträge."). Zusätzlich musste
+      `UnderstaffedShiftsView` (Backend) um `has_configured_templates` erweitert werden: eine
+      leere `shortfalls`-Liste war bisher doppeldeutig -- sie bedeutete entweder "aktuell überall
+      ausreichend besetzt" ODER "für keinen Schichttyp ist überhaupt eine Mindestbesetzung
+      hinterlegt" (Punkt 2.9 ist rein optional, `minimum_staffing` defaultet auf 0). Ohne dieses
+      Flag hätte die Karte im häufigen Fall "noch nirgends konfiguriert" fälschlich "voll besetzt"
+      suggeriert; jetzt zeigt sie stattdessen einen Hinweis mit direktem Link in die Einstellungen.
+      Response-Form geändert von `[...]`/bare Liste zu `{"has_configured_templates": bool,
+      "shortfalls": [...]}`. Getestet (`scheduling/tests.py`:
+      `UnderstaffedShiftsViewTests.test_no_templates_configured_reports_has_configured_templates_false`,
+      `test_configured_templates_report_has_configured_templates_true`, plus alle bestehenden
+      Understaffed-Tests an die neue Response-Form angepasst). Mit Playwright gegen die echten
+      Testheim-Daten verifiziert: alle vier Sektionen zeigen im aktuellen Datenstand (0 offene
+      Absenzen, 0 wartende Tauschanfragen, 1 Abwesenheit heute, keine Mindestbesetzung
+      konfiguriert) korrekt ihren jeweiligen Zustand statt zu verschwinden; nach testweisem Setzen
+      einer `minimum_staffing` zeigt die Karte korrekt die entstandenen Unterbesetzungen.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

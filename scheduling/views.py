@@ -685,6 +685,14 @@ class UnderstaffedShiftsView(TenantScopedAPIMixin, APIView):
     core.permissions-Docstring) -- die Einschränkung auf Admin/Planer
     passiert rein im Frontend (das Dashboard ist dort kein sichtbarer Tab
     für andere Rollen), nicht hier.
+
+    README (2026-08, UX-Bugfix): eine leere Liste war für Dashboard.jsx
+    nicht von "kein einziger Schichttyp hat eine Mindestbesetzung
+    konfiguriert" zu unterscheiden -- beide sahen identisch aus, obwohl es
+    inhaltlich zwei ganz verschiedene Zustände sind ("alles im grünen
+    Bereich" vs. "dieses Feature ist noch nicht eingerichtet"). Response
+    daher jetzt ein Objekt mit `has_configured_templates` statt einer
+    nackten Liste.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -693,7 +701,7 @@ class UnderstaffedShiftsView(TenantScopedAPIMixin, APIView):
     def get(self, request):
         tenant = request.tenant
         if tenant is None:
-            return Response([])
+            return Response({"has_configured_templates": False, "shortfalls": []})
 
         today = timezone.localdate()
         end = today + timedelta(days=self.UPCOMING_DAYS - 1)
@@ -702,7 +710,7 @@ class UnderstaffedShiftsView(TenantScopedAPIMixin, APIView):
             TimeTemplate.all_objects.filter(tenant=tenant, minimum_staffing__gt=0).select_related("node")
         )
         if not templates:
-            return Response([])
+            return Response({"has_configured_templates": False, "shortfalls": []})
 
         counts_qs = (
             ShiftAssignment.all_objects.filter(
@@ -734,4 +742,4 @@ class UnderstaffedShiftsView(TenantScopedAPIMixin, APIView):
                 d += timedelta(days=1)
 
         results.sort(key=lambda r: (r["date"], r["node_name"], r["template_name"]))
-        return Response(results)
+        return Response({"has_configured_templates": True, "shortfalls": results})

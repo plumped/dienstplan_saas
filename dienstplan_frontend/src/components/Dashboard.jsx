@@ -22,6 +22,11 @@ export default function Dashboard({ me, onNavigate, onError }) {
   const [employeesById, setEmployeesById] = useState(new Map());
   const [assignmentsById, setAssignmentsById] = useState(new Map());
   const [understaffed, setUnderstaffed] = useState([]);
+  // README (2026-08, UX-Bugfix): "kein Schichttyp hat je eine
+  // Mindestbesetzung konfiguriert" sieht sonst identisch aus wie "aktuell
+  // alles besetzt" (beides eine leere Liste) -- das Dashboard soll diese
+  // beiden ganz unterschiedlichen Zustände klar auseinanderhalten können.
+  const [understaffedConfigured, setUnderstaffedConfigured] = useState(true);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
 
@@ -54,7 +59,8 @@ export default function Dashboard({ me, onNavigate, onError }) {
       setTrades(tradeList);
       setEmployeesById(new Map(employeeList.map((e) => [e.id, e])));
       setAssignmentsById(new Map(assignments.map((a) => [a.id, a])));
-      setUnderstaffed(understaffedRes);
+      setUnderstaffed(understaffedRes.shortfalls);
+      setUnderstaffedConfigured(understaffedRes.has_configured_templates);
     }
 
     load()
@@ -134,18 +140,21 @@ export default function Dashboard({ me, onNavigate, onError }) {
 
   if (loading) return <p className="loading-state">Übersicht wird geladen …</p>;
 
-  const nothingOpen =
-    openAbsences.length === 0 && openTrades.length === 0 && understaffed.length === 0 && absentToday.length === 0;
-
   return (
     <div className="side-panel">
       <div className="panel-list panel-list--full">
         <h2>Übersicht</h2>
-        {nothingOpen && <p className="empty-state">Nichts offen -- alles erledigt.</p>}
 
-        {openAbsences.length > 0 && (
-          <section className="dashboard-section">
-            <h3>Offene Absenzanträge ({openAbsences.length})</h3>
+        {/* README (2026-08, UX-Bugfix): jede Sektion wird IMMER angezeigt --
+            vorher verschwand eine leere Sektion komplett, was das Dashboard
+            bei wenig offenen Fällen wie kaputt/leer statt "alles im grünen
+            Bereich" wirken liess. Jede Sektion bestätigt jetzt aktiv ihren
+            Zustand statt zu schweigen. */}
+        <section className="dashboard-section">
+          <h3>Offene Absenzanträge ({openAbsences.length})</h3>
+          {openAbsences.length === 0 ? (
+            <p className="dashboard-empty">Keine offenen Absenzanträge.</p>
+          ) : (
             <ul className="entry-list">
               {openAbsences.map((a) => (
                 <li key={a.id} className="entry-list-item">
@@ -170,12 +179,14 @@ export default function Dashboard({ me, onNavigate, onError }) {
                 </li>
               ))}
             </ul>
-          </section>
-        )}
+          )}
+        </section>
 
-        {openTrades.length > 0 && (
-          <section className="dashboard-section">
-            <h3>Diensttausch wartet auf Freigabe ({openTrades.length})</h3>
+        <section className="dashboard-section">
+          <h3>Diensttausch wartet auf Freigabe ({openTrades.length})</h3>
+          {openTrades.length === 0 ? (
+            <p className="dashboard-empty">Keine Tauschanfragen warten auf Freigabe.</p>
+          ) : (
             <ul className="entry-list">
               {openTrades.map((t) => {
                 const requesterAssignment = assignmentsById.get(t.requester_assignment);
@@ -210,12 +221,14 @@ export default function Dashboard({ me, onNavigate, onError }) {
                 );
               })}
             </ul>
-          </section>
-        )}
+          )}
+        </section>
 
-        {absentToday.length > 0 && (
-          <section className="dashboard-section">
-            <h3>Heute abwesend ({absentToday.length})</h3>
+        <section className="dashboard-section">
+          <h3>Heute abwesend ({absentToday.length})</h3>
+          {absentToday.length === 0 ? (
+            <p className="dashboard-empty">Heute ist niemand abwesend.</p>
+          ) : (
             <ul className="entry-list">
               {absentToday.map((a) => (
                 <li key={a.id} className="entry-list-item">
@@ -228,12 +241,22 @@ export default function Dashboard({ me, onNavigate, onError }) {
                 </li>
               ))}
             </ul>
-          </section>
-        )}
+          )}
+        </section>
 
-        {understaffed.length > 0 && (
-          <section className="dashboard-section">
-            <h3>Unterbesetzte Schichten (nächste 7 Tage)</h3>
+        <section className="dashboard-section">
+          <h3>Unterbesetzte Schichten (nächste 7 Tage)</h3>
+          {!understaffedConfigured ? (
+            <p className="dashboard-empty">
+              Für keinen Schichttyp ist eine Mindestbesetzung hinterlegt -- diese Karte kann daher
+              nichts melden.{" "}
+              <button type="button" className="btn-ghost" onClick={() => onNavigate({ tab: "settings" })}>
+                In den Einstellungen einrichten
+              </button>
+            </p>
+          ) : understaffed.length === 0 ? (
+            <p className="dashboard-empty">Keine Unterbesetzung in den nächsten 7 Tagen.</p>
+          ) : (
             <ul className="entry-list">
               {understaffed.map((u) => (
                 <li key={`${u.date}:${u.template_id}`} className="entry-list-item">
@@ -251,8 +274,8 @@ export default function Dashboard({ me, onNavigate, onError }) {
                 </li>
               ))}
             </ul>
-          </section>
-        )}
+          )}
+        </section>
       </div>
     </div>
   );

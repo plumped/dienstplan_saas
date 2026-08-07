@@ -1878,73 +1878,105 @@ thead .col-employee {
   grid-column: 1 / 3;
 }
 
-/* Nutzer-Feedback (2026-08, Nachbesserung): ein reiner Links/Rechts-
-   Spaltensplit zwang beide Glyphen in eine ~20px schmale Spalte -- ohne
-   gesetztes Icon (Fallback: 1 Buchstabe) lief das noch, ein manuell
-   gesetztes zweistelliges Icon oder generell mehr Platz war darin nicht
-   drin. Diagonal wie im Jahresplan (siehe .year-day-fill--shift.is-split
-   weiter unten) statt Spalten: jeder Chip sitzt in seiner eigenen Ecke
-   statt in einer festen Spaltenbreite -- dadurch mehr nutzbarer Platz pro
-   Glyph bei gleicher Zellgrösse, und dieselbe visuelle Sprache wie im
-   Jahresplan für "zwei Dienste an einem Tag". */
+/* Nutzer-Feedback (2026-08, Nachbesserung -- Referenzbild): ein reiner
+   Links/Rechts-Spaltensplit zwang beide Glyphen in eine ~20px schmale
+   Spalte. Eine erste diagonale Variante (blasser Farbverlauf im
+   Hintergrund + kleiner runder Pill-Chip in der Ecke) war dem Nutzer
+   "zu weich" -- das Referenzbild zeigt zwei VOLLFLÄCHIG eingefärbte
+   Dreiecke (clip-path), der Glyph gross und direkt in der freien Ecke,
+   kein separater blasser Pill mehr. Genau das setzt dieser Block um,
+   in derselben visuellen Sprache wie der Jahresplan (.year-day-fill--
+   shift.is-split) für "zwei Dienste an einem Tag". */
 .day-cell-slots--diagonal {
   display: block;
   position: relative;
-  /* Bugfix (Playwright-Verifikation): bei 20px Höhe (wie ein einzelner
-     Chip) lagen "top: 0" und "bottom: 0" exakt übereinander -- der zweite
-     Chip war komplett vom ersten verdeckt. Container jetzt höher als ein
-     einzelner Chip (16px, s. u.), damit oben/unten wirklich getrennte
-     Zeilen ergeben, nicht dieselbe. */
-  height: 30px;
+  /* Höher als eine einzelne Zeile (20px): bei 22px war die Zelle zu
+     flach für einen sauberen Diagonalschnitt -- der zweite Glyph lag zu
+     nah am Dreiecksrand und wurde vom clip-path angeschnitten. */
+  height: 34px;
   border-radius: 5px;
   overflow: hidden;
-}
-
-.day-cell-slots--diagonal .diag-bg {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--chip-color) 22%, white) 50%,
-    color-mix(in srgb, var(--chip-color-2) 22%, white) 50%
-  );
-  pointer-events: none;
 }
 
 /* Bugfix (Playwright-Verifikation): ShiftCell.jsx wickelt sein eigenes
    Markup zusätzlich in ein <span className="cell-wrap"> (für den
    Tausch-Button-Ankerpunkt) -- ein ungescoptes ".cell-wrap" hier hätte
-   also auch DIESES innere, unmodifizierte cell-wrap getroffen und
-   position:absolute ohne jeden Offset gegeben. Damit verlor der äussere
-   (shrink-to-fit) Wrapper seinen einzigen normalen Flow-Inhalt, kollabierte
-   auf 0x0, und der zweite Chip verschwand komplett. Nur auf die beiden
-   Modifier-Klassen scopen, die ausschliesslich am äusseren Wrapper hängen. */
+   also auch DIESES innere, unmodifizierte cell-wrap getroffen. Nur auf
+   die beiden Modifier-Klassen scopen, die ausschliesslich am äusseren
+   Wrapper hängen. Jeder Wrapper füllt (inset: 0) die GANZE Zelle, aber
+   clip-path zeigt nur sein eigenes Dreieck -- --chip-color kommt hier
+   von PlanGrid.jsx (inline style), nicht von ShiftCell.jsx's eigenem
+   .shift-chip weiter unten im Baum (Custom Properties vererben nur
+   abwärts, .shift-chip-btn kann die Variable seines Kindes nicht lesen). */
 .day-cell-slots--diagonal .cell-wrap--diag-tl,
 .day-cell-slots--diagonal .cell-wrap--diag-br {
   position: absolute;
+  inset: 0;
   width: auto;
   min-width: 0;
 }
 
 .day-cell-slots--diagonal .cell-wrap--diag-tl {
-  top: 0;
-  left: 1px;
+  clip-path: polygon(0 0, 100% 0, 0 100%);
 }
 
 .day-cell-slots--diagonal .cell-wrap--diag-br {
-  bottom: 0;
-  right: 1px;
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
 }
 
+/* Bugfix (Playwright-Verifikation, Fortsetzung): die Basisregel ".cell-wrap"
+   setzt position:relative auf JEDES cell-wrap -- also auch auf ShiftCell.
+   jsx's inneres <span>, das direkte Kind von .cell-wrap--diag-tl/--br. Ein
+   position:relative-Element ist selbst ein Containing Block für
+   position:absolute-Nachkommen, daher hätte .shift-chip-btn (s. u.) diese
+   innere Box als Bezugsrahmen genommen statt der äusseren -- und die ist
+   wieder nur so gross wie ihr eigener (auto-)Inhalt, derselbe Zirkelschluss
+   wie zuvor. position:static NUR hier (direktes Kind, scoped) nimmt ihr
+   diese Rolle, ohne die allgemeine .cell-wrap-Regel (Tausch-Button-Anker
+   ausserhalb der Diagonalzellen) anzutasten. */
+.day-cell-slots--diagonal .cell-wrap--diag-tl > .cell-wrap,
+.day-cell-slots--diagonal .cell-wrap--diag-br > .cell-wrap {
+  position: static;
+}
+
+/* Bugfix (Playwright-Verifikation): .shift-chip-btn liegt nicht direkt in
+   .cell-wrap--diag-tl/--br, sondern in ShiftCell.jsx's eigenem, dazwischen
+   liegendem <span className="cell-wrap"> (auto-Höhe) -- height:100% hatte
+   dadurch keinen Vorfahren mit definierter Höhe zum Auflösen und wurde
+   still ignoriert (fiel auf die intrinsische Höhe von ~16px zurück, der
+   zweite Glyph landete dadurch fast auf der Dreieckskante). position:
+   absolute + inset:0 überspringt diese Kette: der nächste POSITIONIERTE
+   Vorfahre ist ohnehin .cell-wrap--diag-tl/--br, egal wie viele
+   nicht-positionierte Boxen dazwischenliegen. */
 .day-cell-slots--diagonal .shift-chip-btn {
+  position: absolute;
+  inset: 0;
   width: auto;
-  height: 16px;
+  height: auto;
+  background: color-mix(in srgb, var(--chip-color) 55%, white);
+}
+
+.day-cell-slots--diagonal .cell-wrap--diag-tl .shift-chip-btn {
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 2px 0 0 4px;
+}
+
+.day-cell-slots--diagonal .cell-wrap--diag-br .shift-chip-btn {
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 0 4px 2px 0;
 }
 
 .day-cell-slots--diagonal .shift-chip {
+  background: transparent;
+  color: color-mix(in srgb, var(--chip-color) 92%, black);
   width: auto;
-  min-width: 14px;
-  padding: 0 4px;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .special-strip {

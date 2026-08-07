@@ -1290,36 +1290,38 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           <div className="day-cell">
                             {/* Polypoint-Vorbild (2026-08): die Zelle bleibt IMMER
                                 gleich breit (table-layout: fixed) statt zu wachsen.
-                                Nutzer-Feedback (2026-08, Nachbesserung): ein reiner
-                                Links/Rechts-Spalten-Split zwang beide Glyphen in eine
-                                ~20px schmale Spalte -- bei zwei Zeichen (Fallback ohne
-                                gesetztes Icon) liefen die Chips sichtbar ineinander.
-                                Diagonal wie im Jahresplan (.year-day-fill--shift.
-                                is-split) statt Spalten: jeder Chip sitzt in seiner
-                                eigenen Ecke (oben/links bzw. unten/rechts) und ist
-                                dadurch nicht auf eine feste Spaltenbreite beschränkt --
-                                mehr Platz pro Glyph bei gleicher Zellgrösse. Nur ein
-                                Dienst ("Ganz") spannt weiterhin die ganze Breite. */}
+                                Nutzer-Feedback (2026-08, Nachbesserung): zwei Dienste
+                                diagonal wie im Jahresplan (.year-day-fill--shift.
+                                is-split) statt in einer festen Spaltenbreite -- jedes
+                                Dreieck trägt die VOLLE Dienstfarbe (clip-path), der
+                                Glyph sitzt gross in der freien Ecke, kein separater
+                                blasser Pill-Chip mehr. --chip-color wird hier (statt
+                                nur tief innen auf .shift-chip wie sonst) auch am
+                                äusseren .cell-wrap gesetzt, weil .shift-chip-btn als
+                                Vorfahre von .shift-chip dessen CSS-Variable sonst nicht
+                                lesen könnte (Custom Properties vererben nur abwärts).
+                                Nur ein Dienst ("Ganz") spannt weiterhin die ganze
+                                Breite. */}
                             <div className={`day-cell-slots${showSecondSlot ? " day-cell-slots--diagonal" : ""}`}>
-                              {showSecondSlot && (
-                                <span
-                                  className="diag-bg"
-                                  aria-hidden="true"
-                                  style={{
-                                    "--chip-color": templates.find((t) => t.id === regularAssignments[0]?.template)?.color ?? "var(--border)",
-                                    "--chip-color-2": templates.find((t) => t.id === regularAssignments[1]?.template)?.color ?? "var(--border)",
-                                  }}
-                                />
-                              )}
                               <div
                                 className={`cell-wrap${
                                   showSecondSlot ? " cell-wrap--diag-tl" : " cell-wrap--span"
                                 }`}
+                                style={
+                                  showSecondSlot
+                                    ? { "--chip-color": templates.find((t) => t.id === regularAssignments[0]?.template)?.color ?? "var(--border)" }
+                                    : undefined
+                                }
                               >
                                 {renderSlot(regularAssignments[0], 0)}
                               </div>
                               {showSecondSlot && (
-                                <div className="cell-wrap cell-wrap--diag-br">{renderSlot(regularAssignments[1], 1)}</div>
+                                <div
+                                  className="cell-wrap cell-wrap--diag-br"
+                                  style={{ "--chip-color": templates.find((t) => t.id === regularAssignments[1]?.template)?.color ?? "var(--border)" }}
+                                >
+                                  {renderSlot(regularAssignments[1], 1)}
+                                </div>
                               )}
                             </div>
                             {/* Nutzer-Feedback (2026-08, Nachbesserung): Spezialitäten

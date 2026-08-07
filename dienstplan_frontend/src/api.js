@@ -192,6 +192,14 @@ export const api = {
       affectsBalance: true,
     }),
 
+  // README Punkt 21 (Dashboard): einziger neuer Endpoint fürs Dashboard --
+  // die stationsübergreifende Mindestbesetzungs-Auswertung lässt sich (anders
+  // als offene Absenzen/Tauschanfragen, die aus den bereits bestehenden
+  // Endpoints unten kommen) nicht ohne N Requests pro Station clientseitig
+  // bilden, siehe scheduling.views.UnderstaffedShiftsView. Plain-Liste, kein
+  // DRF-Pagination-Envelope -- request() statt requestAllPages() reicht.
+  getUnderstaffedShifts: () => request("/understaffed-shifts/"),
+
   getAbsences: (employeeId) =>
     requestAllPages(employeeId ? `/absences/?employee=${employeeId}` : "/absences/"),
   createAbsence: (payload) =>

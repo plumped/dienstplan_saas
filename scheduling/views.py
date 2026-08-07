@@ -1,12 +1,14 @@
-from datetime import date
+from datetime import date, timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import permissions, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from core.context import set_current_tenant
 from core.models import Membership
@@ -26,6 +28,7 @@ from core.permissions import (
     TimeRecordPermission,
 )
 from core.tenancy import resolve_membership_for_user
+from core.views import TenantScopedAPIMixin
 
 from .models import (
     Absence,
@@ -663,3 +666,71 @@ class TimeRecordViewSet(TenantScopedViewSet):
         except DjangoValidationError as e:
             raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
         return Response(self.get_serializer(time_record).data)
+
+
+class UnderstaffedShiftsView(TenantScopedAPIMixin, APIView):
+    """
+    Für das Admin/Planer-Dashboard (README MVP-Fahrplan Block 2, Punkt 21):
+    die Mindestbesetzungs-Auswertung (Block 9/2.9) läuft sonst rein
+    clientseitig in PlanGrid.jsx, aber nur für die einzeln ausgewählte
+    Station -- fürs Dashboard braucht es den ganzen Tenant auf einen Blick.
+    Ein Frontend-Loop über alle Stationen wäre N Requests; hier stattdessen
+    eine einzelne GROUP BY (template, date)-Auswertung serverseitig, über
+    alle Stationen hinweg, für die nächsten UPCOMING_DAYS Tage (bewusst
+    kurz -- weiter in der Zukunft ist typischerweise noch nicht geplant,
+    ein "unterbesetzt" wäre dort nur Rauschen statt Signal, siehe README).
+
+    Lesen bleibt wie überall in der App für alle vier Rollen offen (siehe
+    core.permissions-Docstring) -- die Einschränkung auf Admin/Planer
+    passiert rein im Frontend (das Dashboard ist dort kein sichtbarer Tab
+    für andere Rollen), nicht hier.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    UPCOMING_DAYS = 7
+
+    def get(self, request):
+        tenant = request.tenant
+        if tenant is None:
+            return Response([])
+
+        today = timezone.localdate()
+        end = today + timedelta(days=self.UPCOMING_DAYS - 1)
+
+        templates = list(
+            TimeTemplate.all_objects.filter(tenant=tenant, minimum_staffing__gt=0).select_related("node")
+        )
+        if not templates:
+            return Response([])
+
+        counts_qs = (
+            ShiftAssignment.all_objects.filter(
+                tenant=tenant, template__in=templates, date__range=[today, end]
+            )
+            .values("template_id", "date")
+            .annotate(count=Count("id"))
+        )
+        counts_by_key = {(c["template_id"], c["date"]): c["count"] for c in counts_qs}
+
+        results = []
+        for template in templates:
+            d = today
+            while d <= end:
+                count = counts_by_key.get((template.id, d), 0)
+                if count < template.minimum_staffing:
+                    results.append(
+                        {
+                            "date": d.isoformat(),
+                            "node_id": template.node_id,
+                            "node_name": template.node.name,
+                            "template_id": template.id,
+                            "template_name": template.name,
+                            "template_color": template.color,
+                            "count": count,
+                            "minimum_staffing": template.minimum_staffing,
+                        }
+                    )
+                d += timedelta(days=1)
+
+        results.sort(key=lambda r: (r["date"], r["node_name"], r["template_name"]))
+        return Response(results)

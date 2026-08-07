@@ -4148,3 +4148,141 @@ class ShiftTradeRequestSplitShiftTests(TestCase):
                 employee=self.requester, date=date(2026, 8, 3), template=self.late
             ).exists()
         )
+
+
+class UnderstaffedShiftsViewTests(APITestCase):
+    """
+    README MVP-Fahrplan Block 2, Punkt 21 (Dashboard): serverseitige,
+    stationsübergreifende Auswertung der Mindestbesetzung (Block 9/2.9) für
+    die nächsten UPCOMING_DAYS Tage -- Grundlage für die Dashboard-Karte
+    "Unterbesetzte Schichten".
+    """
+
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        self.today = timezone.localdate()
+
+    def test_requires_authentication(self):
+        # 403 statt 401: SessionAuthentication steht in
+        # DEFAULT_AUTHENTICATION_CLASSES an erster Stelle und bietet keinen
+        # WWW-Authenticate-Header an (siehe AuthenticationTests oben).
+        self.client.credentials()
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_template_without_minimum_staffing_never_listed(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+        )
+        self.assertEqual(template.minimum_staffing, 0)
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_reports_shortfall_within_upcoming_window(self):
+        # README: die Auswertung läuft bewusst über ALLE Tage des Fensters,
+        # nicht nur die mit bestehenden Zuweisungen (identische Semantik zum
+        # bereits bestehenden PlanGrid.jsx-Badge, Block 2.9 -- "informativ,
+        # nicht blockierend", kein Sonderfall für einen noch komplett leeren
+        # Tag). Ein Tag mit einer von zwei nötigen Zuweisungen zeigt daher
+        # als EINER von mehreren Einträgen count=1 auf.
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=2,
+        )
+        target_date = self.today + timedelta(days=2)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=target_date, template=template
+        )
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        by_date = {e["date"]: e for e in response.data}
+        entry = by_date[target_date.isoformat()]
+        self.assertEqual(entry["node_id"], self.node.id)
+        self.assertEqual(entry["node_name"], "Station A")
+        self.assertEqual(entry["template_id"], template.id)
+        self.assertEqual(entry["count"], 1)
+        self.assertEqual(entry["minimum_staffing"], 2)
+
+    def test_sufficiently_staffed_date_absent_from_results(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=1,
+        )
+        target_date = self.today + timedelta(days=1)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=target_date, template=template
+        )
+        response = self.client.get("/api/understaffed-shifts/")
+        dates = [e["date"] for e in response.data]
+        self.assertNotIn(target_date.isoformat(), dates)
+
+    def test_shortfall_outside_upcoming_window_not_listed(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=2,
+        )
+        far_future = self.today + timedelta(days=30)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=far_future, template=template
+        )
+        response = self.client.get("/api/understaffed-shifts/")
+        dates = [e["date"] for e in response.data]
+        self.assertNotIn(far_future.isoformat(), dates)
+        self.assertTrue(all(d <= (self.today + timedelta(days=6)).isoformat() for d in dates))
+
+    def test_past_dates_not_listed(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=2,
+        )
+        yesterday = self.today - timedelta(days=1)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=yesterday, template=template
+        )
+        response = self.client.get("/api/understaffed-shifts/")
+        dates = [e["date"] for e in response.data]
+        self.assertNotIn(yesterday.isoformat(), dates)
+        self.assertTrue(all(d >= self.today.isoformat() for d in dates))
+
+
+class UnderstaffedShiftsTenantIsolationTests(TwoTenantFixtureMixin, APITestCase):
+    def test_only_own_tenants_understaffed_shifts_are_returned(self):
+        self.template_a.minimum_staffing = 2
+        self.template_a.save(update_fields=["minimum_staffing"])
+        self.template_b.minimum_staffing = 2
+        self.template_b.save(update_fields=["minimum_staffing"])
+        target_date = timezone.localdate() + timedelta(days=1)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant_a, employee=self.employee_a, node=self.node_a, date=target_date, template=self.template_a
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant_b, employee=self.employee_b, node=self.node_b, date=target_date, template=self.template_b
+        )
+
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertGreater(len(response.data), 0)
+        self.assertTrue(all(e["node_name"] == "Station A" for e in response.data))

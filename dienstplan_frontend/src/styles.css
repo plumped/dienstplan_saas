@@ -1012,6 +1012,23 @@ thead .col-employee {
   gap: 12px;
 }
 
+/* README Punkt 21 (Dashboard): mehrere Karten-Sektionen (offene Absenzen,
+   offene Tauschanfragen, heute Abwesende, unterbesetzte Schichten)
+   untereinander -- eigener Abstand + kleinere Überschrift als der
+   .panel-list-h2-Titel darüber, damit die Hierarchie Seite > Sektion > Eintrag
+   klar bleibt. */
+.dashboard-section {
+  margin-top: 20px;
+}
+
+.dashboard-section h3 {
+  font-size: 13px;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 8px;
+}
+
 .panel-form-row label {
   flex: 1;
 }

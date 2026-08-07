@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, onTasksChanged } from "./api.js";
 import AbsencePanel from "./components/AbsencePanel.jsx";
 import BalanceBadge from "./components/BalanceBadge.jsx";
+import Dashboard from "./components/Dashboard.jsx";
 import LoginForm from "./components/LoginForm.jsx";
 import MonthNav from "./components/MonthNav.jsx";
 import NodeSelector from "./components/NodeSelector.jsx";
@@ -18,6 +19,12 @@ import { canManageSchedule, ROLE_LABELS } from "./roles.js";
 // Genehmigungen) bzw. Mitarbeitende (eigene, an sie adressierte
 // Tauschanfragen).
 const TABS = [
+  // README Punkt 21: zusätzlicher Tab, bewusst NICHT die neue
+  // Standard-Landing-Page nach dem Login (siehe README-Diskussion) -- wer
+  // sich nur schnell einloggt, um eine Schicht einzutragen, soll keinen
+  // zusätzlichen Klick brauchen. Nur für Admin/Planer sichtbar, für die
+  // Selbstbedienungs-Rolle ist "was hat Handlungsbedarf" nicht relevant.
+  { id: "dashboard", label: "Übersicht", managerOnly: true },
   { id: "grid", label: "Planblatt" },
   { id: "yearplan", label: "Jahresplan" },
   { id: "absences", label: "Abwesenheiten", taskCountKey: "absences" },
@@ -111,6 +118,15 @@ export default function App() {
       });
   }, [loggedIn, nodeId, nodes]);
 
+  // README Punkt 21: Deep-Link-Ziel aus dem Dashboard -- ein Klick auf eine
+  // "Unterbesetzt"-Karte soll direkt bei der betroffenen Station/dem Monat im
+  // Planblatt landen statt nur generisch auf den Tab "Planblatt" zu wechseln.
+  function handleNavigate({ tab: nextTab, nodeId: nextNodeId, year, month }) {
+    if (nextTab) setTab(nextTab);
+    if (nextNodeId) setNodeId(nextNodeId);
+    if (year && month) setPeriod({ year, month });
+  }
+
   if (!loggedIn) {
     return <LoginForm onSuccess={() => setLoggedIn(true)} />;
   }
@@ -186,6 +202,11 @@ export default function App() {
           // überhaupt eine erste Station anzulegen (siehe SettingsPanel ->
           // NodeSettings).
           <SettingsPanel me={me} onError={setError} />
+        ) : tab === "dashboard" ? (
+          // Ebenfalls ausserhalb der !nodeId-Sperre: die Übersicht ist
+          // stationsübergreifend (siehe Dashboard.jsx), hängt an keiner
+          // einzeln gewählten Station.
+          <Dashboard me={me} onNavigate={handleNavigate} onError={setError} />
         ) : !nodeId ? (
           <p className="empty-state">
             {canManageSchedule(me)

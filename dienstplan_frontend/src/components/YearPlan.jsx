@@ -292,8 +292,25 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
     const dates = Array.from(markedDates);
     const upserted = [];
     let skipped = 0;
+    // Nutzer-Feedback (2026-08, Punkt 4): ein Chip aus der "Spezialitäten"-
+    // Zeile legt IMMER eine additive neue Zuweisung an (unabhängig von
+    // stampSecondSlot/Slot 0/1), analog zu PlanGrid.jsx: handleStampAssign.
+    const stampedTemplate = templates.find((t) => t.id === templateId);
+    const isSpecial = stampedTemplate?.category === "special";
     for (const date of dates) {
-      const dayAssignments = assignmentsByDate.get(date) ?? [];
+      if (isSpecial) {
+        try {
+          upserted.push(
+            await api.createShiftAssignment({ employee: employeeId, node: selectedNode, date, template: templateId })
+          );
+        } catch {
+          skipped += 1;
+        }
+        continue;
+      }
+      const dayAssignments = (assignmentsByDate.get(date) ?? []).filter(
+        (a) => templates.find((t) => t.id === a.template)?.category !== "special"
+      );
       if (stampSecondSlot && !dayAssignments[0]) {
         skipped += 1;
         continue;
@@ -331,8 +348,15 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
   }
 
   async function handleClearShifts() {
+    // "Schicht leeren" bleibt auf Slot 0/1 beschränkt -- additive
+    // Spezialitäten dieses Tages bleiben unangetastet (Punkt 4).
     const toDelete = Array.from(markedDates)
-      .map((d) => (assignmentsByDate.get(d) ?? [])[stampSecondSlot ? 1 : 0])
+      .map(
+        (d) =>
+          (assignmentsByDate.get(d) ?? []).filter(
+            (a) => templates.find((t) => t.id === a.template)?.category !== "special"
+          )[stampSecondSlot ? 1 : 0]
+      )
       .filter(Boolean);
     const deletedIds = [];
     let failed = 0;
@@ -679,7 +703,18 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                     // README (2026-08, Bugfix): bis zu zwei Zuweisungen pro Tag
                     // (Split-Shift, README Punkt 18) statt nur der ersten.
                     const dayAssignments = assignmentsByDate.get(date) ?? [];
-                    const [assignment, secondAssignment] = dayAssignments;
+                    // Nutzer-Feedback (2026-08, Punkt 4): eine Spezialität (z. B.
+                    // Pikettdienst) ist additiv, kein Konkurrent um Slot 0/1 --
+                    // nur reguläre Zuweisungen zählen für die Haupt-Zellenfarbe,
+                    // Spezialitäten zeigen sich rein informativ als kleiner Punkt
+                    // (siehe year-day-special-dot unten).
+                    const regularDayAssignments = dayAssignments.filter(
+                      (a) => templates.find((t) => t.id === a.template)?.category !== "special"
+                    );
+                    const hasSpecialAssignment = dayAssignments.some(
+                      (a) => templates.find((t) => t.id === a.template)?.category === "special"
+                    );
+                    const [assignment, secondAssignment] = regularDayAssignments;
                     const template = assignment ? templates.find((t) => t.id === assignment.template) : null;
                     const secondTemplate = secondAssignment
                       ? templates.find((t) => t.id === secondAssignment.template)
@@ -706,6 +741,13 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                         preference.type === "wunschfrei"
                           ? " -- Wunschfrei geäussert"
                           : ` -- Wunschdienst geäussert: ${wishedTemplate?.name ?? "?"}`;
+                    }
+                    if (hasSpecialAssignment) {
+                      const specialNames = dayAssignments
+                        .filter((a) => templates.find((t) => t.id === a.template)?.category === "special")
+                        .map((a) => templates.find((t) => t.id === a.template)?.name)
+                        .join(", ");
+                      title += ` -- Spezialität: ${specialNames}`;
                     }
                     if (holidayName) title += ` -- Feiertag: ${holidayName}`;
                     return (
@@ -743,6 +785,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                           {day}
                         </span>
                         {preference && <span className={`year-day-wish-dot is-${preference.type}`} aria-hidden="true" />}
+                        {hasSpecialAssignment && <span className="year-day-special-dot" aria-hidden="true" />}
                         {marked && (
                           <span className="select-check" aria-hidden="true">
                             ✓

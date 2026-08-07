@@ -811,6 +811,40 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       (335 Tests grün). Mit Playwright gegen die echten Testheim-Daten verifiziert: Absenzarten-
       Verwaltung, Stempelleiste (Planblatt + Jahresplan), Abwesenheiten-Formular-Dropdown und
       Dashboard-Badge zeigen alle korrekt die geladenen Typen samt Farbe/Kurzcode.
+    - ✅ **Spezialitäten (z. B. Pikettdienst) sind jetzt ein additiver Zusatz statt Slot-Konkurrenz +
+      Absenzen im Einzelzell-Dropdown** (2026-08, weiteres Nutzer-Feedback): eine Spezialität war
+      technisch ein normaler Schichttyp und konkurrierte daher um einen der zwei Zuweisungs-Slots
+      einer Zelle -- ein Frühdienst UND gleichzeitig Pikettdienst am selben Tag war so nicht
+      abbildbar. Regel-Engine-seitig bereits gelöst (siehe oben, "Pikettdienst"-Bugfix): Backend
+      erlaubt beliebig viele Zuweisungen pro Tag, solange sie unterschiedliche Vorlagen haben
+      (`unique_together = (employee, date, template)`) und `category="special"` ist von Ruhezeit-/
+      Höchstarbeitszeit-/Überlappungs-Checks sowie Soll-/Ist-Stunden ausgenommen. Frontend jetzt
+      nachgezogen: `PlanGrid.jsx`/`YearPlan.jsx` splitten die Zuweisungen eines Tages in
+      `regularAssignments` (weiterhin Slot 0/1) und `specialAssignments` (neu, additiv, beliebig
+      viele). `ShiftCell.jsx` bekommt dafür ein neues Badge+Popover (analog zum bestehenden Wunsch-/
+      Ist-Zeit-Badge-Muster dieser Komponente) -- zeigt die Anzahl aktiver Spezialitäten, Klick öffnet
+      eine Liste mit ×-Button zum Entfernen sowie Chips für noch nicht hinzugefügte Spezialität-
+      Vorlagen zum Hinzufügen; neue Callbacks `onAddSpecial`/`onRemoveSpecial` in `PlanGrid.jsx` sind
+      dünne Wrapper um die bestehenden `create`/`deleteShiftAssignment`-Endpunkte (kein neuer
+      Endpoint nötig). Die Mehrfachauswahl-Stempelleiste (`handleStampAssign`/`handleStampShift`)
+      erkennt `template.category === "special"` und legt für diese Chips ab jetzt IMMER eine additive
+      neue Zuweisung an statt fälschlich um Slot 0/1 zu konkurrieren; "— leer —"/"Schicht leeren"
+      bleibt bewusst auf Slot 0/1 beschränkt und rührt Spezialitäten nicht an. `YearPlan.jsx` zeigt
+      zusätzlich einen kleinen Punkt an der Tageszelle, sobald eine Spezialität besteht (rein
+      informativ, kein Popover -- der Jahresplan hat ausserhalb der Mehrfachauswahl kein
+      Einzeltag-Bearbeitungs-UI). Gleichzeitig löst das erweiterte Einzelzell-Dropdown in
+      `ShiftCell.jsx` das dritte Nutzer-Feedback: eine neue `<optgroup label="Abwesenheit">` mit den
+      geladenen Absenzarten steht neben den (jetzt auf `category !== "special"` gefilterten)
+      Schichttyp-Optionen zur Auswahl -- ein neuer `onAssignAbsence`-Callback legt eine Ein-Tages-
+      `Absence` an und löscht dabei zuerst eine ggf. vorhandene Zuweisung in diesem Slot. Mit
+      Playwright gegen die echten Testheim-Daten verifiziert (danach wieder bereinigt): Pikettdienst
+      per Popover zu einem Tag mit bestehendem Küchendienst hinzugefügt -- beide gleichzeitig
+      sichtbar, Saldo unverändert; dieselbe additive Zuweisung auch über die Mehrfachauswahl-
+      Stempelleiste auf einen bereits belegten Tag gestempelt, ohne den bestehenden Dienst zu
+      verdrängen; Absenz über den Einzelzell-Dropdown gewählt, ersetzt den Slot korrekt. Ein Bugfix
+      dabei: der Spezialitäten-Badge erschien anfangs auf BEIDEN Slots einer Zelle (weil
+      `assignableSpecialTemplates` beiden Slots gleichermassen übergeben wurde) -- jetzt nur auf
+      Slot 0, analog zu `showWishBadge`.
     - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
       entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
       wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim

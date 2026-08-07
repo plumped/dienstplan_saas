@@ -74,6 +74,21 @@ export default function ShiftCell({
   // verwirrendes Duplikat.
   assignmentId,
   showWishBadge = true,
+  // Nutzer-Feedback (2026-08, Punkt 4): eine Spezialität (z. B. Pikettdienst)
+  // ist ein additiver Zusatz zu einem Dienst, kein Ersatz -- daher eigenes
+  // Badge+Popover statt Slot 0/1. specialAssignments sind die (beliebig
+  // vielen) ShiftAssignments mit category="special" an diesem Tag;
+  // assignableSpecialTemplates die für diese Zeile wählbaren Spezialität-
+  // Vorlagen zum Hinzufügen. onAddSpecial(templateId)/onRemoveSpecial(id)
+  // sind dünne Wrapper um create/deleteShiftAssignment in PlanGrid.jsx.
+  specialAssignments = [],
+  assignableSpecialTemplates = [],
+  onAddSpecial,
+  onRemoveSpecial,
+  // Nutzer-Feedback (2026-08, Punkt 3): Absenzen fehlten im Einzelzell-
+  // Dropdown -- onAssignAbsence(absenceTypeId) legt in PlanGrid.jsx eine
+  // Ein-Tages-Absence an und löscht dabei zuerst diesen Slot.
+  onAssignAbsence,
 }) {
   const absenceType = absence ? absenceTypes.find((t) => t.id === absence.type) : null;
   const [editing, setEditing] = useState(false);
@@ -82,10 +97,12 @@ export default function ShiftCell({
   const [savingTime, setSavingTime] = useState(false);
   const [wishing, setWishing] = useState(false);
   const [savingWish, setSavingWish] = useState(false);
+  const [editingSpecial, setEditingSpecial] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const selectRef = useRef(null);
   const recordBadgeRef = useRef(null);
   const wishBadgeRef = useRef(null);
+  const specialBadgeRef = useRef(null);
   const suppressClickRef = useRef(false);
 
   useEffect(() => {
@@ -234,6 +251,92 @@ export default function ShiftCell({
     );
   }
 
+  // Nutzer-Feedback (2026-08, Punkt 4): Badge+Popover für Spezialitäten
+  // (z. B. Pikettdienst) -- additiver Zusatz zu einem Dienst, analog zum
+  // Wunsch-/Ist-Zeit-Badge oben. Sichtbar sobald mindestens eine Spezialität
+  // besteht; für Admin/Planer zusätzlich immer als "+"-Angebot zum
+  // Hinzufügen, auch ohne bestehende Spezialität.
+  function renderSpecialBadge() {
+    const hasSpecial = specialAssignments.length > 0;
+    if (!canEdit) {
+      if (!hasSpecial) return null;
+      return (
+        <span
+          className="btn-special is-set is-readonly"
+          title={`Spezialität(en): ${specialAssignments
+            .map((a) => templates.find((t) => t.id === a.template)?.name ?? "?")
+            .join(", ")}`}
+          aria-hidden="true"
+        >
+          {specialAssignments.length}
+        </span>
+      );
+    }
+    if (!hasSpecial && assignableSpecialTemplates.length === 0) return null;
+    const addableTemplates = assignableSpecialTemplates.filter(
+      (t) => !specialAssignments.some((a) => a.template === t.id)
+    );
+    return (
+      <>
+        <button
+          ref={specialBadgeRef}
+          type="button"
+          className={`btn-special${hasSpecial ? " is-set" : ""}`}
+          title={hasSpecial ? "Spezialitäten bearbeiten" : "Spezialität hinzufügen"}
+          onClick={() => setEditingSpecial((v) => !v)}
+        >
+          {hasSpecial ? specialAssignments.length : "+"}
+          <span className="visually-hidden"> Spezialitäten</span>
+        </button>
+        {editingSpecial && (
+          <FloatingPopover
+            anchorRef={specialBadgeRef}
+            onClose={() => setEditingSpecial(false)}
+            className="special-popover"
+          >
+            {hasSpecial && (
+              <ul className="special-popover-list">
+                {specialAssignments.map((a) => {
+                  const t = templates.find((tt) => tt.id === a.template);
+                  return (
+                    <li key={a.id}>
+                      <span className="shift-chip" style={{ "--chip-color": t?.color }}>
+                        {t?.name ?? "?"}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        title={`${t?.name ?? "Spezialität"} entfernen`}
+                        onClick={() => onRemoveSpecial(a.id)}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {addableTemplates.length > 0 && (
+              <div className="special-popover-add">
+                {addableTemplates.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="stamp-chip"
+                    style={{ "--chip-color": t.color }}
+                    onClick={() => onAddSpecial(t.id)}
+                  >
+                    + {t.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </FloatingPopover>
+        )}
+      </>
+    );
+  }
+
   if (selectionMode && canEdit) {
     // README (2026-08, Bugfix): Absenz-Tage waren hier komplett ausgenommen
     // (der frühere `if (absence)`-Zweig stand VOR diesem Block und griff
@@ -331,20 +434,40 @@ export default function ShiftCell({
       <select
         ref={selectRef}
         className="cell-select"
-        defaultValue={selectedTemplateId ?? ""}
+        defaultValue={selectedTemplateId != null ? `t-${selectedTemplateId}` : ""}
         onBlur={() => setEditing(false)}
         onChange={(e) => {
           const val = e.target.value;
-          onChange(val === "" ? null : Number(val));
           setEditing(false);
+          if (val === "") {
+            onChange(null);
+            return;
+          }
+          // Nutzer-Feedback (2026-08, Punkt 3): Absenzarten sind jetzt Teil
+          // desselben Dropdowns (eigene optgroup) -- Werte sind mit "t-"/"a-"
+          // präfigiert, da Schichttyp- und Absenzart-IDs sonst kollidieren
+          // könnten.
+          const [kind, idStr] = val.split("-");
+          const id = Number(idStr);
+          if (kind === "a") onAssignAbsence(id);
+          else onChange(id);
         }}
       >
         <option value="">— leer —</option>
         {assignableTemplates.map((t) => (
-          <option key={t.id} value={t.id}>
+          <option key={t.id} value={`t-${t.id}`}>
             {t.name} ({t.start_time.slice(0, 5)}–{t.end_time.slice(0, 5)})
           </option>
         ))}
+        {absenceTypes.length > 0 && (
+          <optgroup label="Abwesenheit">
+            {absenceTypes.map((at) => (
+              <option key={at.id} value={`a-${at.id}`}>
+                {at.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
       </select>
     );
   }
@@ -403,6 +526,7 @@ export default function ShiftCell({
         )}
         {renderTimeRecordBadge()}
         {renderWishBadge()}
+        {renderSpecialBadge()}
       </span>
     );
   }
@@ -468,6 +592,7 @@ export default function ShiftCell({
       )}
       {renderTimeRecordBadge()}
       {renderWishBadge()}
+      {renderSpecialBadge()}
     </span>
   );
 }

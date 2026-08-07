@@ -454,6 +454,58 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
+  // Nutzer-Feedback (2026-08, Punkt 3): Absenzen fehlten im Einzelzell-Dropdown
+  // komplett -- nur über die Mehrfachauswahl-Stempelleiste eintragbar. Löscht
+  // zuerst eine ggf. vorhandene Zuweisung in diesem Slot (Absenz und Schicht
+  // schliessen sich am selben Tag gegenseitig aus, siehe
+  // ShiftAssignment._check_no_absence_conflict), legt dann eine Ein-Tages-
+  // Absence an (start=end=date).
+  async function handleAssignAbsence(employeeId, date, absenceTypeId, assignmentId) {
+    try {
+      if (assignmentId) {
+        await api.deleteShiftAssignment(assignmentId);
+        setAssignments((prev) => prev.filter((a) => a.id !== assignmentId));
+      }
+      const created = await api.createAbsence({
+        employee: employeeId,
+        start_date: date,
+        end_date: date,
+        type: absenceTypeId,
+      });
+      setAbsences((prev) => [...prev, created]);
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
+  // Nutzer-Feedback (2026-08, Punkt 4): eine Spezialität (z. B. Pikettdienst)
+  // ist ein additiver Zusatz zu einem bestehenden Dienst, kein Ersatz dafür --
+  // technisch weiterhin ein ganz normaler ShiftAssignment (nur mit
+  // category="special"), daher dünne Wrapper um die bestehenden
+  // create/delete-Endpunkte statt eines neuen.
+  async function handleAddSpecial(employeeId, date, rowNodeId, templateId) {
+    try {
+      const created = await api.createShiftAssignment({
+        employee: employeeId,
+        node: rowNodeId ?? nodeId,
+        date,
+        template: templateId,
+      });
+      setAssignments((prev) => [...prev, created]);
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
+  async function handleRemoveSpecial(assignmentId) {
+    try {
+      await api.deleteShiftAssignment(assignmentId);
+      setAssignments((prev) => prev.filter((a) => a.id !== assignmentId));
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
   // README Punkt 18 (Split-Shifts): Quelle UND Ziel werden direkt über ihre
   // assignmentId aufgelöst statt über employee+date (das ist bei mehreren
   // Zuweisungen desselben Tages nicht mehr eindeutig) -- fromAssignmentId
@@ -596,12 +648,34 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     const upserted = [];
     const deletedIds = [];
     let skipped = 0;
+    // Nutzer-Feedback (2026-08, Punkt 4): ein Chip aus der "Spezialitäten"-
+    // Zeile legt IMMER eine additive neue Zuweisung an (unabhängig von
+    // stampSecondSlot/Slot 0/1) statt fälschlich um einen der beiden Slots
+    // zu konkurrieren -- eine Spezialität ist ein Zusatz, kein Ersatz.
+    const stampedTemplate = templateId !== null ? templates.find((t) => t.id === templateId) : null;
+    const isSpecial = stampedTemplate?.category === "special";
 
     for (const key of keys) {
       const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
       const employeeId = Number(employeeIdStr);
       const rowNodeId = Number(rowNodeIdStr);
-      const rowAssignments = rowAssignmentsFor(employeeId, date, rowNodeId);
+      if (isSpecial) {
+        try {
+          const created = await api.createShiftAssignment({
+            employee: employeeId,
+            node: rowNodeId,
+            date,
+            template: templateId,
+          });
+          upserted.push(created);
+        } catch {
+          skipped += 1;
+        }
+        continue;
+      }
+      const rowAssignments = rowAssignmentsFor(employeeId, date, rowNodeId).filter(
+        (a) => templates.find((t) => t.id === a.template)?.category !== "special"
+      );
       if (stampSecondSlot && !rowAssignments[0]) {
         skipped += 1;
         continue;
@@ -984,6 +1058,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                         const tb = templates.find((t) => t.id === b.template);
                         return (ta?.start_time ?? "").localeCompare(tb?.start_time ?? "");
                       });
+                    // Nutzer-Feedback (2026-08, Punkt 4): eine Spezialität (z. B.
+                    // Pikettdienst) ist ein additiver Zusatz zu einem Dienst, kein
+                    // Konkurrent um Slot 0/1 -- daher getrennt von den regulären
+                    // Zuweisungen behandelt (eigenes Badge/Popover in ShiftCell.jsx,
+                    // siehe unten).
+                    const regularAssignments = cellAssignments.filter(
+                      (a) => templates.find((t) => t.id === a.template)?.category !== "special"
+                    );
+                    const specialAssignments = cellAssignments.filter(
+                      (a) => templates.find((t) => t.id === a.template)?.category === "special"
+                    );
                     const absence = findAbsence(emp.id, date);
                     const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
                     const holidayName = holidays.get(date);
@@ -992,9 +1077,14 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     // echte zweite Zuweisung enthält, oder (leer) als
                     // "+"-Angebot für Admin/Planer, um einen Split-Shift
                     // anzulegen -- ein nicht bedienbares leeres "+" für
-                    // reine Betrachter wäre nur verwirrend.
+                    // reine Betrachter wäre nur verwirrend. Zählt nur reguläre
+                    // Zuweisungen (eine Spezialität allein soll keinen zweiten
+                    // Slot erzwingen).
                     const showSecondSlot =
-                      !absence && (cellAssignments.length >= 2 || (canManage && cellAssignments.length === 1));
+                      !absence && (regularAssignments.length >= 2 || (canManage && regularAssignments.length === 1));
+                    const rowAssignableSpecialTemplates = rowAssignableTemplates.filter(
+                      (t) => t.category === "special"
+                    );
 
                     function renderSlot(assignment, slotIndex) {
                       const template = templates.find((t) => t.id === assignment?.template);
@@ -1014,7 +1104,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                         <ShiftCell
                           key={assignment?.id ?? `empty-${slotIndex}`}
                           templates={templates}
-                          assignableTemplates={rowAssignableTemplates}
+                          assignableTemplates={rowAssignableTemplates.filter((t) => t.category !== "special")}
                           selectedTemplateId={assignment?.template ?? null}
                           templateInfo={template}
                           assignmentId={assignment?.id}
@@ -1041,6 +1131,13 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           onSaveWish={(payload) => handleSaveWish(date, preference, payload)}
                           onDeleteWish={() => handleDeleteWish(preference)}
                           showWishBadge={slotIndex === 0}
+                          onAssignAbsence={(absenceTypeId) =>
+                            handleAssignAbsence(emp.id, date, absenceTypeId, assignment?.id)
+                          }
+                          specialAssignments={slotIndex === 0 ? specialAssignments : []}
+                          assignableSpecialTemplates={slotIndex === 0 ? rowAssignableSpecialTemplates : []}
+                          onAddSpecial={(templateId) => handleAddSpecial(emp.id, date, rowNodeId, templateId)}
+                          onRemoveSpecial={(specialAssignmentId) => handleRemoveSpecial(specialAssignmentId)}
                         />
                       );
                     }
@@ -1055,9 +1152,9 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           <ShiftCell
                             templates={templates}
                             assignableTemplates={rowAssignableTemplates}
-                            selectedTemplateId={cellAssignments[0]?.template ?? null}
-                            templateInfo={templates.find((t) => t.id === cellAssignments[0]?.template)}
-                            secondTemplateInfo={templates.find((t) => t.id === cellAssignments[1]?.template)}
+                            selectedTemplateId={regularAssignments[0]?.template ?? null}
+                            templateInfo={templates.find((t) => t.id === regularAssignments[0]?.template)}
+                            secondTemplateInfo={templates.find((t) => t.id === regularAssignments[1]?.template)}
                             employeeId={emp.id}
                             date={date}
                             absence={absence}

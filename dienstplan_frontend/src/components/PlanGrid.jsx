@@ -339,8 +339,19 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // sonst würde die Stempelleiste bei stationsweiten Schichttypen (der
   // Normalfall, solange niemand manuell auf Team-Ebene umgestellt hat)
   // komplett leer bleiben.
+  // README (2026-08, Bugfix): vorher lieferte dieser useMemo bei leerer
+  // Auswahl `[]`, wodurch die komplette Stempelleiste (3 Zeilen) erst beim
+  // ersten markierten Tag erschien -- das liess das ganze Planblatt genau in
+  // dem Moment nach unten springen, in dem der Nutzer den ersten Tag anklickt,
+  // wodurch nachfolgende Klicks/Ziehen auf die falschen, jetzt verschobenen
+  // Zellen trafen. Fallback jetzt: die stationsweiten (geteilten) Vorlagen
+  // schon vor jeder Markierung zeigen -- das ist der weit überwiegende Fall
+  // (README Punkt 17: "ein Schichttyp auf einer Station steht allen Teams
+  // gemeinsam zur Verfügung"), reserviert den Platz von Anfang an und wächst
+  // nur noch in dem selteneren Fall team-spezifischer Vorlagen nach dem
+  // Markieren.
   const stampTemplates = useMemo(() => {
-    if (markedCells.size === 0) return [];
+    if (markedCells.size === 0) return templates.filter((t) => t.node === stationId);
     const markedRowNodeIds = new Set(Array.from(markedCells, (key) => Number(key.split(":")[2])));
     return templates.filter((t) => t.node === stationId || markedRowNodeIds.has(t.node));
   }, [templates, markedCells, stationId]);
@@ -768,18 +779,18 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
           >
             {multiSelectMode ? "✕ Mehrfachauswahl beenden" : "☐ Mehrfachauswahl"}
           </button>
-          {multiSelectMode && markedCells.size === 0 && (
-            <span className="multi-select-hint">Tage anklicken, um sie zu markieren.</span>
-          )}
-          {multiSelectMode && markedCells.size > 0 && (
+          {multiSelectMode && (
             <span className="stamp-palette">
-              <span className="multi-select-hint">{markedCells.size} markiert:</span>
+              <span className="multi-select-hint">
+                {markedCells.size === 0 ? "Tage anklicken, um sie zu markieren." : `${markedCells.size} markiert:`}
+              </span>
               <span className="stamp-row">
                 <span className="stamp-row-label">Dienste</span>
                 <label className="stamp-second-slot-toggle" title="Bestehenden ersten Dienst nicht ersetzen, sondern einen zweiten (Split-Shift) danebenstellen. Gilt auch für Spezialitäten unten.">
                   <input
                     type="checkbox"
                     checked={stampSecondSlot}
+                    disabled={markedCells.size === 0}
                     onChange={(e) => setStampSecondSlot(e.target.checked)}
                   />
                   Als zweiten Dienst hinzufügen
@@ -790,6 +801,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     type="button"
                     className="stamp-chip"
                     style={{ "--chip-color": t.color }}
+                    disabled={markedCells.size === 0}
                     title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
                     onClick={() => handleStampAssign(t.id)}
                   >
@@ -799,6 +811,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                 <button
                   type="button"
                   className="stamp-chip stamp-chip--empty"
+                  disabled={markedCells.size === 0}
                   title="Markierte Tage leeren"
                   onClick={() => handleStampAssign(null)}
                 >
@@ -812,6 +825,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     key={t.value}
                     type="button"
                     className="stamp-chip stamp-chip--absence"
+                    disabled={markedCells.size === 0}
                     title={`${t.label} für alle markierten Tage eintragen`}
                     onClick={() => handleStampAbsence(t.value)}
                   >
@@ -821,6 +835,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                 <button
                   type="button"
                   className="stamp-chip stamp-chip--empty"
+                  disabled={markedCells.size === 0}
                   title="Absenz(en) der markierten Tage entfernen -- löscht den ganzen Zeitraum, nicht nur die markierten Tage daraus"
                   onClick={handleRemoveAbsences}
                 >
@@ -836,6 +851,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                       type="button"
                       className="stamp-chip"
                       style={{ "--chip-color": t.color }}
+                      disabled={markedCells.size === 0}
                       title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
                       onClick={() => handleStampAssign(t.id)}
                     >
@@ -845,7 +861,12 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                 </span>
               )}
               <span className="stamp-row">
-                <button type="button" className="btn-ghost" onClick={() => setMarkedCells(new Set())}>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  disabled={markedCells.size === 0}
+                  onClick={() => setMarkedCells(new Set())}
+                >
                   Auswahl aufheben
                 </button>
               </span>

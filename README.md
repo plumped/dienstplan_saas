@@ -773,6 +773,17 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       Mit Playwright verifiziert: testweise "Pikettdienst" als Spezialität angelegt, erscheint in
       eigener Zeile in Planblatt und Jahresplan, Stempeln funktioniert (inkl. korrekt vom Backend
       abgelehntem Ruhezeit-Konflikt bei einer unrealistisch langen Testschicht).
+    - ✅ **Bugfix (2026-08)**: Nutzer-Feedback -- die drei Stempelleisten-Zeilen erschienen erst,
+      sobald der erste Tag markiert wurde, wodurch das ganze Planblatt/der Jahresplan-Kalender genau
+      in dem Moment nach unten sprang, in dem der Nutzer den ersten Tag anklickte -- ein
+      nachfolgender Klick/Zug traf dadurch die falsche, jetzt verschobene Zelle. Fix: Die
+      Stempelleiste (`.stamp-palette`) ist jetzt **immer** sichtbar, sobald die Mehrfachauswahl
+      aktiv ist (Planblatt) bzw. immer im Jahresplan -- ihre Chips/Buttons sind nur `disabled`, bis
+      mindestens ein Tag markiert ist, reservieren den Platz aber von Anfang an. `stampTemplates`
+      (`PlanGrid.jsx`) zeigt vor jeder Markierung bereits die stationsweiten (geteilten) Vorlagen
+      statt `[]`, damit auch die "Dienste"-Zeile nicht nachträglich wächst. Per Playwright verifiziert
+      (Bounding-Box-Vergleich): Tabellen-Position verschiebt sich beim Umschalten auf Mehrfachauswahl
+      genau einmal (vorhersagbar), danach beim Markieren des ersten Tages um 0px.
     - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
       entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
       wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim

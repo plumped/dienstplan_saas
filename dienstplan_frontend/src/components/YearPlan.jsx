@@ -512,125 +512,145 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
             ›
           </button>
         </span>
-        {markedDates.size === 0 ? (
-          <span className="multi-select-hint">Tage anklicken, um sie zu markieren.</span>
-        ) : (
-          <span className="stamp-palette">
-            <span className="multi-select-hint">{markedDates.size} markiert:</span>
-            {canManage && (
-              <span className="stamp-row">
-                <span className="stamp-row-label">Dienste</span>
-                <label className="stamp-second-slot-toggle" title="Bestehenden ersten Dienst nicht ersetzen, sondern einen zweiten (Split-Shift) danebenstellen. Gilt auch für Spezialitäten unten.">
-                  <input
-                    type="checkbox"
-                    checked={stampSecondSlot}
-                    onChange={(e) => setStampSecondSlot(e.target.checked)}
-                  />
-                  Als zweiten Dienst hinzufügen
-                </label>
-                {regularTemplates.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    className="stamp-chip"
-                    style={{ "--chip-color": t.color }}
-                    title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
-                    onClick={() => handleStampShift(t.id)}
-                  >
-                    {t.name.slice(0, 3)}
-                  </button>
-                ))}
-                <button type="button" className="stamp-chip stamp-chip--empty" title="Schicht(en) entfernen" onClick={handleClearShifts}>
-                  Schicht leeren
-                </button>
-              </span>
-            )}
+        {/* README (2026-08, Bugfix): die Stempelleiste erschien bisher erst
+            nach dem ersten markierten Tag -- das liess den ganzen
+            Kalender-Grid genau in dem Moment nach unten springen, in dem der
+            Nutzer den ersten Tag anklickt (analog zum selben Bug im
+            Planblatt, siehe PlanGrid.jsx). Palette jetzt immer sichtbar,
+            Buttons/Chips nur deaktiviert, solange nichts markiert ist --
+            reserviert den Platz von Anfang an. */}
+        <span className="stamp-palette">
+          <span className="multi-select-hint">
+            {markedDates.size === 0 ? "Tage anklicken, um sie zu markieren." : `${markedDates.size} markiert:`}
+          </span>
+          {canManage && (
             <span className="stamp-row">
-              <span className="stamp-row-label">Abwesenheiten</span>
-              {ABSENCE_TYPES.map((t) => (
+              <span className="stamp-row-label">Dienste</span>
+              <label className="stamp-second-slot-toggle" title="Bestehenden ersten Dienst nicht ersetzen, sondern einen zweiten (Split-Shift) danebenstellen. Gilt auch für Spezialitäten unten.">
+                <input
+                  type="checkbox"
+                  checked={stampSecondSlot}
+                  disabled={markedDates.size === 0}
+                  onChange={(e) => setStampSecondSlot(e.target.checked)}
+                />
+                Als zweiten Dienst hinzufügen
+              </label>
+              {regularTemplates.map((t) => (
                 <button
-                  key={t.value}
+                  key={t.id}
                   type="button"
-                  className="stamp-chip stamp-chip--absence"
-                  title={`${t.label} für alle markierten Tage eintragen`}
-                  onClick={() => handleStampAbsence(t.value)}
+                  className="stamp-chip"
+                  style={{ "--chip-color": t.color }}
+                  disabled={markedDates.size === 0}
+                  title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
+                  onClick={() => handleStampShift(t.id)}
                 >
-                  {t.label}
+                  {t.name.slice(0, 3)}
                 </button>
               ))}
               <button
                 type="button"
                 className="stamp-chip stamp-chip--empty"
-                title="Absenz(en) der markierten Tage entfernen -- löscht den ganzen Zeitraum, nicht nur die markierten Tage daraus"
-                onClick={handleRemoveAbsences}
+                disabled={markedDates.size === 0}
+                title="Schicht(en) entfernen"
+                onClick={handleClearShifts}
               >
-                Absenz entfernen
+                Schicht leeren
               </button>
             </span>
-            {canManage && specialTemplates.length > 0 && (
-              <span className="stamp-row">
-                <span className="stamp-row-label">Spezialitäten</span>
-                {specialTemplates.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    className="stamp-chip"
-                    style={{ "--chip-color": t.color }}
-                    title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
-                    onClick={() => handleStampShift(t.id)}
-                  >
-                    {t.name.slice(0, 3)}
-                  </button>
-                ))}
-              </span>
-            )}
-            {isOwnEmployeeSelected && (
-              <span className="stamp-row">
-                <span className="stamp-row-label">Wünsche</span>
-                <button
-                  type="button"
-                  className="stamp-chip stamp-chip--wish"
-                  title="Wunschfrei für alle markierten Tage eintragen (ein Hinweis für den Planer, keine Absenz)"
-                  onClick={() => handleStampWish("wunschfrei", null)}
-                >
-                  Wunschfrei
-                </button>
-                {templates.map((t) => (
-                  <button
-                    key={`wish-${t.id}`}
-                    type="button"
-                    className="stamp-chip stamp-chip--wish"
-                    style={{ "--chip-color": t.color }}
-                    title={`Wunschdienst ${t.name} für alle markierten Tage eintragen`}
-                    onClick={() => handleStampWish("wunschdienst", t.id)}
-                  >
-                    Wunsch: {t.name.slice(0, 3)}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  className="stamp-chip stamp-chip--empty"
-                  title="Wunschfrei/Wunschdienst der markierten Tage entfernen"
-                  onClick={handleRemoveWishes}
-                >
-                  Wunsch entfernen
-                </button>
-              </span>
-            )}
+          )}
+          <span className="stamp-row">
+            <span className="stamp-row-label">Abwesenheiten</span>
+            {ABSENCE_TYPES.map((t) => (
+              <button
+                key={t.value}
+                type="button"
+                className="stamp-chip stamp-chip--absence"
+                disabled={markedDates.size === 0}
+                title={`${t.label} für alle markierten Tage eintragen`}
+                onClick={() => handleStampAbsence(t.value)}
+              >
+                {t.label}
+              </button>
+            ))}
+            <button
+              type="button"
+              className="stamp-chip stamp-chip--empty"
+              disabled={markedDates.size === 0}
+              title="Absenz(en) der markierten Tage entfernen -- löscht den ganzen Zeitraum, nicht nur die markierten Tage daraus"
+              onClick={handleRemoveAbsences}
+            >
+              Absenz entfernen
+            </button>
+          </span>
+          {canManage && specialTemplates.length > 0 && (
             <span className="stamp-row">
+              <span className="stamp-row-label">Spezialitäten</span>
+              {specialTemplates.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className="stamp-chip"
+                  style={{ "--chip-color": t.color }}
+                  disabled={markedDates.size === 0}
+                  title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
+                  onClick={() => handleStampShift(t.id)}
+                >
+                  {t.name.slice(0, 3)}
+                </button>
+              ))}
+            </span>
+          )}
+          {isOwnEmployeeSelected && (
+            <span className="stamp-row">
+              <span className="stamp-row-label">Wünsche</span>
               <button
                 type="button"
-                className="btn-ghost"
-                onClick={() => {
-                  setMarkedDates(new Set());
-                  setStampSecondSlot(false);
-                }}
+                className="stamp-chip stamp-chip--wish"
+                disabled={markedDates.size === 0}
+                title="Wunschfrei für alle markierten Tage eintragen (ein Hinweis für den Planer, keine Absenz)"
+                onClick={() => handleStampWish("wunschfrei", null)}
               >
-                Auswahl aufheben
+                Wunschfrei
+              </button>
+              {templates.map((t) => (
+                <button
+                  key={`wish-${t.id}`}
+                  type="button"
+                  className="stamp-chip stamp-chip--wish"
+                  style={{ "--chip-color": t.color }}
+                  disabled={markedDates.size === 0}
+                  title={`Wunschdienst ${t.name} für alle markierten Tage eintragen`}
+                  onClick={() => handleStampWish("wunschdienst", t.id)}
+                >
+                  Wunsch: {t.name.slice(0, 3)}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="stamp-chip stamp-chip--empty"
+                disabled={markedDates.size === 0}
+                title="Wunschfrei/Wunschdienst der markierten Tage entfernen"
+                onClick={handleRemoveWishes}
+              >
+                Wunsch entfernen
               </button>
             </span>
+          )}
+          <span className="stamp-row">
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={markedDates.size === 0}
+              onClick={() => {
+                setMarkedDates(new Set());
+                setStampSecondSlot(false);
+              }}
+            >
+              Auswahl aufheben
+            </button>
           </span>
-        )}
+        </span>
       </div>
 
       {loading ? (

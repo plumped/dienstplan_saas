@@ -468,6 +468,22 @@ main {
   box-shadow: inset 0 0 0 1px var(--chip-color);
 }
 
+/* README (2026-08, Bugfix): die Stempelleiste ist jetzt schon sichtbar,
+   bevor ein Tag markiert ist (reserviert den Platz, siehe PlanGrid.jsx/
+   YearPlan.jsx) -- Chips/Buttons darin sind bis zur ersten Markierung
+   disabled, damit klar bleibt, dass sie noch nichts bewirken. */
+.stamp-chip:disabled,
+.stamp-row .btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.stamp-second-slot-toggle:has(input:disabled) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .stamp-chip--empty {
   --chip-color: var(--ink-muted);
   background: transparent;

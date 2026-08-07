@@ -815,6 +815,10 @@ class Absence(TenantScopedModel):
 class TimeTemplate(TenantScopedModel):
     """Vordefinierter Schichttyp (Icon/Farbe/Zeitfenster), z. B. 'Frühdienst'."""
 
+    class Category(models.TextChoices):
+        SHIFT = "shift", "Dienst"
+        SPECIAL = "special", "Spezialität"
+
     node = models.ForeignKey(Node, on_delete=models.CASCADE, related_name="time_templates")
     name = models.CharField(max_length=100)
     start_time = models.TimeField()
@@ -822,6 +826,14 @@ class TimeTemplate(TenantScopedModel):
     break_minutes = models.PositiveSmallIntegerField(default=0)
     icon = models.CharField(max_length=50, blank=True)
     color = models.CharField(max_length=7, default="#2563eb", help_text="Hex-Farbe für die Planblatt-UI")
+    category = models.CharField(
+        max_length=20,
+        choices=Category.choices,
+        default=Category.SHIFT,
+        help_text="Nutzer-Feedback (2026-08): reine UI-Gruppierung für die Stempelleisten im "
+        "Planblatt/Jahresplan -- eine eigene Zeile für Spezialitäten wie z. B. Pikettdienst, "
+        "getrennt von den regulären Diensten. Keine Regel-Engine-Auswirkung.",
+    )
     required_skill = models.ForeignKey(
         Skill,
         on_delete=models.SET_NULL,

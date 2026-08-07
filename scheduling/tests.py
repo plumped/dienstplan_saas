@@ -3929,6 +3929,75 @@ class TimeTemplateMinimumStaffingAPITests(APITestCase):
         self.assertEqual(patch_response.data["minimum_staffing"], 4)
 
 
+class TimeTemplateCategoryTests(TestCase):
+    """
+    Nutzer-Feedback (2026-08): Stempelleisten im Planblatt/Jahresplan sollen
+    reguläre Dienste und Spezialitäten (z. B. Pikettdienst) in getrennten
+    Zeilen zeigen. category ist rein informativ (UI-Gruppierung), keine
+    Regel-Engine-Auswirkung -- analog zu minimum_staffing oben.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+
+    def test_category_defaults_to_shift(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+        )
+        self.assertEqual(template.category, TimeTemplate.Category.SHIFT)
+
+    def test_special_category_does_not_block_shift_assignment(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Pikettdienst",
+            start_time=time(20, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        employee = Employee.objects.create(tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100)
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=employee, node=self.node, date=date(2026, 8, 3), template=template
+        )
+        assignment.clean()  # keine Exception -- category ist rein informativ
+
+
+class TimeTemplateCategoryAPITests(APITestCase):
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_category_round_trips_through_serializer(self):
+        create_response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Pikettdienst",
+                "start_time": "20:00",
+                "end_time": "22:00",
+                "category": "special",
+            },
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data["category"], "special")
+
+        template_id = create_response.data["id"]
+        patch_response = self.client.patch(f"/api/time-templates/{template_id}/", {"category": "shift"})
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_response.data["category"], "shift")
+
+    def test_omitting_category_defaults_to_shift(self):
+        create_response = self.client.post(
+            "/api/time-templates/",
+            {"node": self.node.id, "name": "Frühdienst", "start_time": "07:00", "end_time": "15:00"},
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data["category"], "shift")
+
+
 class SplitShiftTests(TestCase):
     """
     README Punkt 18: geteilte Dienste (Split-Shifts) -- mehrere Zuweisungen

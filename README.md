@@ -753,6 +753,26 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       Testheim-Daten: Ferien für einen Mitarbeiter über zwei nicht zusammenhängende Tage per
       Stempelleiste eingetragen (zwei separate `Absence`-Datensätze statt einem), danach beide
       wieder über "Absenz entfernen" markiert und gelöscht.
+    - ✅ **Mehrzeilige Stempelleiste + Spezialitäten (z. B. Pikettdienst)** (2026-08, weiteres
+      Nutzer-Feedback): die Stempelleiste sass als eine einzige lange, umbrechende Zeile aus
+      Dienst- und Absenz-Chips direkt neben dem "Mehrfachauswahl"-Umschalter -- auf Wunsch jetzt
+      als eigener Block **unterhalb** des Umschalters (`styles.css`:
+      `.multi-select-toolbar > .stamp-palette` bekommt `flex-basis: 100%`, analog zur
+      Jahresplan-Lösung unten), und **mehrzeilig**: eine Zeile "Dienste", eine Zeile
+      "Abwesenheiten" und -- falls konfiguriert -- eine dritte Zeile "Spezialitäten" (neue
+      `.stamp-row`/`.stamp-row-label`-Klassen). Dafür neues Feld `TimeTemplate.category`
+      (`shift`/`special`, Migration `0016`, Default `shift` -- rein additiv) in
+      `TimeTemplateSettings.jsx` editierbar; ein Schichttyp wie "Pikettdienst" wird dort als
+      "Spezialität" markiert und erscheint dann in beiden Stempelleisten (Planblatt + Jahresplan,
+      Punkt 12) in der eigenen Zeile, **ohne** aus den regulären Diensten technisch etwas anderes
+      zu sein -- Zuweisung, Regel-Engine-Prüfung und `handleStampAssign` bleiben identisch, nur
+      die Anzeige-Gruppierung unterscheidet sich. Die Spezialitäten-Zeile erscheint nur, wenn
+      mindestens ein Schichttyp so kategorisiert ist (sonst keine leere Zeile). Getestet
+      (`scheduling/tests.py`: `TimeTemplateCategoryTests`, `TimeTemplateCategoryAPITests` --
+      Default `shift`, Spezialität blockiert `ShiftAssignment.clean()` nicht, Serializer-Roundtrip).
+      Mit Playwright verifiziert: testweise "Pikettdienst" als Spezialität angelegt, erscheint in
+      eigener Zeile in Planblatt und Jahresplan, Stempeln funktioniert (inkl. korrekt vom Backend
+      abgelehntem Ruhezeit-Konflikt bei einer unrealistisch langen Testschicht).
     - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
       entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
       wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim

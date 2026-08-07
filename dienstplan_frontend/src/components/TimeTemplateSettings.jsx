@@ -13,6 +13,7 @@ function emptyForm(defaultNodeId) {
     color: "#2563eb",
     required_skill: "",
     minimum_staffing: 0,
+    category: "shift",
     segments: [],
   };
 }
@@ -28,6 +29,7 @@ function toFormValues(template) {
     color: template.color,
     required_skill: template.required_skill ?? "",
     minimum_staffing: template.minimum_staffing,
+    category: template.category ?? "shift",
     segments: (template.segments ?? []).map((s) => ({
       start_time: s.start_time.slice(0, 5),
       end_time: s.end_time.slice(0, 5),
@@ -84,6 +86,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
       color: form.color,
       required_skill: form.required_skill || null,
       minimum_staffing: Number(form.minimum_staffing) || 0,
+      category: form.category,
       segments: form.segments.map((s, i) => ({ order: i, start_time: s.start_time, end_time: s.end_time })),
     };
     setSaving(true);
@@ -232,6 +235,21 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
               Planblatt als Warn-Badge angezeigt, sobald ein Tag unterbesetzt ist (README Punkt 9).
             </span>
           </label>
+          <label>
+            Kategorie
+            <select
+              value={form.category}
+              onChange={(e) => setForm((prev) => ({ ...prev, category: e.target.value }))}
+            >
+              <option value="shift">Dienst</option>
+              <option value="special">Spezialität</option>
+            </select>
+            <span className="panel-hint">
+              Nur für die Stempelleisten im Planblatt/Jahresplan: Spezialitäten (z. B.
+              Pikettdienst) erscheinen dort in einer eigenen Zeile, getrennt von den regulären
+              Diensten -- hat sonst keine Auswirkung.
+            </span>
+          </label>
         </div>
 
         <h3>Blockstruktur (optional, Block 1.9)</h3>
@@ -279,6 +297,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                   {t.minimum_staffing > 0 && (
                     <span className="entry-note"> · min. {t.minimum_staffing} Personen</span>
                   )}
+                  {t.category === "special" && <span className="entry-note"> · Spezialität</span>}
                 </span>
                 <span className="entry-actions">
                   <button type="button" className="btn-ghost" onClick={() => startEditing(t)}>

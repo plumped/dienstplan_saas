@@ -388,6 +388,15 @@ main {
   margin-bottom: 10px;
 }
 
+/* Nutzer-Feedback (2026-08): die Stempelleiste soll immer unterhalb des
+   "Mehrfachauswahl"-Umschalters stehen, nicht nur bei Platzmangel mittendrin
+   umbrechen -- gleicher flex-basis:100%-Trick wie bei .year-plan-toolbar
+   unten, hier auf .multi-select-toolbar gescoped. */
+.multi-select-toolbar > .stamp-palette,
+.multi-select-toolbar > .multi-select-hint {
+  flex-basis: 100%;
+}
+
 .btn-toggle-multiselect {
   border: 1px solid var(--border);
   background: var(--surface);
@@ -414,11 +423,32 @@ main {
   color: var(--ink-muted);
 }
 
+/* Nutzer-Feedback (2026-08): die Stempelleiste war eine einzige, lange
+   umbrechende Zeile aus Dienst-, Absenz- und (Jahresplan) Wunsch-Chips
+   durcheinander -- schwer scanbar, sobald mehrere Kategorien gleichzeitig
+   sichtbar waren. Jetzt eine Spalte aus .stamp-row-Zeilen, je eine pro
+   Kategorie (Dienste/Abwesenheiten/Spezialitäten/Wünsche), mit fester
+   Beschriftung links (.stamp-row-label) -- klar zuordenbar auch bei vielen
+   Chips. */
 .stamp-palette {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.stamp-row {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.stamp-row-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  min-width: 88px;
 }
 
 .stamp-chip {

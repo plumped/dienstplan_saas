@@ -305,6 +305,7 @@ class TimeTemplateSerializer(serializers.ModelSerializer):
             "color",
             "required_skill",
             "minimum_staffing",
+            "category",
             "segments",
         ]
 

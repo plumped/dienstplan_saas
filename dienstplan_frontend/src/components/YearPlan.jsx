@@ -216,6 +216,13 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employeeId, selectedNode, selectedStationId, year]);
 
+  // Nutzer-Feedback (2026-08): Stempelleiste soll mehrzeilig sein -- eine
+  // Zeile für reguläre Dienste, eine für Spezialitäten (z. B. Pikettdienst,
+  // TimeTemplate.category === "special", siehe TimeTemplateSettings.jsx und
+  // gleiches Muster in PlanGrid.jsx).
+  const regularTemplates = useMemo(() => templates.filter((t) => t.category !== "special"), [templates]);
+  const specialTemplates = useMemo(() => templates.filter((t) => t.category === "special"), [templates]);
+
   // README (2026-08, Bugfix): Array statt Einzelwert pro Datum -- ein Tag
   // kann jetzt (Split-Shifts, README Punkt 18) mehr als eine Zuweisung
   // haben. Chronologisch nach Beginnzeit sortiert, analog zu PlanGrid.jsx.
@@ -511,54 +518,75 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
           <span className="stamp-palette">
             <span className="multi-select-hint">{markedDates.size} markiert:</span>
             {canManage && (
-              <label className="stamp-second-slot-toggle" title="Bestehenden ersten Dienst nicht ersetzen, sondern einen zweiten (Split-Shift) danebenstellen.">
-                <input
-                  type="checkbox"
-                  checked={stampSecondSlot}
-                  onChange={(e) => setStampSecondSlot(e.target.checked)}
-                />
-                Als zweiten Dienst hinzufügen
-              </label>
+              <span className="stamp-row">
+                <span className="stamp-row-label">Dienste</span>
+                <label className="stamp-second-slot-toggle" title="Bestehenden ersten Dienst nicht ersetzen, sondern einen zweiten (Split-Shift) danebenstellen. Gilt auch für Spezialitäten unten.">
+                  <input
+                    type="checkbox"
+                    checked={stampSecondSlot}
+                    onChange={(e) => setStampSecondSlot(e.target.checked)}
+                  />
+                  Als zweiten Dienst hinzufügen
+                </label>
+                {regularTemplates.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="stamp-chip"
+                    style={{ "--chip-color": t.color }}
+                    title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
+                    onClick={() => handleStampShift(t.id)}
+                  >
+                    {t.name.slice(0, 3)}
+                  </button>
+                ))}
+                <button type="button" className="stamp-chip stamp-chip--empty" title="Schicht(en) entfernen" onClick={handleClearShifts}>
+                  Schicht leeren
+                </button>
+              </span>
             )}
-            {canManage &&
-              templates.map((t) => (
+            <span className="stamp-row">
+              <span className="stamp-row-label">Abwesenheiten</span>
+              {ABSENCE_TYPES.map((t) => (
                 <button
-                  key={t.id}
+                  key={t.value}
                   type="button"
-                  className="stamp-chip"
-                  style={{ "--chip-color": t.color }}
-                  title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
-                  onClick={() => handleStampShift(t.id)}
+                  className="stamp-chip stamp-chip--absence"
+                  title={`${t.label} für alle markierten Tage eintragen`}
+                  onClick={() => handleStampAbsence(t.value)}
                 >
-                  {t.name.slice(0, 3)}
+                  {t.label}
                 </button>
               ))}
-            {canManage && (
-              <button type="button" className="stamp-chip stamp-chip--empty" title="Schicht(en) entfernen" onClick={handleClearShifts}>
-                Schicht leeren
-              </button>
-            )}
-            {ABSENCE_TYPES.map((t) => (
               <button
-                key={t.value}
                 type="button"
-                className="stamp-chip stamp-chip--absence"
-                title={`${t.label} für alle markierten Tage eintragen`}
-                onClick={() => handleStampAbsence(t.value)}
+                className="stamp-chip stamp-chip--empty"
+                title="Absenz(en) der markierten Tage entfernen -- löscht den ganzen Zeitraum, nicht nur die markierten Tage daraus"
+                onClick={handleRemoveAbsences}
               >
-                {t.label}
+                Absenz entfernen
               </button>
-            ))}
-            <button
-              type="button"
-              className="stamp-chip stamp-chip--empty"
-              title="Absenz(en) der markierten Tage entfernen -- löscht den ganzen Zeitraum, nicht nur die markierten Tage daraus"
-              onClick={handleRemoveAbsences}
-            >
-              Absenz entfernen
-            </button>
+            </span>
+            {canManage && specialTemplates.length > 0 && (
+              <span className="stamp-row">
+                <span className="stamp-row-label">Spezialitäten</span>
+                {specialTemplates.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="stamp-chip"
+                    style={{ "--chip-color": t.color }}
+                    title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
+                    onClick={() => handleStampShift(t.id)}
+                  >
+                    {t.name.slice(0, 3)}
+                  </button>
+                ))}
+              </span>
+            )}
             {isOwnEmployeeSelected && (
-              <>
+              <span className="stamp-row">
+                <span className="stamp-row-label">Wünsche</span>
                 <button
                   type="button"
                   className="stamp-chip stamp-chip--wish"
@@ -587,18 +615,20 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                 >
                   Wunsch entfernen
                 </button>
-              </>
+              </span>
             )}
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() => {
-                setMarkedDates(new Set());
-                setStampSecondSlot(false);
-              }}
-            >
-              Auswahl aufheben
-            </button>
+            <span className="stamp-row">
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => {
+                  setMarkedDates(new Set());
+                  setStampSecondSlot(false);
+                }}
+              >
+                Auswahl aufheben
+              </button>
+            </span>
           </span>
         )}
       </div>

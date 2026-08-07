@@ -1199,15 +1199,19 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
                     const holidayName = holidays.get(date);
                     const canOfferTrade = canManage || me?.employee?.id === emp.id;
-                    // Zweiter Slot nur anzeigen, wenn er entweder schon eine
-                    // echte zweite Zuweisung enthält, oder (leer) als
-                    // "+"-Angebot für Admin/Planer, um einen Split-Shift
-                    // anzulegen -- ein nicht bedienbares leeres "+" für
-                    // reine Betrachter wäre nur verwirrend. Zählt nur reguläre
+                    // Nutzer-Feedback (2026-08): der zweite Slot -- und damit
+                    // die diagonale Darstellung -- erscheint nur, wenn WIRKLICH
+                    // zwei Dienste an diesem Tag liegen. Der frühere leere
+                    // "+"-Zweitslot für Admin/Planer (auch bei nur einem echten
+                    // Dienst) stammte noch aus der Zeit des Klick-auf-Zelle-
+                    // Dropdowns, wo ein sichtbares Klickziel nötig war, um
+                    // einen zweiten Dienst anzulegen. Die Icon-Toolbar
+                    // (handleCellClick) braucht das nicht mehr -- Modus
+                    // "Rechts" wählen und irgendwo auf die (jetzt wieder voll
+                    // ausfüllende) Zelle klicken reicht. Zählt nur reguläre
                     // Zuweisungen (eine Spezialität allein soll keinen zweiten
                     // Slot erzwingen).
-                    const showSecondSlot =
-                      !absence && (regularAssignments.length >= 2 || (canManage && regularAssignments.length === 1));
+                    const showSecondSlot = !absence && regularAssignments.length >= 2;
 
                     function renderSlot(assignment, slotIndex) {
                       const template = templates.find((t) => t.id === assignment?.template);

@@ -650,10 +650,12 @@ th.col-employee {
   font-size: 13px;
   white-space: nowrap;
   min-width: 170px;
-  /* Höhe exakt an .shift-chip-btn (40px) + Zeilenrahmen angleichen, statt
+  /* Höhe exakt an .shift-chip-btn (30px) + Zeilenrahmen angleichen, statt
      sich allein aus dem Zelleninhalt zu ergeben -- sonst weicht die Höhe je
-     nach Namenslänge/Pensum minim von den Dienst-Zellen ab. */
-  height: 41px;
+     nach Namenslänge/Pensum minim von den Dienst-Zellen ab. Nur ein
+     Minimum -- Zeilen mit Split-Shift und/oder sichtbarer
+     Spezialitäten-Zeile (.special-strip) wachsen darüber hinaus. */
+  height: 31px;
   vertical-align: middle;
 }
 
@@ -687,7 +689,7 @@ td.col-balance {
 }
 
 td.col-balance {
-  height: 41px;
+  height: 31px;
   vertical-align: middle;
 }
 
@@ -803,7 +805,7 @@ thead .col-employee {
 
 .shift-chip-btn {
   width: 100%;
-  height: 40px;
+  height: 30px;
   border: none;
   background: transparent;
   display: flex;
@@ -847,9 +849,20 @@ thead .col-employee {
   font-weight: 400;
 }
 
+/* Nutzer-Feedback (2026-08, Nachbesserung): "Die Zeilen sind sowieso zu
+   hoch" -- innerhalb des Planblatt-Grids kleiner als der globale
+   .shift-chip-Standard (der auch ausserhalb des Grids verwendet wird, z. B.
+   Dashboard/Settings-Listen/TradeRequestPanel, dort bewusst unverändert). */
+.plan-grid .shift-chip {
+  height: 18px;
+  min-width: 24px;
+  padding: 0 5px;
+  font-size: 10px;
+}
+
 .cell-select {
   width: 100%;
-  height: 40px;
+  height: 30px;
   border: 2px solid var(--primary);
   border-radius: 0;
   font-size: 12px;
@@ -1721,34 +1734,83 @@ thead .col-employee {
   margin-top: 2px;
 }
 
-/* Nutzer-Feedback (2026-08, Punkt 4): Badge+Popover für Spezialitäten (z. B.
-   Pikettdienst) -- additiver Zusatz zu einem Dienst, unten links (die
-   anderen drei Ecken sind bereits durch Tausch-/Ist-Zeit-/Wunsch-Badge
-   belegt). */
-.btn-special {
-  position: absolute;
-  bottom: 1px;
-  left: 1px;
-  width: 16px;
-  height: 16px;
-  border: none;
-  border-radius: 4px;
-  background: var(--surface);
-  color: var(--ink-muted);
-  font-size: 9px;
+/* Nutzer-Feedback (2026-08, Nachbesserung): Spezialitäten (z. B.
+   Pikettdienst) als eigene, dünne Chip-Zeile UNTER den Dienst-Slots (PEP-
+   Vorbild) statt hinter einem Zähler-Badge in der Zell-Ecke versteckt --
+   letzteres wurde bei einem Split-Shift (zwei Slots) faktisch unsichtbar.
+   .day-cell fasst Slot-Zeile + Spezialitäten-Zeile pro Tageszelle
+   zusammen; .shift-slots-row stellt die (bis zu zwei) Dienst-Slots
+   nebeneinander statt untereinander dar (weniger Zeilenhöhe als vorher). */
+.day-cell {
+  display: flex;
+  flex-direction: column;
+}
+
+.shift-slots-row {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.shift-slots-row .cell-wrap {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.special-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  min-height: 14px;
+  padding: 1px 2px;
+}
+
+.special-chip {
+  --chip-color: var(--primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--chip-color) 20%, white);
+  color: color-mix(in srgb, var(--chip-color) 80%, black);
+  font-size: 8px;
   font-weight: 700;
   line-height: 1;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border: none;
+}
+
+.special-chip-remove {
+  border: none;
+  background: none;
   padding: 0;
-  box-shadow: 0 0 0 1px var(--border);
+  margin: 0;
+  font-size: 9px;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.6;
 }
 
-.btn-special.is-set {
+.special-chip-remove:hover {
+  opacity: 1;
+}
+
+.special-chip--add {
+  --chip-color: var(--ink-muted);
+  color: var(--ink-muted);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--border);
+  cursor: pointer;
+}
+
+.special-chip--add:hover {
+  --chip-color: var(--primary);
   color: var(--primary);
-  box-shadow: 0 0 0 1px var(--primary);
-}
-
-.btn-special.is-readonly {
-  cursor: default;
+  box-shadow: inset 0 0 0 1px var(--primary);
 }
 
 .special-popover {
@@ -1759,25 +1821,6 @@ thead .col-employee {
   padding: 12px;
   box-shadow: 0 6px 20px rgba(20, 30, 25, 0.16);
   min-width: 180px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.special-popover-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.special-popover-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
 }
 
 .special-popover-add {

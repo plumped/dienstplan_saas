@@ -4,6 +4,7 @@ import { canManageSchedule } from "../roles.js";
 import BalanceBadge from "./BalanceBadge.jsx";
 import FloatingPopover from "./FloatingPopover.jsx";
 import ShiftCell from "./ShiftCell.jsx";
+import SpecialStrip from "./SpecialStrip.jsx";
 
 // README Block 2.9: kleines, klickbares Warn-Badge in der Tages-Kopfzelle,
 // wenn mindestens ein Schichttyp mit minimum_staffing an diesem Tag
@@ -1061,8 +1062,8 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     // Nutzer-Feedback (2026-08, Punkt 4): eine Spezialität (z. B.
                     // Pikettdienst) ist ein additiver Zusatz zu einem Dienst, kein
                     // Konkurrent um Slot 0/1 -- daher getrennt von den regulären
-                    // Zuweisungen behandelt (eigenes Badge/Popover in ShiftCell.jsx,
-                    // siehe unten).
+                    // Zuweisungen behandelt und in einer eigenen, dünnen Zeile
+                    // unter den Slots gerendert (SpecialStrip.jsx, siehe unten).
                     const regularAssignments = cellAssignments.filter(
                       (a) => templates.find((t) => t.id === a.template)?.category !== "special"
                     );
@@ -1134,10 +1135,6 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           onAssignAbsence={(absenceTypeId) =>
                             handleAssignAbsence(emp.id, date, absenceTypeId, assignment?.id)
                           }
-                          specialAssignments={slotIndex === 0 ? specialAssignments : []}
-                          assignableSpecialTemplates={slotIndex === 0 ? rowAssignableSpecialTemplates : []}
-                          onAddSpecial={(templateId) => handleAddSpecial(emp.id, date, rowNodeId, templateId)}
-                          onRemoveSpecial={(specialAssignmentId) => handleRemoveSpecial(specialAssignmentId)}
                         />
                       );
                     }
@@ -1165,10 +1162,28 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                             onMarkEnter={() => continueMark(emp.id, date, rowNodeId)}
                           />
                         ) : (
-                          <>
-                            {renderSlot(cellAssignments[0], 0)}
-                            {showSecondSlot && renderSlot(cellAssignments[1], 1)}
-                          </>
+                          <div className="day-cell">
+                            <div className="shift-slots-row">
+                              {renderSlot(regularAssignments[0], 0)}
+                              {showSecondSlot && renderSlot(regularAssignments[1], 1)}
+                            </div>
+                            {/* Nutzer-Feedback (2026-08, Nachbesserung): Spezialitäten
+                                (z. B. Pikettdienst) waren im Split-Shift-Badge (in der
+                                ShiftCell-Ecke) faktisch unsichtbar -- eigene, dünne
+                                Chip-Zeile unter den Dienst-Slots statt versteckt hinter
+                                einem Zähler. Nicht bei einer Absenz (schliesst
+                                Spezialitäten am selben Tag ohnehin aus). */}
+                            {!absence && (
+                              <SpecialStrip
+                                specialAssignments={specialAssignments}
+                                templates={templates}
+                                assignableTemplates={rowAssignableSpecialTemplates}
+                                canEdit={canManage}
+                                onAdd={(templateId) => handleAddSpecial(emp.id, date, rowNodeId, templateId)}
+                                onRemove={(specialAssignmentId) => handleRemoveSpecial(specialAssignmentId)}
+                              />
+                            )}
+                          </div>
                         )}
                       </td>
                     );

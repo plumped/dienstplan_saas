@@ -845,6 +845,25 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       dabei: der Spezialitäten-Badge erschien anfangs auf BEIDEN Slots einer Zelle (weil
       `assignableSpecialTemplates` beiden Slots gleichermassen übergeben wurde) -- jetzt nur auf
       Slot 0, analog zu `showWishBadge`.
+    - ✅ **Nachbesserung (2026-08): Spezialitäten waren bei Split-Shifts faktisch unsichtbar,
+      Zeilen zu hoch** -- Nutzer-Feedback direkt nach dem Rollout des additiven Spezialitäten-Badges
+      (oben): das Zähler-Badge sass in der Ecke der jeweiligen `ShiftCell`, und Vormittag/Nachmittag
+      wurden als zwei ganze `ShiftCell`-Blöcke UNTEREINANDER gestapelt (je 40px hoch) -- ein Pikett
+      war dadurch bei einem Split-Shift-Tag optisch nicht mehr auffindbar, und jede Zeile mit
+      Split-Shift wurde unnötig hoch. Fix nach dem Vorbild von PEP: `PlanGrid.jsx` rendert die
+      (bis zu zwei) Dienst-Slots jetzt in einer neuen `.shift-slots-row` NEBENEINANDER (gleiche
+      Höhe statt gestapelt) statt als vertikalen Stack, und Spezialitäten in einer eigenen, sehr
+      dünnen Zeile darunter (`SpecialStrip.jsx`, neue eigenständige Komponente statt
+      Badge+Popover in `ShiftCell.jsx` -- rein tagesbezogen, nicht pro Slot, daher ausgelagert).
+      Aktive Spezialitäten sind darin als kleine Chips IMMER sichtbar (mit ×-Button zum Entfernen)
+      statt hinter einem anklickbaren Zähler versteckt; ein "+"-Chip öffnet weiterhin ein Popover
+      zum Hinzufügen. `.shift-chip`-Schriftgrösse im Planblatt-Grid auf 10px reduziert (gescoped auf
+      `.plan-grid .shift-chip`, damit Dashboard/Settings-Listen/TradeRequestPanel unverändert
+      bleiben) und `.shift-chip-btn`/`.cell-select`-Höhe von 40px auf 30px verkleinert -- Zeilen
+      sind dadurch insgesamt deutlich kompakter. Mit Playwright verifiziert: ein Tag mit zwei
+      unterschiedlichen Diensten UND einer Spezialität zeigt Vormittag/Nachmittag nebeneinander,
+      die Spezialität als eigene dünne Zeile darunter, auch bei einem nur teilweise gefüllten
+      zweiten Slot.
     - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
       entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
       wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim

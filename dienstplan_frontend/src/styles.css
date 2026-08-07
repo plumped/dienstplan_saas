@@ -1844,12 +1844,10 @@ thead .col-employee {
    letzteres wurde bei einem Split-Shift (zwei Slots) faktisch unsichtbar.
    .day-cell fasst Slot-Zeile + Spezialitäten-Zeile pro Tageszelle zusammen.
 
-   Nutzer-Feedback (2026-08, "genau wie Polypoint"): .day-cell-slots (vorher
-   .shift-slots-row, flex) ist ein CSS-Grid innerhalb der (seit
-   table-layout: fixed oben) unveränderlich breiten Tagesspalte -- die
-   Spalte wird NIE breiter, egal wie viele Dienste an einem Tag liegen.
-   Ein einzelner Dienst ("Ganz") bekommt die Modifier-Klasse
-   .cell-wrap--span und spannt via grid-column: 1 / 3 beide Spalten.
+   Nutzer-Feedback (2026-08, "genau wie Polypoint"): .day-cell-slots sitzt
+   innerhalb der (seit table-layout: fixed oben) unveränderlich breiten
+   Tagesspalte -- die Spalte wird NIE breiter, egal wie viele Dienste an
+   einem Tag liegen.
 
    Nutzer-Feedback (2026-08, Nachbesserung): zwei Dienste nebeneinander
    waren anfangs ein reiner Links/Rechts-Spaltensplit (je ~20px) -- ohne
@@ -1858,44 +1856,56 @@ thead .col-employee {
    Jahresplan (.year-day-fill--shift.is-split unten): .day-cell-slots--
    diagonal, jeder Chip in seiner eigenen Ecke (oben/links, unten/rechts)
    statt in einer festen Spaltenbreite -- mehr Platz pro Glyph, gleiche
-   visuelle Sprache wie "zwei Dienste an einem Tag" im Jahresplan. */
+   visuelle Sprache wie "zwei Dienste an einem Tag" im Jahresplan.
+
+   Nutzer-Feedback (2026-08, Nachbesserung): bei nur einem Dienst ("Ganz",
+   .cell-wrap--span) blieb bisher sichtbar Weissraum um den Chip -- der
+   Button war nur 26px/20px hoch, während die Zeile durch th.col-employee
+   (31px) bzw. eine diagonale Nachbarzelle (34px) tatsächlich höher war,
+   und der Chip füllte diese Höhe nicht aus. .day-cell-slots bekommt jetzt
+   fest dieselbe Höhe wie die Diagonal-Variante (34px, für beide Fälle
+   einheitlich), und .cell-wrap--span/.shift-chip-btn/.shift-chip füllen
+   sie per position:absolute + inset:0 randlos aus -- ein einzelner Dienst
+   nimmt jetzt wirklich das GANZE Viereck ein, nicht nur einen kleinen
+   Pill mittendrin. */
 .day-cell {
   display: flex;
   flex-direction: column;
 }
 
 .day-cell-slots {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
-}
-
-.day-cell-slots .cell-wrap {
-  min-width: 0;
-}
-
-.day-cell-slots .cell-wrap--span {
-  grid-column: 1 / 3;
-}
-
-/* Nutzer-Feedback (2026-08, Nachbesserung -- Referenzbild): ein reiner
-   Links/Rechts-Spaltensplit zwang beide Glyphen in eine ~20px schmale
-   Spalte. Eine erste diagonale Variante (blasser Farbverlauf im
-   Hintergrund + kleiner runder Pill-Chip in der Ecke) war dem Nutzer
-   "zu weich" -- das Referenzbild zeigt zwei VOLLFLÄCHIG eingefärbte
-   Dreiecke (clip-path), der Glyph gross und direkt in der freien Ecke,
-   kein separater blasser Pill mehr. Genau das setzt dieser Block um,
-   in derselben visuellen Sprache wie der Jahresplan (.year-day-fill--
-   shift.is-split) für "zwei Dienste an einem Tag". */
-.day-cell-slots--diagonal {
-  display: block;
   position: relative;
-  /* Höher als eine einzelne Zeile (20px): bei 22px war die Zelle zu
-     flach für einen sauberen Diagonalschnitt -- der zweite Glyph lag zu
-     nah am Dreiecksrand und wurde vom clip-path angeschnitten. */
   height: 34px;
   border-radius: 5px;
   overflow: hidden;
+}
+
+.day-cell-slots .cell-wrap--span {
+  position: absolute;
+  inset: 0;
+}
+
+/* Bugfix (wie bei --diag-tl/--br unten): die Basisregel ".cell-wrap" setzt
+   position:relative auf JEDES cell-wrap -- auch auf ShiftCell.jsx's
+   inneres <span>, direktes Kind von .cell-wrap--span. Ohne diese
+   Override-Regel würde DIESES innere <span> zum Containing Block für den
+   position:absolute-Button weiter unten, statt des äusseren, tatsächlich
+   randfüllenden Wrappers. */
+.day-cell-slots .cell-wrap--span > .cell-wrap {
+  position: static;
+}
+
+.day-cell-slots .cell-wrap--span .shift-chip-btn {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+}
+
+.day-cell-slots .cell-wrap--span .shift-chip {
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
 }
 
 /* Bugfix (Playwright-Verifikation): ShiftCell.jsx wickelt sein eigenes

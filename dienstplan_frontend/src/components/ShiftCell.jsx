@@ -241,25 +241,19 @@ export default function ShiftCell({
     );
   }
 
-  if (absence) {
-    return (
-      <span
-        className="shift-chip-btn is-absence"
-        title={`${ABSENCE_NAMES[absence.type] ?? absence.type} (${absence.start_date} – ${absence.end_date})`}
-      >
-        <span className="shift-chip shift-chip--absence">
-          {ABSENCE_LABELS[absence.type] ?? absence.type.slice(0, 3).toUpperCase()}
-        </span>
-      </span>
-    );
-  }
-
   if (selectionMode && canEdit) {
-    // Absenz-Tage lassen sich nicht markieren -- eine Zuweisung würde die
-    // Regel-Engine ohnehin ablehnen (_check_no_absence_conflict), das
-    // Icon-Stempeln würde also nur stillschweigend übersprungen. Hier gleich
-    // gar nicht erst als Ziel anbieten, statt das erst beim Zuweisen zu
-    // melden.
+    // README (2026-08, Bugfix): Absenz-Tage waren hier komplett ausgenommen
+    // (der frühere `if (absence)`-Zweig stand VOR diesem Block und griff
+    // zuerst) -- ein Tag mit bestehender Absenz war dadurch NIE markierbar,
+    // in keinem Modus. Für Schicht-Stempeln war das durchaus gewollt (eine
+    // Zuweisung würde die Regel-Engine ohnehin ablehnen,
+    // _check_no_absence_conflict, das Stempeln würde also nur still
+    // übersprungen), aber es blockierte damit auch "Absenz entfernen" in
+    // der Mehrfachauswahl-Stempelleiste (PlanGrid.jsx) komplett -- ein
+    // Absenz-Tag liess sich so nie auswählen, um ihn wieder zu löschen.
+    // Jetzt bleibt ein Absenz-Tag markierbar (zeigt weiterhin seinen
+    // FER/KRA/SON-Chip statt eines Schichttyps), Schicht-Stempeln darauf
+    // wird weiterhin vom Backend abgelehnt und als übersprungen gezählt.
     //
     // Markieren per Ziehen: onMouseDown startet den Ziehen-Modus (mark/
     // unmark, je nach aktuellem Zustand dieser Zelle) und markiert sie
@@ -287,12 +281,23 @@ export default function ShiftCell({
         type="button"
         className={`shift-chip-btn is-selectable${marked ? " is-marked" : ""}`}
         aria-pressed={marked}
-        title={marked ? "Markierung aufheben" : "Für Mehrfachzuweisung markieren (auch durch Ziehen)"}
+        title={
+          absence
+            ? `${ABSENCE_NAMES[absence.type] ?? absence.type} (${absence.start_date} – ${absence.end_date}) -- ` +
+              (marked ? "Markierung aufheben" : "Für Absenz entfernen markieren")
+            : marked
+              ? "Markierung aufheben"
+              : "Für Mehrfachzuweisung markieren (auch durch Ziehen)"
+        }
         onMouseDown={handleMouseDown}
         onMouseEnter={onMarkEnter}
         onClick={handleClick}
       >
-        {templateInfo ? (
+        {absence ? (
+          <span className="shift-chip shift-chip--absence">
+            {ABSENCE_LABELS[absence.type] ?? absence.type.slice(0, 3).toUpperCase()}
+          </span>
+        ) : templateInfo ? (
           <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>
             {templateInfo.name.slice(0, 3)}
           </span>
@@ -301,7 +306,7 @@ export default function ShiftCell({
             +
           </span>
         )}
-        {secondTemplateInfo && (
+        {!absence && secondTemplateInfo && (
           <span className="shift-chip" style={{ "--chip-color": secondTemplateInfo.color }}>
             {secondTemplateInfo.name.slice(0, 3)}
           </span>
@@ -312,6 +317,19 @@ export default function ShiftCell({
           </span>
         )}
       </button>
+    );
+  }
+
+  if (absence) {
+    return (
+      <span
+        className="shift-chip-btn is-absence"
+        title={`${ABSENCE_NAMES[absence.type] ?? absence.type} (${absence.start_date} – ${absence.end_date})`}
+      >
+        <span className="shift-chip shift-chip--absence">
+          {ABSENCE_LABELS[absence.type] ?? absence.type.slice(0, 3).toUpperCase()}
+        </span>
+      </span>
     );
   }
 

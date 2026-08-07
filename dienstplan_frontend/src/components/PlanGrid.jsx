@@ -44,6 +44,15 @@ function DayStaffingBadge({ shortfalls }) {
 
 const WEEKDAYS_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 
+// README (2026-08, Bugfix): fehlte bisher komplett -- Absenzen liessen sich
+// über die Mehrfachauswahl nur im Jahresplan (YearPlan.jsx), nicht im
+// Planblatt eintragen. Gleiche Liste/Labels wie dort.
+const ABSENCE_TYPES = [
+  { value: "vacation", label: "Ferien" },
+  { value: "sick", label: "Krankheit" },
+  { value: "other", label: "Sonstiges" },
+];
+
 function pad(n) {
   return String(n).padStart(2, "0");
 }
@@ -54,6 +63,35 @@ function daysInMonth(year, month) {
 
 function isoDate(year, month, day) {
   return `${year}-${pad(month)}-${pad(day)}`;
+}
+
+function addDays(iso, delta) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setDate(date.getDate() + delta);
+  return isoDate(date.getFullYear(), date.getMonth() + 1, date.getDate());
+}
+
+// Fasst eine Menge von ISO-Tagen zu möglichst wenigen zusammenhängenden
+// [start, end]-Bereichen zusammen -- damit z. B. zwei markierte Ferienwochen
+// als zwei Absence-Einträge entstehen statt sieben Einzeltagen (gleiches
+// Muster wie YearPlan.jsx: groupConsecutiveDates).
+function groupConsecutiveDates(dates) {
+  const sorted = [...dates].sort();
+  const ranges = [];
+  let start = null;
+  let prev = null;
+  for (const d of sorted) {
+    if (start === null) {
+      start = d;
+    } else if (addDays(prev, 1) !== d) {
+      ranges.push([start, prev]);
+      start = d;
+    }
+    prev = d;
+  }
+  if (start !== null) ranges.push([start, prev]);
+  return ranges;
 }
 
 function weekdayLabel(year, month, day) {
@@ -593,6 +631,89 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
+  // Markierte Zellen (Schlüssel employeeId:date:rowNodeId) auf ihre reinen
+  // Datumsmengen je Mitarbeiter reduzieren -- rowNodeId ist für Absenzen
+  // irrelevant (eine Absenz gehört zur Person, nicht zum Team), ein Set
+  // dedupliziert automatisch, falls dieselbe Person an diesem Tag in
+  // mehreren Team-Zeilen markiert wurde (Mehrfachanstellung, README Punkt 17).
+  function absenceDatesByEmployee(keys) {
+    const map = new Map();
+    for (const key of keys) {
+      const [employeeIdStr, date] = key.split(":");
+      const employeeId = Number(employeeIdStr);
+      if (!map.has(employeeId)) map.set(employeeId, new Set());
+      map.get(employeeId).add(date);
+    }
+    return map;
+  }
+
+  // README (2026-08, Bugfix): Absenz-Stempeln fehlte im Planblatt komplett --
+  // nur der Jahresplan (YearPlan.jsx) konnte Ferien/Krankheit/Sonstiges
+  // eintragen. Gleiches Muster wie dort (handleStampAbsence), aber über
+  // mehrere Mitarbeiter hinweg gruppiert, da im Planblatt (anders als im
+  // Jahresplan) Zellen verschiedener Personen gleichzeitig markiert sein
+  // können.
+  async function handleStampAbsence(type) {
+    const byEmployee = absenceDatesByEmployee(Array.from(markedCells));
+    const created = [];
+    let skippedExisting = 0;
+    let skippedConflict = 0;
+    for (const [employeeId, dateSet] of byEmployee) {
+      const dates = Array.from(dateSet).filter((d) => !findAbsence(employeeId, d));
+      skippedExisting += dateSet.size - dates.length;
+      const ranges = groupConsecutiveDates(dates);
+      for (const [start, end] of ranges) {
+        try {
+          created.push(await api.createAbsence({ employee: employeeId, start_date: start, end_date: end, type }));
+        } catch {
+          skippedConflict += 1;
+        }
+      }
+    }
+    if (created.length) setAbsences((prev) => [...prev, ...created]);
+    setMarkedCells(new Set());
+    const notes = [];
+    if (skippedExisting > 0) {
+      notes.push(`${skippedExisting} Tag(e) übersprungen, dort besteht bereits eine Absenz.`);
+    }
+    if (skippedConflict > 0) {
+      notes.push(`${skippedConflict} Zeitraum(e) konnten nicht angelegt werden.`);
+    }
+    if (notes.length) onError(notes.join(" "));
+  }
+
+  async function handleRemoveAbsences() {
+    // Löscht die GANZE Absenz, nicht nur die markierten Tage daraus, falls
+    // nur ein Teil eines mehrtägigen Zeitraums markiert war (gleiches
+    // Verhalten wie YearPlan.jsx: eine Absenz lässt sich nicht teilweise
+    // löschen, ohne sie in zwei neue Zeiträume aufzuspalten).
+    const byEmployee = absenceDatesByEmployee(Array.from(markedCells));
+    const toDelete = new Map();
+    for (const [employeeId, dateSet] of byEmployee) {
+      for (const date of dateSet) {
+        const absence = findAbsence(employeeId, date);
+        if (absence) toDelete.set(absence.id, absence);
+      }
+    }
+    const deletedIds = [];
+    let failed = 0;
+    for (const absence of toDelete.values()) {
+      try {
+        await api.deleteAbsence(absence.id);
+        deletedIds.push(absence.id);
+      } catch {
+        failed += 1;
+      }
+    }
+    if (deletedIds.length) {
+      setAbsences((prev) => prev.filter((a) => !deletedIds.includes(a.id)));
+    }
+    setMarkedCells(new Set());
+    if (failed > 0) {
+      onError(`${failed} Absenz(en) konnten nicht entfernt werden.`);
+    }
+  }
+
   // README Punkt 18: assignmentId statt employeeId+date -- bei mehreren
   // Zuweisungen desselben Tages (Split-Shifts) ist jede unabhängig
   // tauschbar, die frühere Ableitung über employee+date wäre mehrdeutig.
@@ -667,6 +788,25 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                 onClick={() => handleStampAssign(null)}
               >
                 — leer —
+              </button>
+              {ABSENCE_TYPES.map((t) => (
+                <button
+                  key={t.value}
+                  type="button"
+                  className="stamp-chip stamp-chip--absence"
+                  title={`${t.label} für alle markierten Tage eintragen`}
+                  onClick={() => handleStampAbsence(t.value)}
+                >
+                  {t.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                className="stamp-chip stamp-chip--empty"
+                title="Absenz(en) der markierten Tage entfernen -- löscht den ganzen Zeitraum, nicht nur die markierten Tage daraus"
+                onClick={handleRemoveAbsences}
+              >
+                Absenz entfernen
               </button>
               <button type="button" className="btn-ghost" onClick={() => setMarkedCells(new Set())}>
                 Auswahl aufheben

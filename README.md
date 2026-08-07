@@ -731,10 +731,28 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     Dropdown-Zuweisung zu öffnen; sobald mindestens eine Zelle markiert ist, erscheint eine
     Stempel-Leiste mit den Schichttyp-Chips (plus "leeren"), die per Klick alle markierten Zellen
     auf einmal zuweist (`handleStampAssign`, Regel-Engine-Konflikte werden wie beim
-    Wochenmuster-Kopieren pro Zelle übersprungen und summarisch gemeldet). Absenz-Tage lassen sich
-    gar nicht erst markieren (Regel-Engine würde die Zuweisung ohnehin ablehnen). Der bestehende
+    Wochenmuster-Kopieren pro Zelle übersprungen und summarisch gemeldet). Der bestehende
     Einzel-Dropdown bleibt für gezielte Korrekturen einer einzelnen Zelle erhalten -- Ergänzung,
     kein Ersatz.
+    - ✅ **Bugfix (2026-08)**: Nutzer-Feedback ("Ich kann im Planblatt keine Ferien eintragen, im
+      Jahresplan jedoch schon") -- die Mehrfachauswahl-Stempelleiste im Planblatt kannte tatsächlich
+      nur Schichttyp-Chips, keine Absenz-Chips, obwohl der Jahresplan (Punkt 12) diese Kombination
+      von Anfang an hatte. `PlanGrid.jsx` bekommt jetzt dieselben Absenz-Chips
+      "Ferien"/"Krankheit"/"Sonstiges" + "Absenz entfernen" wie `YearPlan.jsx`
+      (`handleStampAbsence`/`handleRemoveAbsences`, gruppiert nach `employeeId`, weil im Planblatt
+      -- anders als im Jahresplan -- Zellen mehrerer Mitarbeiter gleichzeitig markiert sein können).
+      Zweiter, tiefer liegender Fund dabei: `ShiftCell.jsx` gab für einen Tag mit bestehender Absenz
+      unabhängig vom Modus immer nur eine statische, nicht klickbare `<span>` zurück (der
+      `if (absence)`-Zweig stand vor der `selectionMode`-Prüfung) -- ein Absenz-Tag liess sich
+      dadurch **nie** markieren, in keinem Kontext. Für reines Schicht-Stempeln war das durchaus so
+      gedacht (die Regel-Engine hätte die Zuweisung ohnehin abgelehnt), aber es
+      blockierte damit auch "Absenz entfernen" komplett: ein bereits eingetragener Ferientag liess
+      sich über die Stempelleiste nie wieder auswählen, um ihn zu löschen. Fix: `selectionMode`
+      wird jetzt zuerst geprüft; ein Absenz-Tag bleibt markierbar und zeigt dabei weiterhin seinen
+      FER/KRA/SON-Chip statt eines Schichttyps. Verifiziert per Playwright gegen die echten
+      Testheim-Daten: Ferien für einen Mitarbeiter über zwei nicht zusammenhängende Tage per
+      Stempelleiste eingetragen (zwei separate `Absence`-Datensätze statt einem), danach beide
+      wieder über "Absenz entfernen" markiert und gelöscht.
     - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
       entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
       wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim
@@ -791,6 +809,15 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       vorlag, sobald ein Tenant über 50 Datensätze in einer Liste ansammelt. Verifiziert per
       Playwright: 51 Zuweisungen (50 Mo-Fr-Tage Jan-Mitte März + 1 im August) -- vor dem Fix fehlte
       der August-Eintrag im Jahresplan, danach sichtbar.
+    - ✅ **UX-Feedback (2026-08)**: die kombinierte Stempel-Leiste (Schichttyp- + Absenz-Chips) sass
+      in derselben umbrechenden Flex-Zeile wie "Mitarbeiter"-Dropdown und Jahr-Navigation und brach
+      dadurch nur bei Platzmangel irgendwo mitten im Fluss um, statt an einer festen, vorhersagbaren
+      Stelle. `styles.css`: `.year-plan-toolbar > .stamp-palette` /
+      `.year-plan-toolbar > .multi-select-hint` bekommen `flex-basis: 100%`, wodurch die Leiste
+      jetzt immer eine eigene Zeile unterhalb von Mitarbeiter-Auswahl + Jahr-Navigation bekommt,
+      unabhängig von der Fensterbreite. Bewusst auf `.year-plan-toolbar` gescoped statt global auf
+      `.stamp-palette`/`.multi-select-hint`, damit die gleichnamigen, aber separaten Klassen im
+      Planblatt (`.multi-select-toolbar`, Punkt 11) unverändert bleiben.
 13. ✅ **Wunschfrei + Wunschdienst -- Mitarbeitende tragen eigene Wünsche selbst ein**: löst die in
     Punkt 12 offen gelassene Frage nach "Wunschfrei" auf. Bewusst **kein** neuer `Absence.Type`,
     sondern ein eigenständiges, leichtgewichtiges Modell `ShiftPreference` (`employee`, `date`,

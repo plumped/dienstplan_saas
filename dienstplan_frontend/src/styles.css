@@ -1694,6 +1694,18 @@ thead .col-employee {
   margin-bottom: 14px;
 }
 
+/* README (2026-08, UX-Feedback): die Stempel-Badges sollen immer eine eigene
+   Zeile unterhalb von Mitarbeiter-Auswahl + Jahr-Navigation bekommen, statt
+   nur bei Platzmangel irgendwo mitten in der Zeile umzubrechen --
+   flex-basis: 100% erzwingt den Umbruch unabhängig von der verfügbaren
+   Breite. Bewusst auf .year-plan-toolbar gescoped (nicht global auf
+   .stamp-palette/.multi-select-hint), damit PlanGrid.jsx's eigene, separate
+   .multi-select-toolbar davon unberührt bleibt. */
+.year-plan-toolbar > .stamp-palette,
+.year-plan-toolbar > .multi-select-hint {
+  flex-basis: 100%;
+}
+
 .year-plan-employee-select {
   display: flex;
   align-items: center;

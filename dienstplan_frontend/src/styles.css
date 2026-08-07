@@ -632,6 +632,25 @@ main {
   padding: 0;
 }
 
+/* Bugfix (Playwright-Verifikation, per Nutzer-Foto belegt): .day-cell (s. u.)
+   soll IMMER die tatsächliche (durch evtl. höhere Nachbarzellen in
+   derselben <tr> gestreckte) Zeilenhöhe ausfüllen. Ein blosses height:100%
+   auf .day-cell allein reicht dafür NICHT -- per Chromium-Verhalten
+   getestet (siehe scratchpad/repro*.html dieser Session): eine Prozent-
+   Höhe auf einem normal-flow-Kind einer <td> löst sich nur auf, wenn die
+   <td> selbst ein EXPLIZITES (wenn auch beliebig kleines) height hat --
+   sonst bleibt es bei 'auto' (Kind schrumpft auf eigene Inhaltsgrösse),
+   selbst wenn die <td> durch eine Nachbarzelle sichtbar höher gerendert
+   wird. height: 1px ist der dafür etablierte Standard-Trick: es macht die
+   Höhe "explizit" (schaltet die Prozent-Auflösung beim Kind frei), ohne
+   die eigentliche, inhaltsgetriebene Zeilenhöhen-Berechnung der Tabelle zu
+   verändern -- eine <td>, deren EIGENER Inhalt mehr als die Zeile braucht
+   (z. B. eine sichtbare .special-strip an genau diesem Tag), wächst
+   weiterhin ganz normal darüber hinaus. */
+.plan-grid td {
+  height: 1px;
+}
+
 .plan-grid thead th {
   position: sticky;
   top: 0;
@@ -1867,15 +1886,31 @@ thead .col-employee {
    einheitlich), und .cell-wrap--span/.shift-chip-btn/.shift-chip füllen
    sie per position:absolute + inset:0 randlos aus -- ein einzelner Dienst
    nimmt jetzt wirklich das GANZE Viereck ein, nicht nur einen kleinen
-   Pill mittendrin. */
+   Pill mittendrin.
+
+   Nutzer-Feedback (2026-08, Nachbesserung #2, per Foto belegt): der Chip
+   füllte zwar SEINE eigene 34px-Box randlos aus, aber .day-cell selbst war
+   nur so hoch wie sein Inhalt (shrink-to-fit) -- sobald eine ANDERE Zelle
+   in derselben Tabellenzeile höher war (z. B. eine sichtbare
+   .special-strip an einem Nachbartag), wurde die ganze <tr> höher, und der
+   Browser zentriert Zellinhalt per Default (vertical-align: middle) in der
+   dadurch höheren <td> -- die feste 34px-Box blieb klein und schwamm mit
+   sichtbarem Weissraum oben/unten in der Zelle statt sie auszufüllen.
+   .day-cell füllt jetzt (dank ".plan-grid td { height: 1px }" oben) per
+   height:100% IMMER die tatsächliche Zeilenhöhe aus statt nur seinen
+   eigenen Inhalt. .day-cell-slots ist ein Flex-Kind mit Mindesthöhe
+   (flex: 1 0 34px) -- so wächst der Slot-Bereich mit, wenn die Zeile höher
+   ist, während .special-strip (zweites Flex-Kind, kein flex-grow) ihre
+   natürliche Höhe behält. */
 .day-cell {
   display: flex;
   flex-direction: column;
+  height: 100%;
 }
 
 .day-cell-slots {
   position: relative;
-  height: 34px;
+  flex: 1 0 34px;
   border-radius: 5px;
   overflow: hidden;
 }

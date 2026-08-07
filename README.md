@@ -896,6 +896,35 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       geladene Katalog; (2) der `.btn-offer-trade`-Button (Diensttausch anbieten, oben rechts in der
       Zelle) war mit 16x16px in der jetzt nur noch ~21px schmalen Zellhälfte gross genug, um Klicks
       der Icon-Toolbar abzufangen, bevor sie den Chip darunter erreichten -- auf 10x10px verkleinert.
+    - ✅ **Planblatt-Nachbesserung: diagonaler Split + randloser Einzeldienst (2026-08)**:
+      mehrfaches, konkretes Nutzer-Feedback anhand von Screenshots/Fotos zum Polypoint-Redesign
+      oben. Der ursprüngliche Links/Rechts-Spaltensplit liess bei zwei Diensten ohne gesetztes
+      Icon die Zwei-Buchstaben-Glyphen sichtbar ineinanderlaufen -- durch einen diagonalen Split
+      ersetzt (`.day-cell-slots--diagonal`, `clip-path: polygon(...)`, wie im Jahresplan bei
+      `.year-day-fill--shift.is-split`): jedes Dreieck trägt die volle Dienstfarbe, der Glyph sitzt
+      gross in der freien Ecke -- kein blasser Pill-Chip mehr. Ein einzelner Dienst ("Ganz") zeigt
+      keinen Diagonal-Split mehr (nicht nötig bei nur einem Dienst) und spannt stattdessen
+      randlos die volle Zelle. Zwei Bugfixes dabei, beide durch Playwright-`getComputedStyle`-
+      Inspektion statt nur visueller Screenshots gefunden: (1) mehrere Stellen, an denen die
+      CSS-Basisregel `.cell-wrap { position: relative }` ungewollt auch ShiftCell.jsx's eigenes
+      inneres `<span className="cell-wrap">` traf und so den falschen Containing Block für
+      `position: absolute`-Kinder herstellte -- gezielt auf `position: static` zurückgesetzt, nur
+      für die Modifier-Klassen gescoped; (2) der Einzeldienst füllte zwar seine eigene 34px-Box
+      randlos aus, aber `.day-cell` selbst war nur so hoch wie sein eigener Inhalt
+      (shrink-to-fit) -- sobald eine ANDERE Tageszelle in derselben Tabellenzeile höher war (z. B.
+      eine sichtbare `.special-strip` an einem Nachbartag), liess der Browser den Chip mit
+      sichtbarem Weissraum oben/unten in der dadurch höheren `<td>` zentriert (`vertical-align:
+      middle`, Standardverhalten von `<td>`) statt sie auszufüllen -- vom Nutzer per Foto belegt.
+      Gefixt mit dem etablierten `height: 1px` + `height: 100%`-Trick (`<td>` bekommt ein
+      explizites, beliebig kleines `height`, das Prozent-Höhen im Kind freischaltet, ohne die
+      inhaltsgetriebene Zeilenhöhen-Berechnung der Tabelle selbst zu verändern) -- `.day-cell`
+      füllt jetzt immer die tatsächliche, ggf. gestreckte Zeilenhöhe, `.day-cell-slots` wächst als
+      Flex-Kind mit Mindesthöhe (`flex: 1 0 34px`) mit, während `.special-strip` ihre natürliche
+      Höhe behält. Mit Playwright verifiziert (Messung der Pixel-Lücke zwischen Chip- und
+      Zellrand, nicht nur Screenshot-Vergleich): ein Einzeldienst-Tag neben einem Tag mit
+      sichtbarer Spezialität in derselben Zeile füllt die dadurch gestreckte Zeile jetzt
+      lückenlos aus; diagonaler Split und Klick-Routing (inkl. Klick exakt in die Dreiecksecke)
+      weiterhin unverändert korrekt.
     - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
       entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
       wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim

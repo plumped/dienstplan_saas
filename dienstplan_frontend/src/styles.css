@@ -1937,9 +1937,25 @@ thead .col-employee {
   height: auto;
 }
 
+/* Bugfix (Playwright-Verifikation, per Nutzer-Screenshot belegt): width:100%/
+   height:100% liessen sichtbare Ränder links/rechts/oben/unten -- .shift-chip
+   ist hier ein Flex-Item in .shift-chip-btn (display:flex), und dessen
+   Flex-Basis (aus 'width' via 'auto' abgeleitet) löst eine Prozent-Breite
+   NICHT zuverlässig auf, wenn der Flex-Container selbst kein LITERAL
+   gesetztes width hat, sondern nur über position:absolute;inset:0 (s. o.)
+   auf seine Grösse "gestreckt" wird -- Chromium behandelt das für die
+   Flex-Basis-Auflösung anders als für gewöhnliche (Block-)Prozent-Breiten,
+   der Chip fiel dadurch auf seine Inhaltsgrösse zurück. position:absolute;
+   inset:0 (statt Prozent-Grössen) umgeht die Flex-Basis-Auflösung komplett
+   -- .shift-chip-btn ist bereits selbst position:absolute und damit ein
+   gültiger Containing Block. display:inline-flex (Basisregel) bleibt
+   erhalten und zentriert den Glyph-Text weiterhin innerhalb der jetzt
+   randlos gefüllten Box. */
 .day-cell-slots .cell-wrap--span .shift-chip {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
   border-radius: 0;
 }
 

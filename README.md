@@ -925,6 +925,26 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       sichtbarer Spezialität in derselben Zeile füllt die dadurch gestreckte Zeile jetzt
       lückenlos aus; diagonaler Split und Klick-Routing (inkl. Klick exakt in die Dreiecksecke)
       weiterhin unverändert korrekt.
+    - ✅ **Planblatt-Nachbesserung, Teil 2: randlose Breite (2026-08)**: erneutes Nutzer-Feedback
+      per Foto -- auch nach der Höhen-Korrektur oben blieben bei sowohl leeren ("+") als auch
+      belegten Einzeldienst-Zellen sichtbare Ränder links/rechts (und minimal oben/unten). Ursache
+      war eine ZWEITE, unabhängige Lücke im selben Bereich: `.day-cell-slots .cell-wrap--span
+      .shift-chip` setzte `width: 100%; height: 100%` -- aber `.shift-chip` ist ein Flex-Item
+      innerhalb von `.shift-chip-btn` (`display: flex`), und dessen Flex-Basis (aus der
+      `width`-Eigenschaft über den Default `flex-basis: auto` abgeleitet) löste die
+      Prozent-Breite NICHT zuverlässig auf, weil `.shift-chip-btn` selbst kein literales `width`
+      trägt, sondern nur über `position: absolute; inset: 0` auf seine Grösse "gestreckt" wird --
+      Chromium behandelt das für die Flex-Basis-Auflösung anders als eine gewöhnliche
+      Block-Prozent-Breite, der Chip fiel dadurch auf seine Inhaltsgrösse (Glyph + Padding)
+      zurück. Per Playwright-`getComputedStyle`/`matches()`-Inspektion aller kaskadierenden Regeln
+      bestätigt (nicht nur vermutet): drei Regeln trafen auf denselben `.shift-chip`, die
+      Spezifitäts-Reihenfolge stimmte, das Symptom lag tatsächlich an der Flex-Basis-Auflösung,
+      nicht an der Kaskade. Gefixt wie an allen anderen Stellen dieses Bereichs: `.shift-chip`
+      selbst auf `position: absolute; inset: 0` umgestellt statt Prozent-Grössen -- umgeht die
+      Flex-Basis-Auflösung komplett, `.shift-chip-btn` ist als `position: absolute`-Element
+      bereits ein gültiger Containing Block. Mit Playwright verifiziert (Pixel-Vergleich der
+      Bounding-Box von `.shift-chip` gegen `.shift-chip-btn`, vorher/nachher, für leere UND
+      belegte Zellen): beide Boxen sind jetzt deckungsgleich.
     - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
       entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
       wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim

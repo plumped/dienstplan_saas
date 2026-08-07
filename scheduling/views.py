@@ -279,6 +279,7 @@ class EmployeeViewSet(TenantScopedViewSet):
         data = {
             "as_of": as_of_date,
             "saldo_hours": time_account["saldo_hours"],
+            "plan_saldo_hours": time_account["plan_saldo_hours"],
             "annual_target_hours": time_account["annual_target_hours"],
             "annual_remaining_hours": time_account["annual_remaining_hours"],
             "is_provisional": time_account["is_provisional"],

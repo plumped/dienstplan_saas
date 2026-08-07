@@ -1,11 +1,19 @@
 import { useEffect, useState } from "react";
 import { api, onBalanceChanged } from "../api.js";
 
-// Arbeitszeitmodell (README Block 2.7 Punkt 7): Saldo-Anzeige mit zwei
-// Kennzahlen -- laufender Saldo (± X h, Farbcodierung blau/vor Plan vs.
-// rot/hinter Plan) und Jahresrestsoll (als Fortschrittsbalken zum
-// Jahressoll, nicht als rohe grosse Zahl -- die wäre v. a. am Jahresanfang
-// erschreckend). Zwei Varianten je nach Einsatzort:
+// Arbeitszeitmodell (README Block 2.7 Punkt 7, redesignt 2026-08 nach
+// Nutzer-Feedback): primäre Anzeige ist jetzt plan_saldo_hours statt
+// saldo_hours -- bei festem Pensum entscheidet der Planer, WANN die
+// Stunden anfallen, nicht die Mitarbeitenden. Die strenge "nur bereits
+// erfolgte Schichten"-Zahl (saldo_hours) hätte als Hauptanzeige einen
+// grossen, irreführenden Minus-Wert gezeigt, solange noch nicht das ganze
+// Jahr "eingetreten" ist, obwohl der Jahresplan das Vertragssoll längst
+// erfüllt. plan_saldo_hours bezieht bereits eingeplante künftige
+// Zuweisungen mit ein und liegt bei einem sauber durchgeplanten Jahr nahe
+// 0, unabhängig vom aktuellen Datum -- das ist die aussagekräftige Zahl,
+// nicht nur "wie viel wurde bisher gearbeitet". Die strenge Zahl bleibt im
+// Tooltip als Detail erhalten (u. a. für Lohn-/Überzeit-Zwecke relevant).
+// Zwei Varianten je nach Einsatzort:
 // - "pill" (Default): abgerundetes Badge für Topbar und Mitarbeitenden-
 //   Verwaltung (Block 2.10) inkl. Fortschrittsbalken, dort ist Platz dafür.
 // - "cell": schlichter Zelleninhalt für die Saldo-Spalte im Planblatt-Grid
@@ -43,19 +51,26 @@ export default function BalanceBadge({ employeeId, variant = "pill" }) {
 
   if (!balance) return null;
 
-  const hours = balance.saldo_hours;
+  const hours = balance.plan_saldo_hours;
   const sign = hours > 0 ? "+" : "";
   const saldoClass = hours < 0 ? "is-negative" : hours > 0 ? "is-positive" : "";
   const provisional = balance.is_provisional;
   const target = balance.annual_target_hours;
+  // annual_remaining_hours ist seit dem Redesign "noch nicht verplant"
+  // (weder geleistet noch bereits eingeteilt) -- worked ist entsprechend
+  // "bereits verplant" (Vergangenheit + Zukunft), nicht mehr nur "bereits
+  // gearbeitet". Der Fortschrittsbalken zeigt dadurch jetzt sinnvollerweise
+  // den Planungsfortschritt fürs Jahr, nicht nur den Arbeitsfortschritt.
   const worked = target - balance.annual_remaining_hours;
   const progressPct = target > 0 ? Math.max(0, Math.min(100, Math.round((worked / target) * 100))) : 0;
+  const strictSign = balance.saldo_hours > 0 ? "+" : "";
   const title =
-    `Laufender Saldo (Ist minus Soll seit Jahresbeginn bzw. Eintritt, Stand ${balance.as_of}): ` +
-    `${sign}${hours} h. Jahressoll ${target} h, davon ${progressPct}% erreicht -- ` +
-    `noch ${balance.annual_remaining_hours} h bis Jahresende. Feriensaldo ${balance.vacation_year}. ` +
+    `Saldo gemäss Jahresplan (bereits geleistete + bereits eingeplante Stunden minus Jahressoll, ` +
+    `Stand ${balance.as_of}): ${sign}${hours} h. Jahressoll ${target} h, davon ${progressPct}% bereits ` +
+    `verplant -- noch ${balance.annual_remaining_hours} h zu verplanen. Feriensaldo ${balance.vacation_year}. ` +
+    `Nur bereits erfolgte Schichten (Stand heute, ohne Planung): ${strictSign}${balance.saldo_hours} h. ` +
     (provisional
-      ? "Enthält Schichten ohne geprüfte Zeiterfassung -- die Zahl ist bereits aktuell, kann sich aber noch leicht ändern."
+      ? "Enthält Schichten ohne geprüfte Zeiterfassung bzw. noch nicht erfolgte, eingeplante Schichten -- die Zahl ist bereits aktuell, kann sich aber noch leicht ändern."
       : "Beruht vollständig auf geprüften Zeiterfassungen.");
 
   const saldoValue = (

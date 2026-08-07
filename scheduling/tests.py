@@ -1590,16 +1590,63 @@ class EmployeeBalanceTests(APITestCase):
         self.assertEqual(summary["annual_remaining_hours"], 1984.4)  # 2024.4 - 40
 
     def test_saldo_strictly_ignores_assignments_after_as_of_date(self):
-        # Kernentscheidung des neuen Modells (Rücksprache mit Nutzer): Ist_kumuliert(t)
-        # und Soll_kumuliert(t) zählen NUR bis (inkl.) as_of_date -- eine künftig
-        # eingeplante Schicht wirkt sich erst aus, sobald ihr Datum erreicht ist
-        # (klassisches Gleitzeitkonto, im Gegensatz zum alten Modell).
+        # saldo_hours (Stand heute, streng) zaehlt weiterhin NUR bis (inkl.)
+        # as_of_date -- eine kuenftig eingeplante Schicht wirkt sich hier
+        # erst aus, sobald ihr Datum erreicht ist (klassisches Gleitzeitkonto).
+        # plan_saldo_hours/annual_remaining_hours SOLLEN sich dagegen bereits
+        # aendern, siehe test_plan_saldo_includes_already_planned_future_assignments
+        # unten (README, Redesign 2026-08 nach Nutzer-Feedback).
         self._assign(self.employee, date(2026, 1, 2))  # Fr, vor as_of
         without_future = self.employee.time_account_summary(date(2026, 1, 2))
-        self._assign(self.employee, date(2026, 6, 15))  # weit in der Zukunft
+        self._assign(self.employee, date(2026, 6, 15))  # weit in der Zukunft, selbes Jahr
         with_future = self.employee.time_account_summary(date(2026, 1, 2))
         self.assertEqual(without_future["saldo_hours"], with_future["saldo_hours"])
-        self.assertEqual(without_future["annual_remaining_hours"], with_future["annual_remaining_hours"])
+
+    def test_plan_saldo_includes_already_planned_future_assignments(self):
+        # README (2026-08, Redesign): bei festem Pensum entscheidet der
+        # Planer, WANN die Stunden anfallen -- plan_saldo_hours/
+        # annual_remaining_hours sollen deshalb bereits eingeplante
+        # kuenftige Zuweisungen desselben Jahres beruecksichtigen, damit ein
+        # vollstaendig durchgeplantes Jahr nahe 0 zeigt statt eines
+        # irrefuehrenden grossen Minus-Werts.
+        self._assign(self.employee, date(2026, 1, 2))  # Fr, vergangen, 8h
+        without_future = self.employee.time_account_summary(date(2026, 1, 2))
+        self._assign(self.employee, date(2026, 6, 15))  # Mo, kuenftig, selbes Jahr, 8h
+        with_future = self.employee.time_account_summary(date(2026, 1, 2))
+        self.assertEqual(with_future["plan_saldo_hours"], round(without_future["plan_saldo_hours"] + 8, 2))
+        self.assertEqual(
+            with_future["annual_remaining_hours"], round(without_future["annual_remaining_hours"] - 8, 2)
+        )
+        self.assertTrue(with_future["is_provisional"])  # kuenftige Schicht kann nie CONFIRMED sein
+
+    def test_plan_saldo_ignores_assignments_beyond_current_year(self):
+        # Eine Zuweisung in einem anderen Kalenderjahr gehoert nicht zum
+        # Jahresplan des betrachteten Jahres.
+        before = self.employee.time_account_summary(date(2026, 1, 2))
+        self._assign(self.employee, date(2030, 1, 7))
+        after = self.employee.time_account_summary(date(2026, 1, 2))
+        self.assertEqual(before["plan_saldo_hours"], after["plan_saldo_hours"])
+        self.assertEqual(before["annual_remaining_hours"], after["annual_remaining_hours"])
+
+    def test_plan_saldo_excludes_future_assignment_on_approved_absence_day(self):
+        # Spiegelt test_saldo_ignores_ist_from_assignment_conflicting_with_approved_absence
+        # fuer den kuenftigen Zweig: eine Zuweisung an einem genehmigten
+        # Absenztag zaehlt auch in der Zukunft nicht als geplante Ist-Zeit.
+        baseline = self.employee.time_account_summary(date(2026, 1, 2))
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 15),
+            end_date=date(2026, 6, 15),
+            type=Absence.Type.VACATION,
+            status=Absence.Status.APPROVED,
+        )
+        ShiftAssignment.objects.create(  # .create() bewusst am Absence.clean()-Schutz vorbei
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 6, 15), template=self.template,
+        )
+        summary = self.employee.time_account_summary(date(2026, 1, 2))
+        self.assertEqual(summary["plan_saldo_hours"], baseline["plan_saldo_hours"])
 
     def test_saldo_approved_absence_is_soll_neutral(self):
         # Krankheit Di+Mi (6./7.1.) -- diese 2 Tage duerfen NICHT als
@@ -1796,6 +1843,7 @@ class EmployeeBalanceTests(APITestCase):
         response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=2026-01-09")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["saldo_hours"], -18.8)
+        self.assertEqual(response.data["plan_saldo_hours"], -1984.4)
         self.assertEqual(response.data["annual_target_hours"], 2024.4)
         self.assertEqual(response.data["annual_remaining_hours"], 1984.4)
         self.assertTrue(response.data["is_provisional"])  # keine Zeiterfassung erfasst
@@ -1819,6 +1867,7 @@ class EmployeeBalanceTests(APITestCase):
         self._assign(self.employee, date(2030, 1, 7))  # weit in der Zukunft
         after = self.client.get(f"/api/employees/{self.employee.id}/balance/").data
         self.assertEqual(before["saldo_hours"], after["saldo_hours"])
+        self.assertEqual(before["plan_saldo_hours"], after["plan_saldo_hours"])
         self.assertEqual(before["annual_remaining_hours"], after["annual_remaining_hours"])
 
 

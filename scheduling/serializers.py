@@ -214,6 +214,10 @@ class EmployeeBalanceSerializer(serializers.Serializer):
 
     as_of = serializers.DateField()
     saldo_hours = serializers.FloatField()
+    # README (2026-08, Redesign): primäre Anzeige -- schliesst bereits
+    # eingeplante künftige Zuweisungen bis Jahresende mit ein, siehe
+    # Employee.time_account_summary()-Docstring.
+    plan_saldo_hours = serializers.FloatField()
     annual_target_hours = serializers.FloatField()
     annual_remaining_hours = serializers.FloatField()
     # True, solange der Saldo mindestens eine Schicht ohne geprüfte

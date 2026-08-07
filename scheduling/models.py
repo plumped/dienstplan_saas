@@ -441,8 +441,8 @@ class Employee(TenantScopedModel):
 
     def time_account_summary(self, as_of_date=None):
         """
-        Arbeitszeitmodell (README Block 2.7 Punkt 7): zwei getrennte
-        Kennzahlen statt einer.
+        Arbeitszeitmodell (README Block 2.7 Punkt 7, redesignt 2026-08 nach
+        Nutzer-Feedback -- siehe unten): drei Kennzahlen statt einer.
 
         - saldo_hours: laufender Saldo = Ist_kumuliert(t) - Soll_kumuliert(t)
           im LAUFENDEN Kalenderjahr (ab max(1. Januar, employment_start_date))
@@ -453,28 +453,52 @@ class Employee(TenantScopedModel):
           Absenzen (Ferien, Krankheit, Sonstiges) -- diese Tage sind
           Soll-neutral, keine "verpasste Sollzeit". Sowohl Ist_kumuliert(t)
           als auch Soll_kumuliert(t) zählen bewusst nur bis (inkl.)
-          as_of_date -- eine künftig eingeplante Schicht wirkt sich erst aus,
-          sobald ihr Datum erreicht ist (klassisches Gleitzeitkonto-
-          Verhalten).
+          as_of_date -- eine künftig eingeplante Schicht wirkt sich hier
+          erst aus, sobald ihr Datum erreicht ist (klassisches
+          Gleitzeitkonto-Verhalten). Weiterhin korrekt für Lohn-/
+          Überzeit-relevante Auswertungen (nur tatsächlich Geleistetes darf
+          dort zählen), aber als alleinige Haupt-Anzeige irreführend: bei
+          festem Pensum entscheidet der Planer, WANN die Stunden anfallen,
+          nicht die Mitarbeitenden -- ein grosser Minus-Wert bedeutet hier
+          oft nur "die Tage sind noch nicht eingetreten", nicht "zu wenig
+          gearbeitet/geplant". Deshalb nur noch Detail-Kennzahl, siehe
+          plan_saldo_hours für die primäre Anzeige.
+        - plan_saldo_hours (NEU, primäre Anzeige): wie saldo_hours, aber
+          Ist_kumuliert schliesst zusätzlich bereits eingeplante KÜNFTIGE
+          Zuweisungen bis Jahresende mit ein (mit den geplanten Stunden aus
+          dem Template, da für sie naturgemäss noch keine Zeiterfassung
+          existieren kann) und wird gegen das volle Jahressoll verglichen,
+          nicht nur das anteilige Soll bis heute. Bei einem für das ganze
+          Jahr sauber durchgeplanten Pensum liegt dieser Wert nahe 0 --
+          unabhängig davon, ob gerade Januar oder Dezember ist. Das
+          beantwortet die eigentlich relevante Frage "wird mein Vertrags-
+          soll durch den aktuellen Plan erfüllt", nicht nur "wie viel wurde
+          bereits gearbeitet".
         - annual_target_hours / annual_remaining_hours: Jahressoll (fix fürs
-          ganze Jahr, siehe annual_target_hours()) und was davon laut
-          bisherigem Ist_kumuliert(t) noch offen ist -- die Planungsgrösse
-          für den Rest des Jahres, unabhängig vom laufenden Saldo.
-        - is_provisional: True, sobald mindestens eine der bis as_of_date
-          eingerechneten Schichten nicht auf einer geprüften (CONFIRMED)
-          Zeiterfassung beruht.
+          ganze Jahr, siehe annual_target_hours()) und was davon noch NICHT
+          verplant ist (weder bereits geleistet noch bereits eingeplant) --
+          die Kennzahl für "wie viele Stunden muss der Planer mich für den
+          Rest des Jahres noch einteilen".
+        - is_provisional: True, sobald mindestens eine der eingerechneten
+          Schichten (bis as_of_date UND jede künftig eingeplante, die per
+          Definition noch keine geprüfte Zeiterfassung haben kann) nicht auf
+          einer geprüften (CONFIRMED) Zeiterfassung beruht -- gilt für beide
+          Saldo-Werte gemeinsam.
         """
         as_of_date = as_of_date or timezone.localdate()
         year = as_of_date.year
         year_start = date(year, 1, 1)
+        year_end = date(year, 12, 31)
         period_start = max(year_start, self.employment_start_date)
         annual_target = self.annual_target_hours(year)
 
         if period_start > as_of_date:
             # Eintritt liegt erst später in diesem Jahr -- weder Ist noch
             # Soll sind bislang angefallen.
+            carryover = round(self.overtime_balance_carryover_hours, 2)
             return {
-                "saldo_hours": round(self.overtime_balance_carryover_hours, 2),
+                "saldo_hours": carryover,
+                "plan_saldo_hours": carryover,
                 "annual_target_hours": annual_target,
                 "annual_remaining_hours": annual_target,
                 "is_provisional": False,
@@ -509,10 +533,30 @@ class Employee(TenantScopedModel):
                 is_provisional = True
 
         saldo = self.overtime_balance_carryover_hours + ist_kumuliert - soll_kumuliert
-        remaining = annual_target - ist_kumuliert
+
+        # Bereits eingeplante künftige Zuweisungen bis Jahresende (siehe
+        # Docstring plan_saldo_hours oben) -- niemals eine geprüfte
+        # Zeiterfassung möglich (liegt in der Zukunft), daher direkt die
+        # geplanten Template-Stunden statt eines TimeRecord-Lookups.
+        ist_geplant_zukunft = 0.0
+        if as_of_date < year_end:
+            future_absence_dates = self._approved_absence_dates(as_of_date + timedelta(days=1), year_end)
+            future_assignments = (
+                ShiftAssignment.all_objects.filter(employee=self, date__gt=as_of_date, date__lte=year_end)
+                .exclude(date__in=future_absence_dates)
+                .select_related("template")
+            )
+            for assignment in future_assignments:
+                ist_geplant_zukunft += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                is_provisional = True
+
+        ist_kumuliert_geplant = ist_kumuliert + ist_geplant_zukunft
+        plan_saldo = self.overtime_balance_carryover_hours + ist_kumuliert_geplant - annual_target
+        remaining = annual_target - ist_kumuliert_geplant
 
         return {
             "saldo_hours": round(saldo, 2),
+            "plan_saldo_hours": round(plan_saldo, 2),
             "annual_target_hours": annual_target,
             "annual_remaining_hours": round(remaining, 2),
             "is_provisional": is_provisional,

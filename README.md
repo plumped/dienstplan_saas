@@ -540,8 +540,9 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      Kalenderjahr liegen (wichtig für unterjährig Eingestellte). Migration setzt bei Bestandsdaten
      den 1. Januar des Migrations-Jahres als Default, im Settings-Formular editierbar.
    - **API**: `GET /api/employees/{id}/balance/` (`?as_of=`/`?year=`), Lesen für alle Rollen offen
-     wie beim übrigen Planblatt. Response-Felder: `saldo_hours`, `annual_target_hours`,
-     `annual_remaining_hours`, `is_provisional`, `vacation_*`.
+     wie beim übrigen Planblatt. Response-Felder: `saldo_hours`, `plan_saldo_hours` (primäre Anzeige,
+     siehe Redesign unten), `annual_target_hours`, `annual_remaining_hours`, `is_provisional`,
+     `vacation_*`.
    - **Frontend** (`BalanceBadge.jsx`): Topbar (eigener Account) und Mitarbeitenden-Verwaltung
      (`variant="pill"`) zeigen den Saldo farbcodiert (`--primary`/"blau" bei positiv = vor Plan,
      `--warn`/"rot" bei negativ = hinter Plan, wie im Block-7-Vorschlag gefordert) plus einen
@@ -557,9 +558,10 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      Personalkategorie-/Vertragstyp-Modell (die bestehenden Employee-Overrides für Wochenstunden/
      Ferienanspruch decken den praktischen Bedarf für den MVP bereits ab, ohne ein neues Modell
      einzuführen); "offizielle Überzeit" mit Schwellenwert + Genehmigungsworkflow (das wäre eine
-     eigene Workflow-Funktion, keine reine Rechenkorrektur); Prognose ("Jahresziel voraussichtlich
-     am 3. Dezember erreicht") -- die Datenbasis (`annual_remaining_hours` + geplante künftige
-     Zuweisungen) ist vorhanden, die Extrapolation selbst ist ein separates UI-Feature.
+     eigene Workflow-Funktion, keine reine Rechenkorrektur); eine echte Datums-Prognose ("Jahresziel
+     voraussichtlich am 3. Dezember erreicht") -- `plan_saldo_hours` (siehe Redesign unten) sagt zwar
+     bereits, OB der aktuelle Plan das Jahresziel erreicht, aber nicht WANN; die Extrapolation selbst
+     bliebe ein separates UI-Feature.
    - **Von Cliff-Edges zum Gleitzeitkonto** (Entwicklungsgeschichte, zum Verständnis der jetzigen
      Design-Entscheidungen): das ursprüngliche Modell zählte nur Kalenderwochen mit mindestens einer
      Zuweisung, was zwei Bugs erzeugte -- künftig eingeplante Schichten fehlten komplett im Saldo
@@ -597,6 +599,41 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      entsprechenden Spalten/Zellen mit einer eigenen `is-holiday`-Klasse (Tooltip zeigt den
      Feiertagsnamen) -- im Planblatt zusätzlich zur bestehenden `is-weekend`-Markierung, im Jahresplan
      als Rahmen um die Tageszelle.
+   - **Redesign (2026-08): `plan_saldo_hours` ersetzt `saldo_hours` als primäre Anzeige, nach
+     Nutzer-Feedback.** Konkreter Auslöser: eine für ein künftiges Datum eingeplante Schicht änderte
+     den (damals einzig angezeigten) `saldo_hours` nicht -- das ist zwar korrektes, gewolltes
+     Gleitzeitkonto-Verhalten (siehe "Von Cliff-Edges zum Gleitzeitkonto" oben), aber als *einzige*
+     Anzeige irreführend: bei festem Pensum entscheidet der Planer, WANN die Stunden anfallen, nicht
+     die Mitarbeitenden. Ein grosser Minus-Wert (z. B. -1200h) bedeutet dort oft nur "die Tage sind
+     noch nicht eingetreten", nicht "zu wenig gearbeitet/geplant" -- für Mitarbeitende mit festem
+     Vertrag ist das unnötig beängstigend und beantwortet nicht die eigentlich relevante Frage: "wird
+     mein Vertragssoll durch den aktuellen Plan erfüllt".
+     - **Neue Kennzahl `plan_saldo_hours`**: wie `saldo_hours`, aber `Ist_kumuliert` schliesst
+       zusätzlich bereits eingeplante **künftige** Zuweisungen desselben Kalenderjahres mit ein (mit
+       den geplanten Template-Stunden, da für sie naturgemäss noch keine Zeiterfassung existieren
+       kann), verglichen gegen das **volle** Jahressoll statt nur das anteilige Soll bis heute. Bei
+       einem für das ganze Jahr sauber durchgeplanten Pensum liegt der Wert nahe 0 -- unabhängig vom
+       aktuellen Datum. `annual_remaining_hours` bekommt dieselbe Erweiterung und bedeutet jetzt "noch
+       nicht verplant" (weder geleistet noch bereits eingeteilt) statt nur "noch nicht gearbeitet".
+     - **`saldo_hours` (unverändert in der Berechnung) bleibt als Detail-Kennzahl erhalten**, nicht
+       mehr als Hauptanzeige: für Lohn-/Überzeit-relevante Auswertungen darf weiterhin nur
+       tatsächlich Geleistetes zählen, dafür ist die strenge Zahl weiterhin korrekt und nötig.
+     - **`is_provisional`** gilt jetzt für beide Werte gemeinsam und wird durch jede eingerechnete
+       künftige Zuweisung ausgelöst (die kann per Definition nie eine geprüfte Zeiterfassung haben) --
+       bei einem durchgeplanten Jahr entsprechend fast immer `True`. Das ist beabsichtigt: der
+       Planungs-Saldo ist inhärent eine Prognose, kein festgeschriebener Fakt, und soll auch so
+       gekennzeichnet sein.
+     - **Frontend** (`BalanceBadge.jsx`): `plan_saldo_hours` ist jetzt die grosse, farbcodierte
+       Headline-Zahl (Topbar-Pill + Saldo-Spalte im Planblatt), der Fortschrittsbalken zeigt dadurch
+       jetzt sinnvollerweise den Planungsfortschritt fürs Jahr statt nur den Arbeitsfortschritt. Die
+       strenge `saldo_hours`-Zahl ("Stand heute, ohne Planung") wandert in den Tooltip.
+     - Getestet (`scheduling/tests.py`, `EmployeeBalanceTests`): `saldo_hours` bleibt weiterhin strikt
+       unverändert durch künftige Zuweisungen; `plan_saldo_hours`/`annual_remaining_hours` reagieren
+       korrekt auf eine neu eingeplante künftige Zuweisung desselben Jahres; Zuweisungen ausserhalb
+       des betrachteten Kalenderjahres bleiben unberücksichtigt; eine künftige Zuweisung an einem
+       genehmigten Absenztag zählt spiegelbildlich zur bestehenden Vergangenheits-Logik nicht als
+       geplante Ist-Zeit. Mit Playwright gegen die echten Testheim-Daten verifiziert (Topbar + Saldo-
+       Spalte im Planblatt, korrekter Tooltip-Inhalt mit beiden Kennzahlen).
 8. ✅ **Diensttausch als echter Swap** auch im Drag & Drop des Planblatt-Grids (2026-08): Ziehen auf
    eine belegte Zelle wurde bisher abgelehnt ("Zielfeld ist bereits belegt"), tauscht jetzt beide
    Zuweisungen. Neue Classmethod `ShiftAssignment.swap(first_id, second_id)`

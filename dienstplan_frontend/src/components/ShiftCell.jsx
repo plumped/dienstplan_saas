@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { chipGlyph } from "../chipGlyph.js";
 import { effectiveRecordSegments, effectiveTemplateSegments } from "../timeRecordSegments.js";
 import FloatingPopover from "./FloatingPopover.jsx";
 import TimeRecordSegmentEditor from "./TimeRecordSegmentEditor.jsx";
@@ -15,15 +16,7 @@ export default function ShiftCell({
   // (AbsenceType) statt hartcodiert -- absence.type ist die numerische
   // AbsenceType-ID, absenceTypes liefert dazu Name/Farbe fürs Badge.
   absenceTypes = [],
-  // README Punkt 17 Nachbesserung: templates bleibt der volle, stationsweite
-  // Katalog (für Namens-/Farb-Lookups z. B. beim Wunschdienst, der
-  // personenweit gilt und nicht auf das eigene Team beschränkt ist).
-  // assignableTemplates ist die für DIESE Zeile (Team) tatsächlich
-  // zuweisbare Teilmenge -- fällt auf templates zurück, falls nicht gesetzt.
-  assignableTemplates = templates,
-  selectedTemplateId,
   templateInfo,
-  onChange,
   employeeId,
   date,
   onMove,
@@ -63,24 +56,23 @@ export default function ShiftCell({
   secondTemplateInfo,
   // README Punkt 18 (Split-Shifts): assignmentId identifiziert, WELCHE der
   // (bis zu zwei) Zuweisungen dieses Tages diese ShiftCell-Instanz gerade
-  // darstellt -- undefined für einen leeren Slot (dann legt onChange eine
-  // NEUE Zuweisung an, statt eine bestehende zu ändern/löschen). Wird 1:1
-  // an onMove/onOfferTrade durchgereicht, damit PlanGrid.jsx bei mehreren
-  // Zuweisungen am selben Tag weiss, welche konkret gemeint ist, statt sie
-  // wie bisher über employee+date (jetzt mehrdeutig) neu aufzulösen.
+  // darstellt -- undefined für einen leeren Slot. Wird 1:1 an onMove/
+  // onOfferTrade durchgereicht, damit PlanGrid.jsx bei mehreren Zuweisungen
+  // am selben Tag weiss, welche konkret gemeint ist, statt sie über
+  // employee+date (mehrdeutig) neu aufzulösen.
   // showWishBadge blendet das Wunschfrei/Wunschdienst-Badge aus, wenn diese
   // Instanz der ZWEITE Slot eines Tages ist -- ShiftPreference gilt
   // personen-/tagesweise, nicht pro Zuweisung, ein zweites Badge wäre ein
   // verwirrendes Duplikat.
   assignmentId,
   showWishBadge = true,
-  // Nutzer-Feedback (2026-08, Punkt 3): Absenzen fehlten im Einzelzell-
-  // Dropdown -- onAssignAbsence(absenceTypeId) legt in PlanGrid.jsx eine
-  // Ein-Tages-Absence an und löscht dabei zuerst diesen Slot.
-  onAssignAbsence,
+  // Icon-Toolbar (2026-08, "genau wie Polypoint"): ersetzt das frühere
+  // Klick-öffnet-Dropdown komplett -- ein Klick auf die Zelle wendet
+  // stattdessen das in PlanGrid.jsx aktuell "bewaffnete" Werkzeug an
+  // (handleCellClick dort orchestriert, welche Mutation daraus wird).
+  onCellClick,
 }) {
   const absenceType = absence ? absenceTypes.find((t) => t.id === absence.type) : null;
-  const [editing, setEditing] = useState(false);
   const [offering, setOffering] = useState(false);
   const [recordingTime, setRecordingTime] = useState(false);
   const [savingTime, setSavingTime] = useState(false);
@@ -93,8 +85,8 @@ export default function ShiftCell({
   const suppressClickRef = useRef(false);
 
   useEffect(() => {
-    if (editing || offering) selectRef.current?.focus();
-  }, [editing, offering]);
+    if (offering) selectRef.current?.focus();
+  }, [offering]);
 
   async function handleSaveTimeRecord(payload) {
     setSavingTime(true);
@@ -292,11 +284,11 @@ export default function ShiftCell({
       >
         {absence ? (
           <span className="shift-chip shift-chip--absence" style={{ "--chip-color": absenceType?.color }}>
-            {absenceType?.name.slice(0, 3).toUpperCase() ?? absence.type}
+            {absenceType ? chipGlyph(absenceType) : absence.type}
           </span>
         ) : templateInfo ? (
           <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>
-            {templateInfo.name.slice(0, 3)}
+            {chipGlyph(templateInfo)}
           </span>
         ) : (
           <span className="shift-chip shift-chip--empty" aria-hidden="true">
@@ -305,7 +297,7 @@ export default function ShiftCell({
         )}
         {!absence && secondTemplateInfo && (
           <span className="shift-chip" style={{ "--chip-color": secondTemplateInfo.color }}>
-            {secondTemplateInfo.name.slice(0, 3)}
+            {chipGlyph(secondTemplateInfo)}
           </span>
         )}
         {marked && (
@@ -318,58 +310,28 @@ export default function ShiftCell({
   }
 
   if (absence) {
-    return (
-      <span
-        className="shift-chip-btn is-absence"
-        title={`${absenceType?.name ?? absence.type} (${absence.start_date} – ${absence.end_date})`}
-      >
-        <span className="shift-chip shift-chip--absence" style={{ "--chip-color": absenceType?.color }}>
-          {absenceType?.name.slice(0, 3).toUpperCase() ?? absence.type}
-        </span>
+    // Icon-Toolbar (2026-08): anders als bisher (nicht klickbar) ist eine
+    // Absenz-Zelle jetzt ebenfalls Ziel eines Werkzeugklicks -- jedes
+    // Werkzeug ersetzt konsequent, was vorher da war (siehe
+    // PlanGrid.jsx: handleCellClick). Für rein lesende Ansichten (!canEdit)
+    // bleibt es bei der reinen Anzeige.
+    const title = `${absenceType?.name ?? absence.type} (${absence.start_date} – ${absence.end_date})`;
+    const chip = (
+      <span className="shift-chip shift-chip--absence" style={{ "--chip-color": absenceType?.color }}>
+        {absenceType ? chipGlyph(absenceType) : absence.type}
       </span>
     );
-  }
-
-  if (editing) {
+    if (!canEdit) {
+      return (
+        <span className="shift-chip-btn is-absence" title={title}>
+          {chip}
+        </span>
+      );
+    }
     return (
-      <select
-        ref={selectRef}
-        className="cell-select"
-        defaultValue={selectedTemplateId != null ? `t-${selectedTemplateId}` : ""}
-        onBlur={() => setEditing(false)}
-        onChange={(e) => {
-          const val = e.target.value;
-          setEditing(false);
-          if (val === "") {
-            onChange(null);
-            return;
-          }
-          // Nutzer-Feedback (2026-08, Punkt 3): Absenzarten sind jetzt Teil
-          // desselben Dropdowns (eigene optgroup) -- Werte sind mit "t-"/"a-"
-          // präfigiert, da Schichttyp- und Absenzart-IDs sonst kollidieren
-          // könnten.
-          const [kind, idStr] = val.split("-");
-          const id = Number(idStr);
-          if (kind === "a") onAssignAbsence(id);
-          else onChange(id);
-        }}
-      >
-        <option value="">— leer —</option>
-        {assignableTemplates.map((t) => (
-          <option key={t.id} value={`t-${t.id}`}>
-            {t.name} ({t.start_time.slice(0, 5)}–{t.end_time.slice(0, 5)})
-          </option>
-        ))}
-        {absenceTypes.length > 0 && (
-          <optgroup label="Abwesenheit">
-            {absenceTypes.map((at) => (
-              <option key={at.id} value={`a-${at.id}`}>
-                {at.name}
-              </option>
-            ))}
-          </optgroup>
-        )}
-      </select>
+      <button type="button" className="shift-chip-btn is-absence" title={title} onClick={onCellClick}>
+        {chip}
+      </button>
     );
   }
 
@@ -407,7 +369,7 @@ export default function ShiftCell({
         <span className="shift-chip-btn is-readonly">
           {templateInfo ? (
             <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>
-              {templateInfo.name.slice(0, 3)}
+              {chipGlyph(templateInfo)}
             </span>
           ) : (
             <span className="shift-chip shift-chip--empty" aria-hidden="true">
@@ -463,7 +425,7 @@ export default function ShiftCell({
         type="button"
         className={`shift-chip-btn${dragOver ? " is-drop-target" : ""}`}
         draggable={Boolean(templateInfo)}
-        onClick={() => setEditing(true)}
+        onClick={onCellClick}
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragLeave={() => setDragOver(false)}
@@ -472,7 +434,7 @@ export default function ShiftCell({
       >
         {templateInfo ? (
           <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>
-            {templateInfo.name.slice(0, 3)}
+            {chipGlyph(templateInfo)}
           </span>
         ) : (
           <span className="shift-chip shift-chip--empty" aria-hidden="true">

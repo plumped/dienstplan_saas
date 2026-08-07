@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
+import { chipGlyph } from "../chipGlyph.js";
 import BalanceBadge from "./BalanceBadge.jsx";
 import FloatingPopover from "./FloatingPopover.jsx";
+import PlacementToolbar from "./PlacementToolbar.jsx";
 import ShiftCell from "./ShiftCell.jsx";
 import SpecialStrip from "./SpecialStrip.jsx";
 
@@ -131,6 +133,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // Umschalter lässt den Stempel stattdessen auf den zweiten Slot zielen,
   // ohne den ersten anzutasten.
   const [stampSecondSlot, setStampSecondSlot] = useState(false);
+  // Icon-Toolbar (2026-08, "genau wie Polypoint"): ersetzt das bisherige
+  // Klick-auf-Zelle-Dropdown komplett. placementMode bestimmt, welche Hälfte
+  // einer Zelle ein Klick trifft (Ganz spannt beide, Links/Rechts je eine
+  // feste Hälfte, Pikett fügt additiv eine Spezialität hinzu); armedTool ist
+  // das aktuell "bewaffnete" Werkzeug (Dienst/Absenz/Radiergummi) -- null,
+  // solange nichts gewählt ist. Unabhängig von multiSelectMode (bulk,
+  // s. oben): beide Werkzeuge können nicht gleichzeitig wirken, weil
+  // ShiftCell im selectionMode Klicks ohnehin zum Markieren statt Platzieren
+  // umleitet.
+  const [placementMode, setPlacementMode] = useState("ganz");
+  const [armedTool, setArmedTool] = useState(null);
   // Ziehen mit gedrückter Maustaste markiert mehrere Zellen am Stück, statt
   // jede einzeln anklicken zu müssen: "mark" oder "unmark", je nachdem, ob
   // die Zelle, auf der die Maustaste gedrückt wurde, schon markiert war;
@@ -366,6 +379,36 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     [stampTemplates]
   );
 
+  // Icon-Toolbar: anders als die Stempelleiste oben gibt es hier keine
+  // markedCells, über die sich teamspezifische Schichttypen nachträglich
+  // dazuholen liessen -- und anders als das frühere Zelle-für-Zelle-Dropdown
+  // ist diese EINE Toolbar nicht auf eine Zeile beschränkt. Sie zeigt daher
+  // den kompletten, für diese Ansicht bereits geladenen Katalog (templates
+  // ist beim Fetch auf templateScopeIds = Station + ihre Teams begrenzt,
+  // siehe oben) -- nicht nur die stationsweiten. Bugfix (Playwright-
+  // Verifikation 2026-08): mit `t.node === stationId` blieb die Palette bei
+  // Testdaten, deren Schichttypen ausschliesslich auf Team-Ebene liegen
+  // (der Normalfall in diesem Testheim-Datensatz), komplett leer. Das
+  // entspricht ausserdem eher Polypoints Vorbild: EINE globale Icon-Palette
+  // für die ganze Station, nicht pro Zeile.
+  const placementRegularTemplates = useMemo(
+    () => templates.filter((t) => t.category !== "special"),
+    [templates]
+  );
+  const placementSpecialTemplates = useMemo(
+    () => templates.filter((t) => t.category === "special"),
+    [templates]
+  );
+
+  function handlePlacementModeChange(mode) {
+    setPlacementMode(mode);
+    setArmedTool(null);
+  }
+
+  function handleArmTool(tool) {
+    setArmedTool((prev) => (prev && prev.kind === tool.kind && prev.id === tool.id ? null : tool));
+  }
+
   async function handleSaveWish(date, existing, payload) {
     try {
       const saved = existing
@@ -504,6 +547,77 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       setAssignments((prev) => prev.filter((a) => a.id !== assignmentId));
     } catch (e) {
       onError(e.message);
+    }
+  }
+
+  // Dünner Wrapper analog handleRemoveAbsences (bulk) -- entfernt genau eine
+  // Absenz, damit handleCellClick unten eine bestehende Absenz löschen kann,
+  // bevor es ein anderes Werkzeug auf dieselbe Zelle anwendet ("ein
+  // Zellklick ersetzt immer, was da ist").
+  async function handleRemoveAbsence(absenceId) {
+    try {
+      await api.deleteAbsence(absenceId);
+      setAbsences((prev) => prev.filter((a) => a.id !== absenceId));
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
+  // Icon-Toolbar (2026-08, "genau wie Polypoint"): zentrale
+  // Klick-Orchestrierung, ersetzt das bisherige Klick-auf-Zelle-Dropdown
+  // komplett. Bildet (placementMode, armedTool, aktueller Zustand der
+  // Zelle) rein auf die schon vorhandenen Mutations-Funktionen ab -- keine
+  // neue Backend-Logik. Jedes Werkzeug ersetzt konsequent, was vorher in
+  // der Zelle war (auch eine Absenz wird jetzt klickbar, anders als
+  // bisher). slot0/slot1 sind regularAssignments[0]/[1] der Zelle, specials
+  // die Spezialitäten-Zuweisungen (Pikett-Zeile) desselben Tages.
+  async function handleCellClick(employeeId, date, rowNodeId, slot0, slot1, absence, specials = []) {
+    if (!armedTool) return;
+
+    if (armedTool.kind === "absence") {
+      // Eine Absenz belegt immer den ganzen Tag, unabhängig vom Modus --
+      // das Backend lehnt eine Absenz ab, solange IRGENDEINE Zuweisung
+      // (auch eine additive Spezialität wie Pikett) an diesem Tag besteht
+      // (siehe ShiftAssignment._check_no_absence_conflict), daher müssen
+      // hier auch die Specials mit geräumt werden, nicht nur Slot 0/1.
+      if (absence) await handleRemoveAbsence(absence.id);
+      if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
+      if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
+      for (const special of specials) {
+        await handleRemoveSpecial(special.id);
+      }
+      await handleAssignAbsence(employeeId, date, armedTool.id, undefined);
+      return;
+    }
+
+    if (armedTool.kind === "template") {
+      if (placementMode === "pikett") {
+        await handleAddSpecial(employeeId, date, rowNodeId, armedTool.id);
+        return;
+      }
+      if (absence) await handleRemoveAbsence(absence.id);
+      if (placementMode === "ganz") {
+        if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
+        await handleAssign(employeeId, date, armedTool.id, rowNodeId, slot0?.id);
+      } else if (placementMode === "links") {
+        await handleAssign(employeeId, date, armedTool.id, rowNodeId, slot0?.id);
+      } else if (placementMode === "rechts") {
+        await handleAssign(employeeId, date, armedTool.id, rowNodeId, slot1?.id);
+      }
+      return;
+    }
+
+    if (armedTool.kind === "empty") {
+      if (placementMode === "pikett") return; // Radiergummi in der Toolbar ausgeblendet
+      if (placementMode === "ganz") {
+        if (absence) await handleRemoveAbsence(absence.id);
+        if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
+        if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
+      } else if (placementMode === "links") {
+        if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
+      } else if (placementMode === "rechts") {
+        if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
+      }
     }
   }
 
@@ -840,6 +954,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   return (
     <>
       {canManage && (
+        <PlacementToolbar
+          placementMode={placementMode}
+          onPlacementModeChange={handlePlacementModeChange}
+          armedTool={armedTool}
+          onArmTool={handleArmTool}
+          regularTemplates={placementRegularTemplates}
+          specialTemplates={placementSpecialTemplates}
+          absenceTypes={absenceTypes}
+        />
+      )}
+      {canManage && (
         <div className="multi-select-toolbar">
           <button
             type="button"
@@ -874,7 +999,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
                     onClick={() => handleStampAssign(t.id)}
                   >
-                    {t.name.slice(0, 3)}
+                    {chipGlyph(t)}
                   </button>
                 ))}
                 <button
@@ -925,7 +1050,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                       title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
                       onClick={() => handleStampAssign(t.id)}
                     >
-                      {t.name.slice(0, 3)}
+                      {chipGlyph(t)}
                     </button>
                   ))}
                 </span>
@@ -1083,9 +1208,6 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     // Slot erzwingen).
                     const showSecondSlot =
                       !absence && (regularAssignments.length >= 2 || (canManage && regularAssignments.length === 1));
-                    const rowAssignableSpecialTemplates = rowAssignableTemplates.filter(
-                      (t) => t.category === "special"
-                    );
 
                     function renderSlot(assignment, slotIndex) {
                       const template = templates.find((t) => t.id === assignment?.template);
@@ -1105,8 +1227,6 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                         <ShiftCell
                           key={assignment?.id ?? `empty-${slotIndex}`}
                           templates={templates}
-                          assignableTemplates={rowAssignableTemplates.filter((t) => t.category !== "special")}
-                          selectedTemplateId={assignment?.template ?? null}
                           templateInfo={template}
                           assignmentId={assignment?.id}
                           employeeId={emp.id}
@@ -1116,9 +1236,6 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           colleagues={employees.filter((e) => e.id !== emp.id)}
                           canEdit={canManage}
                           canOfferTrade={canOfferTrade}
-                          onChange={(templateId) =>
-                            handleAssign(emp.id, date, templateId, rowNodeId, assignment?.id)
-                          }
                           onMove={(fromEmployeeId, fromDate, fromAssignmentId) =>
                             handleMove(fromAssignmentId, emp.id, date, rowNodeId, assignment?.id)
                           }
@@ -1132,8 +1249,16 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           onSaveWish={(payload) => handleSaveWish(date, preference, payload)}
                           onDeleteWish={() => handleDeleteWish(preference)}
                           showWishBadge={slotIndex === 0}
-                          onAssignAbsence={(absenceTypeId) =>
-                            handleAssignAbsence(emp.id, date, absenceTypeId, assignment?.id)
+                          onCellClick={() =>
+                            handleCellClick(
+                              emp.id,
+                              date,
+                              rowNodeId,
+                              regularAssignments[0],
+                              regularAssignments[1],
+                              absence,
+                              specialAssignments
+                            )
                           }
                         />
                       );
@@ -1163,9 +1288,18 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           />
                         ) : (
                           <div className="day-cell">
-                            <div className="shift-slots-row">
-                              {renderSlot(regularAssignments[0], 0)}
-                              {showSecondSlot && renderSlot(regularAssignments[1], 1)}
+                            {/* Polypoint-Vorbild (2026-08): die Zelle bleibt IMMER
+                                gleich breit (table-layout: fixed) -- zwei Dienste
+                                teilen sich Links/Rechts EINE feste Breite statt die
+                                Spalte wachsen zu lassen. Nur ein Dienst ("Ganz")
+                                spannt beide Hälften (cell-wrap--span). */}
+                            <div className="day-cell-slots">
+                              <div className={`cell-wrap${!showSecondSlot ? " cell-wrap--span" : ""}`}>
+                                {renderSlot(regularAssignments[0], 0)}
+                              </div>
+                              {showSecondSlot && (
+                                <div className="cell-wrap">{renderSlot(regularAssignments[1], 1)}</div>
+                              )}
                             </div>
                             {/* Nutzer-Feedback (2026-08, Nachbesserung): Spezialitäten
                                 (z. B. Pikettdienst) waren im Split-Shift-Badge (in der
@@ -1177,9 +1311,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                               <SpecialStrip
                                 specialAssignments={specialAssignments}
                                 templates={templates}
-                                assignableTemplates={rowAssignableSpecialTemplates}
                                 canEdit={canManage}
-                                onAdd={(templateId) => handleAddSpecial(emp.id, date, rowNodeId, templateId)}
                                 onRemove={(specialAssignmentId) => handleRemoveSpecial(specialAssignmentId)}
                               />
                             )}

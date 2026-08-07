@@ -864,6 +864,38 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       unterschiedlichen Diensten UND einer Spezialität zeigt Vormittag/Nachmittag nebeneinander,
       die Spezialität als eigene dünne Zeile darunter, auch bei einem nur teilweise gefüllten
       zweiten Slot.
+    - ✅ **Planblatt im Polypoint-Stil (2026-08)**: Nutzer-Feedback nach einem Referenzbild von
+      Polypoint/PEP -- "Ich will es genau so lösen wie polypoint, jedoch optisch moderner". Ersetzt
+      das bisherige Klick-auf-Zelle-Dropdown komplett durch eine immer sichtbare Icon-Toolbar
+      (`PlacementToolbar.jsx`) oberhalb des Grids: eine Modus-Auswahl **Ganz/Links/Rechts/Pikett**
+      plus eine Palette anklickbarer Dienst-/Absenz-/Spezialität-Icons (`chipGlyph()`, neuer Helper
+      -- nutzt `TimeTemplate.icon`/`AbsenceType.icon`, ein bisher ungenutztes Feld, mit Fallback auf
+      die ersten zwei Buchstaben des Namens, statt der vorherigen 3-Buchstaben-Abkürzung).
+      Workflow: Icon anklicken ("bewaffnet" das Werkzeug, sichtbar am farbigen Rahmen), dann eine
+      Zielzelle anklicken -- sofortige Zuweisung, kein Dropdown mehr. `AbsenceType` bekam dafür ein
+      neues `icon`-Feld (additive Migration, analog `TimeTemplate.icon`). Zweite Kernänderung: die
+      Tagesspalten sind jetzt via `table-layout: fixed` unveränderlich breit -- zwei Dienste teilen
+      sich per CSS-Grid (`.day-cell-slots`, zwei gleich grosse Spalten) die Breite EINER Zelle
+      (Links/Rechts-Split, manuell gewählt), statt dass die Spalte pro Split-Shift-Tag breiter wird;
+      ein einzelner Dienst spannt beide Hälften (`.cell-wrap--span`). `handleCellClick()` in
+      `PlanGrid.jsx` orchestriert reine Frontend-Verdrahtung bereits vorhandener Mutationen
+      (`handleAssign`, `handleAssignAbsence`, `handleAddSpecial`, `handleRemoveSpecial`, neu:
+      `handleRemoveAbsence`) -- keine neuen Backend-Endpunkte. `ShiftCell.jsx` verloren: das
+      Dropdown, den `editing`-State und die Props `assignableTemplates`/`onChange`/
+      `onAssignAbsence`; ein Klick ruft stattdessen `onCellClick()` auf, auch auf einer
+      Absenz-Zelle (vorher nicht klickbar). `SpecialStrip.jsx` verlor sein eigenes
+      "+"-Add-Popover (Hinzufügen läuft jetzt zentral über die Toolbar im Pikett-Modus) und ist
+      jetzt reine Anzeige- + Entfernen-Komponente. Drag & Drop, Tausch-Angebot, Wunsch-/
+      Ist-Zeit-Badges, die separate Mehrfachauswahl-Stempelleiste (bulk) und `YearPlan.jsx` bleiben
+      unverändert. Mit Playwright gegen echte Testheim-Daten verifiziert (danach wieder bereinigt):
+      Ganz-Platzierung, Rechts-Platzierung eines zweiten Diensts (Split ohne Breiten-Sprung),
+      Pikett-Platzierung additiv neben bestehenden Diensten, Absenz-Platzierung ersetzt Dienste UND
+      Spezialitäten desselben Tages, Radiergummi leert gezielt. Zwei Bugfixes dabei: (1) die
+      Icon-Palette zeigte anfangs nur stationsweite Schichttypen (`t.node === stationId`) und blieb
+      bei rein teamspezifischen Katalogen komplett leer -- jetzt der volle, für die Ansicht bereits
+      geladene Katalog; (2) der `.btn-offer-trade`-Button (Diensttausch anbieten, oben rechts in der
+      Zelle) war mit 16x16px in der jetzt nur noch ~21px schmalen Zellhälfte gross genug, um Klicks
+      der Icon-Toolbar abzufangen, bevor sie den Chip darunter erreichten -- auf 10x10px verkleinert.
     - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
       entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
       wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim

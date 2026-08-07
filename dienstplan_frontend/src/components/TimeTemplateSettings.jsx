@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { chipGlyph } from "../chipGlyph.js";
 import TimeTemplateSegmentEditor from "./TimeTemplateSegmentEditor.jsx";
 
 function emptyForm(defaultNodeId) {
@@ -286,7 +287,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
             {templates.map((t) => (
               <li key={t.id} className="entry-list-item">
                 <span className="shift-chip" style={{ "--chip-color": t.color }}>
-                  {t.name.slice(0, 3)}
+                  {chipGlyph(t)}
                 </span>
                 <span className="entry-main">
                   <strong>{t.name}</strong> · {nodeName(t.node)} · {t.start_time.slice(0, 5)}–

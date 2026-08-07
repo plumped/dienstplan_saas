@@ -402,7 +402,7 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
 class AbsenceTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = AbsenceType
-        fields = ["id", "name", "color", "deducts_vacation_days"]
+        fields = ["id", "name", "color", "icon", "deducts_vacation_days"]
 
 
 class AbsenceSerializer(serializers.ModelSerializer):

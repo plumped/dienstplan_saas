@@ -778,6 +778,11 @@ class AbsenceType(TenantScopedModel):
 
     name = models.CharField(max_length=100)
     color = models.CharField(max_length=7, default="#64748b", help_text="Hex-Farbe für Chips/Badges")
+    icon = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Kurzes Kürzel/Glyphe fürs Planblatt (z. B. 'F' oder ein Emoji), analog TimeTemplate.icon.",
+    )
     deducts_vacation_days = models.BooleanField(
         default=False,
         help_text="Genehmigte Tage dieses Typs zählen als Ferienbezug (Employee.vacation_balance()).",

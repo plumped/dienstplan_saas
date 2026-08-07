@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { relevantNodeIds } from "../App.jsx";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
+import { chipGlyph } from "../chipGlyph.js";
 
 const WEEKDAYS_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 const MONTH_NAMES = [
@@ -567,7 +568,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                   title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
                   onClick={() => handleStampShift(t.id)}
                 >
-                  {t.name.slice(0, 3)}
+                  {chipGlyph(t)}
                 </button>
               ))}
               <button
@@ -619,7 +620,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                   title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
                   onClick={() => handleStampShift(t.id)}
                 >
-                  {t.name.slice(0, 3)}
+                  {chipGlyph(t)}
                 </button>
               ))}
             </span>
@@ -646,7 +647,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                   title={`Wunschdienst ${t.name} für alle markierten Tage eintragen`}
                   onClick={() => handleStampWish("wunschdienst", t.id)}
                 >
-                  Wunsch: {t.name.slice(0, 3)}
+                  Wunsch: {chipGlyph(t)}
                 </button>
               ))}
               <button

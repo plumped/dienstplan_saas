@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { chipGlyph } from "../chipGlyph.js";
 
 function emptyForm() {
-  return { name: "", color: "#64748b", deducts_vacation_days: false };
+  return { name: "", color: "#64748b", icon: "", deducts_vacation_days: false };
 }
 
 function toFormValues(absenceType) {
   return {
     name: absenceType.name,
     color: absenceType.color,
+    icon: absenceType.icon ?? "",
     deducts_vacation_days: absenceType.deducts_vacation_days,
   };
 }
@@ -55,6 +57,7 @@ export default function AbsenceTypeSettings({ onError }) {
     const payload = {
       name: form.name.trim(),
       color: form.color,
+      icon: form.icon,
       deducts_vacation_days: form.deducts_vacation_days,
     };
     setSaving(true);
@@ -105,6 +108,16 @@ export default function AbsenceTypeSettings({ onError }) {
               onChange={(e) => setForm((prev) => ({ ...prev, color: e.target.value }))}
             />
           </label>
+          <label>
+            Kürzel (optional)
+            <input
+              type="text"
+              maxLength={50}
+              placeholder="z. B. F oder ein Emoji"
+              value={form.icon}
+              onChange={(e) => setForm((prev) => ({ ...prev, icon: e.target.value }))}
+            />
+          </label>
         </div>
         <label className="panel-checkbox-row">
           <input
@@ -142,7 +155,7 @@ export default function AbsenceTypeSettings({ onError }) {
             {absenceTypes.map((t) => (
               <li key={t.id} className="entry-list-item">
                 <span className="shift-chip" style={{ "--chip-color": t.color }}>
-                  {t.name.slice(0, 3)}
+                  {chipGlyph(t)}
                 </span>
                 <span className="entry-main">
                   <strong>{t.name}</strong>

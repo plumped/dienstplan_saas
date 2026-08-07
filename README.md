@@ -1305,6 +1305,46 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       unpopuläre Schicht bei objektiv fehlenden Alternativen -- z. B. nur eine Person mit dem
       nötigen Skill verfügbar -- darf die Planung nicht blockieren).
 
+21. **Dashboard/Übersicht für Admin/Planer** (noch nicht umgesetzt). Nutzer-Anfrage: eine zentrale
+    Seite, auf der auf einen Blick sichtbar ist, was gerade Handlungsbedarf hat -- offene
+    Genehmigungen, wer wann abwesend ist, unterbesetzte Schichten -- statt das über mehrere Tabs
+    verstreut selbst zusammensuchen zu müssen.
+
+    - **Bewusst eine Aggregations-, keine Zweitbearbeitungs-Oberfläche für die Datenbasis**: alle
+      angezeigten Zahlen/Listen kommen aus bereits bestehenden Quellen (`GET /api/me/`
+      → `task_counts`, `AbsenceViewSet`, `ShiftTradeRequestViewSet`, die clientseitige
+      Mindestbesetzungs-Auswertung aus Block 9/2.9) statt eigener, paralleler Business-Logik --
+      sonst entsteht eine zweite Wahrheit, die mit den Einzel-Tabs auseinanderlaufen kann (z. B.
+      "wer gilt als abwesend" muss exakt dieselbe Regel wie `AbsencePanel` verwenden).
+    - **Quick-Actions direkt im Dashboard, aber ohne Logik-Duplikat**: die häufigsten Aktionen
+      (Absenz/Tauschanfrage freigeben oder ablehnen) sollen ohne Tab-Wechsel möglich sein --
+      technisch dadurch gelöst, dass die Dashboard-Karten dieselben `api.js`-Funktionen aufrufen
+      wie `AbsencePanel.jsx`/`TradeRequestPanel.jsx` (reine UI-Wiederverwendung der Mutation, keine
+      neu geschriebene Genehmigungslogik). Das ist der zentrale Klick-Effizienz-Gewinn: aktuell
+      braucht "3 offene Anfragen prüfen" mindestens 2 Tab-Wechsel plus Scrollen durch alle
+      Einträge, mit Quick-Actions im Dashboard sind es die offenen Fälle direkt vor Augen.
+    - **Deep-Links statt genereller Tab-Wechsel**: eine Karte "Unterbesetzt: Frühschicht Küche,
+      14.8." verlinkt direkt auf Station + Monat + Tag im Planblatt (nicht nur generisch auf den
+      Tab "Planblatt"), damit der nächste Klick sofort am richtigen Ort landet.
+    - **Nur für Admin/Planer, nicht als neue Startseite für Mitarbeitende**: für die
+      Selbstbedienungs-Rolle (siehe Block 2.1) ist "was hat Handlungsbedarf" nicht relevant --
+      deren bisheriger Direkteinstieg ins eigene Planblatt bleibt unverändert. Ob das Dashboard für
+      Admin/Planer die neue Standard-Landing-Page nach dem Login wird oder ein zusätzlicher,
+      manuell wählbarer Tab bleibt (**zur Diskussion**): eine erzwungene neue Landing-Page spart
+      Klicks für den Genehmigungs-Alltag, könnte aber irritieren, wenn der eigentliche Grund für
+      den Login "kurz eine Schicht eintragen" war und man dafür jetzt einen Klick mehr braucht.
+    - **Bewusst kein Reporting-/Auswertungstool**: nur "was JETZT ansteht" (offene Anfragen, die
+      nächsten paar Tage unterbesetzter Schichten, aktuell abwesende Personen) -- keine
+      historischen Kennzahlen, Charts oder Zeitraum-Filter. Das wäre eine eigene, deutlich grössere
+      Funktion mit anderem Nutzungsmuster (gelegentliche Analyse statt täglicher Kontrollblick).
+    - **Offene technische Frage**: die Mindestbesetzungs-Auswertung (Block 9/2.9) läuft aktuell
+      rein clientseitig in `PlanGrid.jsx`, pro einzeln ausgewählter Station. Für eine
+      stationsübergreifende Dashboard-Karte braucht es entweder einen Frontend-Loop über alle
+      Stationen (mehrere Requests, bei vielen Stationen potenziell langsam) oder einen neuen
+      Backend-Aggregations-Endpoint, der das serverseitig einmal für den ganzen Tenant berechnet --
+      Entscheidung erst beim Umsetzen, abhängig davon, wie viele Stationen ein typischer Tenant
+      tatsächlich hat.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 1. **Setup-Wizard**: eine neue Praxis registriert sich selbst (Tenant, erster Admin-Account,

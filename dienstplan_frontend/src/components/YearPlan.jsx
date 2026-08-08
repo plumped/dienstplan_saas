@@ -3,6 +3,7 @@ import { relevantNodeIds } from "../App.jsx";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
 import { chipGlyph } from "../chipGlyph.js";
+import PlacementToolbar from "./PlacementToolbar.jsx";
 
 const WEEKDAYS_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 const MONTH_NAMES = [
@@ -95,13 +96,12 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
   // ist, unabhängig von der Rolle (Admin/Planer dürfen für andere Personen
   // zwar den Jahresplan ansehen/Schichten stempeln, aber keine Wünsche).
   const [markedDates, setMarkedDates] = useState(() => new Set());
-  // README (2026-08, Bugfix): der Jahresplan kannte pro Tag nur eine
-  // Zuweisung (assignmentByDate überschrieb eine zweite stillschweigend) und
-  // hatte dadurch keinen Weg, einen zweiten (Split-Shift-)Dienst zu stempeln
-  // -- anders als das Planblatt (PlanGrid.jsx, README Punkt 18) zeigte der
-  // Jahresplan Split-Shifts nicht einmal an. stampSecondSlot spiegelt den
-  // gleichnamigen Umschalter aus PlanGrid.jsx.
-  const [stampSecondSlot, setStampSecondSlot] = useState(false);
+  // Port (2026-08, Nutzer-Feedback: "übernimm die genau gleiche Logik wie im
+  // Planblatt um zu beplanen"): ersetzt das frühere stampSecondSlot-Modell
+  // durch denselben Alles/Oben/Unten/Pikett-Platzierungsmodus wie
+  // PlanGrid.jsx (siehe PlacementToolbar.jsx) -- identisches
+  // Interaktionsmodell für beide Ansichten.
+  const [placementMode, setPlacementMode] = useState("full");
   // Ziehen mit gedrückter Maustaste markiert mehrere Tage am Stück (analog
   // zu PlanGrid.jsx): "mark"/"unmark" je nach Zustand des zuerst angeklickten
   // Tages, null = kein Ziehvorgang aktiv.
@@ -241,6 +241,22 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
     return map;
   }, [assignments, templates]);
 
+  // Zerlegt die (bereits chronologisch sortierten) Zuweisungen eines Tages in
+  // reguläre Dienste (konkurrieren um Slot 0/1) und additive Spezialitäten
+  // (Pikett etc.) -- gleiche Trennung wie resolveCellState() in
+  // PlanGrid.jsx, hier als kleine Helper statt für jede Zelle/jeden
+  // Stempel-Aufruf neu inline gefiltert.
+  function regularAssignmentsOf(date) {
+    return (assignmentsByDate.get(date) ?? []).filter(
+      (a) => templates.find((t) => t.id === a.template)?.category !== "special"
+    );
+  }
+  function specialAssignmentsOf(date) {
+    return (assignmentsByDate.get(date) ?? []).filter(
+      (a) => templates.find((t) => t.id === a.template)?.category === "special"
+    );
+  }
+
   // Absenzen sind Zeiträume (start_date/end_date) -- für die Tages-Zellen auf
   // eine Datum->Absenz-Map auflösen, damit jede Zelle in O(1) weiss, ob sie
   // dazugehört.
@@ -286,157 +302,259 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
     applyMark(date, dragMarkModeRef.current === "mark");
   }
 
-  // README (2026-08, Bugfix): zielt bei aktivem stampSecondSlot auf den
-  // zweiten Slot (Split-Shift) statt den ersten -- ein Tag ohne ersten
-  // Dienst wird übersprungen (analog zu PlanGrid.jsx: handleStampAssign).
-  async function handleStampShift(templateId) {
-    const dates = Array.from(markedDates);
-    const upserted = [];
-    let skipped = 0;
-    // Nutzer-Feedback (2026-08, Punkt 4): ein Chip aus der "Spezialitäten"-
-    // Zeile legt IMMER eine additive neue Zuweisung an (unabhängig von
-    // stampSecondSlot/Slot 0/1), analog zu PlanGrid.jsx: handleStampAssign.
-    const stampedTemplate = templates.find((t) => t.id === templateId);
-    const isSpecial = stampedTemplate?.category === "special";
-    for (const date of dates) {
-      if (isSpecial) {
-        try {
-          upserted.push(
-            await api.createShiftAssignment({ employee: employeeId, node: selectedNode, date, template: templateId })
-          );
-        } catch {
-          skipped += 1;
-        }
-        continue;
+  // Port (2026-08, Nutzer-Feedback: "übernimm die genau gleiche Logik wie im
+  // Planblatt um zu beplanen"): identische Stempel-Logik wie PlanGrid.jsx
+  // (applyToolToCell/applyToolToMarked, shiftShouldBeReplacedByAbsencePortion,
+  // shrinkAbsence), hier auf die einfacheren Jahresplan-Datenstrukturen (ein
+  // Mitarbeiter/eine Anstellung fix, markedDates ist ein flaches Set<date>
+  // statt eines employeeId:date:rowNodeId-Schlüssels) umgeschrieben statt
+  // eines eigenen, abweichenden Modells.
+
+  async function assignTemplate(date, templateId, assignmentId) {
+    try {
+      if (templateId === null) {
+        if (!assignmentId) return;
+        await api.deleteShiftAssignment(assignmentId);
+        setAssignments((prev) => prev.filter((a) => a.id !== assignmentId));
+        return;
       }
-      const dayAssignments = (assignmentsByDate.get(date) ?? []).filter(
-        (a) => templates.find((t) => t.id === a.template)?.category !== "special"
-      );
-      if (stampSecondSlot && !dayAssignments[0]) {
-        skipped += 1;
-        continue;
+      if (assignmentId) {
+        const updated = await api.updateShiftAssignment(assignmentId, { template: templateId });
+        setAssignments((prev) => prev.map((a) => (a.id === assignmentId ? updated : a)));
+      } else {
+        const created = await api.createShiftAssignment({
+          employee: employeeId,
+          node: selectedNode,
+          date,
+          template: templateId,
+        });
+        setAssignments((prev) => [...prev, created]);
       }
-      const existing = stampSecondSlot ? dayAssignments[1] : dayAssignments[0];
-      try {
-        if (existing) {
-          upserted.push(await api.updateShiftAssignment(existing.id, { template: templateId }));
-        } else {
-          upserted.push(
-            await api.createShiftAssignment({ employee: employeeId, node: selectedNode, date, template: templateId })
-          );
-        }
-      } catch {
-        // z. B. Ruhezeit-, Höchstarbeitszeit- oder Absenz-Konflikt (siehe
-        // ShiftAssignment.clean()) -- Tag überspringen, Rest weiterstempeln.
-        skipped += 1;
-      }
+    } catch (e) {
+      // z. B. Ruhezeit-, Höchstarbeitszeit- oder Absenz-Konflikt (siehe
+      // ShiftAssignment.clean()).
+      onError(e.message);
     }
-    if (upserted.length) {
-      setAssignments((prev) => {
-        const byId = new Map(prev.map((a) => [a.id, a]));
-        for (const a of upserted) byId.set(a.id, a);
-        return Array.from(byId.values());
+  }
+
+  async function addSpecial(date, templateId) {
+    try {
+      const created = await api.createShiftAssignment({
+        employee: employeeId,
+        node: selectedNode,
+        date,
+        template: templateId,
       });
-    }
-    setMarkedDates(new Set());
-    setStampSecondSlot(false);
-    if (skipped > 0) {
-      onError(
-        `${dates.length - skipped} von ${dates.length} Tagen zugewiesen, ${skipped} wegen Regel-Konflikten ` +
-          "(z. B. Ruhezeit) übersprungen."
-      );
+      setAssignments((prev) => [...prev, created]);
+    } catch (e) {
+      onError(e.message);
     }
   }
 
-  async function handleClearShifts() {
-    // "Schicht leeren" bleibt auf Slot 0/1 beschränkt -- additive
-    // Spezialitäten dieses Tages bleiben unangetastet (Punkt 4).
-    const toDelete = Array.from(markedDates)
-      .map(
-        (d) =>
-          (assignmentsByDate.get(d) ?? []).filter(
-            (a) => templates.find((t) => t.id === a.template)?.category !== "special"
-          )[stampSecondSlot ? 1 : 0]
-      )
-      .filter(Boolean);
-    const deletedIds = [];
-    let failed = 0;
-    for (const a of toDelete) {
-      try {
-        await api.deleteShiftAssignment(a.id);
-        deletedIds.push(a.id);
-      } catch {
-        failed += 1;
-      }
+  async function removeSpecial(assignmentId) {
+    try {
+      await api.deleteShiftAssignment(assignmentId);
+      setAssignments((prev) => prev.filter((a) => a.id !== assignmentId));
+    } catch (e) {
+      onError(e.message);
     }
-    if (deletedIds.length) {
-      setAssignments((prev) => prev.filter((a) => !deletedIds.includes(a.id)));
-    }
-    setMarkedDates(new Set());
-    setStampSecondSlot(false);
-    if (failed > 0) onError(`${failed} Schicht(en) konnten nicht entfernt werden.`);
   }
 
-  async function handleStampAbsence(type) {
-    // Tage mit bestehender Absenz überspringen statt zu überlappen (analog
-    // zum Wochenmuster-Kopieren: bereits belegte Zieltage nicht überschreiben).
-    const dates = Array.from(markedDates).filter((d) => !absenceByDate.has(d));
-    const skippedExisting = markedDates.size - dates.length;
-    const ranges = groupConsecutiveDates(dates);
-    const created = [];
-    let skippedConflict = 0;
-    for (const [start, end] of ranges) {
-      try {
-        created.push(await api.createAbsence({ employee: employeeId, start_date: start, end_date: end, type }));
-      } catch {
-        skippedConflict += 1;
-      }
+  async function removeAbsence(absenceId) {
+    try {
+      await api.deleteAbsence(absenceId);
+      setAbsences((prev) => prev.filter((a) => a.id !== absenceId));
+    } catch (e) {
+      // z. B. bereits genehmigte Absenz einer Mitarbeiter-Rolle (nur
+      // Admin/Planer dürfen die noch löschen, siehe OwnEmployeeRecordPermission).
+      onError(e.message);
     }
-    if (created.length) setAbsences((prev) => [...prev, ...created]);
-    setMarkedDates(new Set());
-    const notes = [];
-    if (skippedExisting > 0) {
-      notes.push(`${skippedExisting} Tag(e) übersprungen, dort besteht bereits eine Absenz.`);
-    }
-    if (skippedConflict > 0) {
-      notes.push(`${skippedConflict} Zeitraum(e) konnten nicht angelegt werden.`);
-    }
-    if (notes.length) onError(notes.join(" "));
   }
 
-  async function handleRemoveAbsences() {
-    // Löscht die GANZE Absenz, nicht nur die markierten Tage daraus, falls
-    // nur ein Teil eines mehrtägigen Zeitraums markiert war (siehe README) --
-    // ein Absenz-Datensatz lässt sich nicht teilweise löschen, ohne ihn in
-    // zwei neue Zeiträume aufzuspalten, was hier bewusst nicht automatisiert
-    // wird.
-    const toDelete = new Map();
-    for (const d of markedDates) {
-      const absence = absenceByDate.get(d);
-      if (absence) toDelete.set(absence.id, absence);
+  // Löscht eine bestehende ganztägige Einzeltag-Absenz und legt sie mit
+  // `keepPortion` neu an -- lässt so die jeweils andere (nicht angeklickte)
+  // Hälfte des Tages bestehen, statt die ganze Absenz zu entfernen.
+  async function shrinkAbsence(absence, keepPortion) {
+    try {
+      await api.deleteAbsence(absence.id);
+      const created = await api.createAbsence({
+        employee: absence.employee,
+        start_date: absence.start_date,
+        end_date: absence.end_date,
+        type: absence.type,
+        day_portion: keepPortion,
+      });
+      setAbsences((prev) => [...prev.filter((a) => a.id !== absence.id), created]);
+    } catch (e) {
+      onError(e.message);
     }
-    const deletedIds = [];
-    let failed = 0;
-    for (const absence of toDelete.values()) {
-      try {
-        await api.deleteAbsence(absence.id);
-        deletedIds.push(absence.id);
-      } catch {
-        // z. B. bereits genehmigte Absenz einer Mitarbeiter-Rolle (nur
-        // Admin/Planer dürfen die noch löschen, siehe OwnEmployeeRecordPermission).
-        failed += 1;
+  }
+
+  // Spiegelt PlanGrid.jsx: ein bestehender Dienst, dessen Zeitfenster auch
+  // die jeweils ANDERE (nicht von dayPortion beanspruchte) Tageshälfte
+  // berührt (z. B. eine durchgehende Frühschicht 07:00-17:00 bei einer
+  // Nachmittags-Absenz), wird nie automatisch durch eine Halbtags-Absenz
+  // ersetzt -- nur ein echter, ausschliesslich in der Zielhälfte liegender
+  // Dienst wird ersetzt. Gilt nicht für `full`.
+  function shiftShouldBeReplacedByAbsencePortion(templateId, dayPortion) {
+    if (dayPortion === "full") return true;
+    const template = templates.find((t) => t.id === templateId);
+    if (!template?.start_time || !template?.end_time) return true;
+    const toMinutes = (t) => {
+      const [h, m] = t.split(":").map(Number);
+      return h * 60 + m;
+    };
+    const start = toMinutes(template.start_time);
+    const end = toMinutes(template.end_time);
+    if (end <= start) return false; // über Mitternacht -- nie automatisch ersetzen
+    const noon = 12 * 60;
+    const overlapsTargetPortion = dayPortion === "morning" ? start < noon : end > noon;
+    if (!overlapsTargetPortion) return false;
+    const extendsIntoOtherHalf = dayPortion === "morning" ? end > noon : start < noon;
+    return !extendsIntoOtherHalf;
+  }
+
+  // Spiegelt PlanGrid.jsx: applyToolToCell() -- wendet ein Dienst- oder
+  // Radiergummi-Werkzeug auf EINEN Tag an. slot0/slot1 sind die
+  // (chronologisch sortierten) regulären Zuweisungen des Tages, specials die
+  // Spezialitäten-Zuweisungen (Pikett-Modus).
+  async function applyToolToCell(tool, date, slot0, slot1, specials = []) {
+    if (tool.kind === "template") {
+      if (placementMode === "pikett") {
+        const existing = specials.find((s) => s.template === tool.id);
+        if (existing) await removeSpecial(existing.id);
+        else await addSpecial(date, tool.id);
+        return;
+      }
+      if (placementMode === "full") {
+        if (slot1) await assignTemplate(date, null, slot1.id);
+        await assignTemplate(date, tool.id, slot0?.id);
+      } else if (placementMode === "top" || placementMode === "bottom") {
+        // "Oben"/"Unten" überschreibt nur die jeweilige Hälfte: ein
+        // bestehender einzelner (durchgehender) Dienst wird nie
+        // umbenannt/ersetzt, nur wenn bereits zwei eigenständige Dienste an
+        // diesem Tag liegen (echter Split), wird gezielt der in der
+        // Zielhälfte ersetzt -- sonst wird immer ein neuer, unabhängiger
+        // Dienst angelegt.
+        const isSplit = Boolean(slot0) && Boolean(slot1);
+        const target = placementMode === "top" ? slot0 : slot1;
+        await assignTemplate(date, tool.id, isSplit ? target?.id : undefined);
+      }
+      return;
+    }
+
+    if (tool.kind === "empty") {
+      if (placementMode === "pikett") {
+        for (const special of specials) await removeSpecial(special.id);
+        return;
+      }
+      if (placementMode === "full") {
+        if (slot0) await assignTemplate(date, null, slot0.id);
+        if (slot1) await assignTemplate(date, null, slot1.id);
+      } else if (placementMode === "top" || placementMode === "bottom") {
+        const isSplit = Boolean(slot0) && Boolean(slot1);
+        if (!isSplit) return;
+        const target = placementMode === "top" ? slot0 : slot1;
+        await assignTemplate(date, null, target.id);
       }
     }
-    if (deletedIds.length) {
-      setAbsences((prev) => prev.filter((a) => !deletedIds.includes(a.id)));
+  }
+
+  // Spiegelt PlanGrid.jsx: applyToolToMarked() -- wendet `tool` auf ALLE
+  // aktuell markierten Tage an. Absenzen sind ein Sonderfall: Oben/Unten
+  // bestimmt jetzt auch bei einer Absenz die betroffene Tageshälfte
+  // (Absence.day_portion) statt sie immer als ganzen Tag anzulegen. Eine
+  // bestehende ganztägige Absenz an einem EINZELNEN Tag wird beim Bestempeln
+  // nur einer Hälfte mit einem Dienst oder dem Radiergummi nicht mehr
+  // komplett gelöscht, sondern auf die nicht angeklickte Hälfte reduziert
+  // (shrinkAbsence). Bei einer mehrtägigen Absenz bleibt es beim
+  // vollständigen Löschen (Range-Split bewusst nicht Teil dieses Features).
+  async function applyToolToMarked(tool) {
+    if (markedDates.size === 0) return;
+    const dates = Array.from(markedDates);
+
+    const absenceIdsToClear = new Set();
+    const absencesToShrink = new Map(); // absenceId -> { absence, keepPortion }
+    for (const date of dates) {
+      const absence = absenceByDate.get(date);
+      if (!absence) continue;
+      if (tool.kind === "absence" || placementMode === "full") {
+        absenceIdsToClear.add(absence.id);
+        continue;
+      }
+      if (placementMode === "pikett") continue; // Pikett betrifft nie Absenzen
+      const existingPortion = absence.day_portion ?? "full";
+      if (existingPortion === "full") {
+        if (absence.start_date === absence.end_date) {
+          const keepPortion = placementMode === "top" ? "afternoon" : "morning";
+          absencesToShrink.set(absence.id, { absence, keepPortion });
+        } else {
+          absenceIdsToClear.add(absence.id);
+        }
+        continue;
+      }
+      const overlapsThisMode =
+        (placementMode === "top" && existingPortion === "morning") ||
+        (placementMode === "bottom" && existingPortion === "afternoon");
+      if (overlapsThisMode) absenceIdsToClear.add(absence.id);
+    }
+    for (const absenceId of absenceIdsToClear) {
+      await removeAbsence(absenceId);
+    }
+    for (const { absence, keepPortion } of absencesToShrink.values()) {
+      await shrinkAbsence(absence, keepPortion);
+    }
+
+    if (tool.kind === "absence") {
+      const dayPortion = placementMode === "top" ? "morning" : placementMode === "bottom" ? "afternoon" : "full";
+      for (const date of dates) {
+        // "Ein normaler Dienst bleibt bei einer Halbtags-Absenz unverändert
+        // stehen" -- nicht blind nach Slot-Index räumen, sondern nur einen
+        // Dienst ersetzen, der ausschliesslich in der Zielhälfte liegt.
+        for (const a of regularAssignmentsOf(date)) {
+          if (shiftShouldBeReplacedByAbsencePortion(a.template, dayPortion)) {
+            await assignTemplate(date, null, a.id);
+          }
+        }
+        if (dayPortion === "full") {
+          for (const special of specialAssignmentsOf(date)) await removeSpecial(special.id);
+        }
+      }
+      const created = [];
+      if (dayPortion === "full") {
+        // Ganztägig weiterhin zu möglichst wenigen zusammenhängenden
+        // Zeiträumen gruppiert (z. B. eine Ferienwoche = ein Datensatz statt
+        // sieben).
+        for (const [start, end] of groupConsecutiveDates(dates)) {
+          try {
+            created.push(
+              await api.createAbsence({ employee: employeeId, start_date: start, end_date: end, type: tool.id, day_portion: "full" })
+            );
+          } catch (e) {
+            onError(e.message);
+          }
+        }
+      } else {
+        for (const date of dates) {
+          try {
+            created.push(
+              await api.createAbsence({ employee: employeeId, start_date: date, end_date: date, type: tool.id, day_portion: dayPortion })
+            );
+          } catch (e) {
+            onError(e.message);
+          }
+        }
+      }
+      if (created.length) setAbsences((prev) => [...prev, ...created]);
+      setMarkedDates(new Set());
+      return;
+    }
+
+    for (const date of dates) {
+      const regularAssignments = regularAssignmentsOf(date);
+      await applyToolToCell(tool, date, regularAssignments[0], regularAssignments[1], specialAssignmentsOf(date));
     }
     setMarkedDates(new Set());
-    if (failed > 0) {
-      onError(
-        `${failed} Absenz(en) konnten nicht entfernt werden -- bereits genehmigte Absenzen dürfen ` +
-          "Mitarbeitende nicht mehr selbst löschen."
-      );
-    }
   }
 
   // Wunschfrei/Wunschdienst (Block 2.13): anders als Absenz-Stempeln wird ein
@@ -535,96 +653,28 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
             ›
           </button>
         </span>
-        {/* README (2026-08, Bugfix): die Stempelleiste erschien bisher erst
-            nach dem ersten markierten Tag -- das liess den ganzen
-            Kalender-Grid genau in dem Moment nach unten springen, in dem der
-            Nutzer den ersten Tag anklickt (analog zum selben Bug im
-            Planblatt, siehe PlanGrid.jsx). Palette jetzt immer sichtbar,
-            Buttons/Chips nur deaktiviert, solange nichts markiert ist --
-            reserviert den Platz von Anfang an. */}
+        {/* Port (2026-08, Nutzer-Feedback: "übernimm die genau gleiche
+            Logik wie im Planblatt um zu beplanen"): dieselbe
+            PlacementToolbar wie PlanGrid.jsx statt einer eigenen,
+            abweichenden Stempelleiste -- Alles/Oben/Unten/Pikett gilt jetzt
+            identisch für Dienste UND Absenzen. Mitarbeitende ohne
+            canManage dürfen weiterhin keine Dienste/Spezialitäten stempeln
+            (leere Arrays -- die Komponente blendet die jeweilige Gruppe von
+            selbst aus/zeigt nur den Pikett-Leer-Hinweis), Absenzen bleiben
+            für alle stempelbar. Bleibt (wie zuvor) immer sichtbar, auch
+            ohne Markierung, damit das Grid beim ersten Markieren nicht nach
+            unten springt (README, ursprünglicher Bugfix). */}
         <span className="stamp-palette">
-          <span className="multi-select-hint">
-            {markedDates.size === 0 ? "Tage anklicken, um sie zu markieren." : `${markedDates.size} markiert:`}
-          </span>
-          {canManage && (
-            <span className="stamp-row">
-              <span className="stamp-row-label">Dienste</span>
-              <label className="stamp-second-slot-toggle" title="Bestehenden ersten Dienst nicht ersetzen, sondern einen zweiten (Split-Shift) danebenstellen. Gilt auch für Spezialitäten unten.">
-                <input
-                  type="checkbox"
-                  checked={stampSecondSlot}
-                  disabled={markedDates.size === 0}
-                  onChange={(e) => setStampSecondSlot(e.target.checked)}
-                />
-                Als zweiten Dienst hinzufügen
-              </label>
-              {regularTemplates.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className="stamp-chip"
-                  style={{ "--chip-color": t.color }}
-                  disabled={markedDates.size === 0}
-                  title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
-                  onClick={() => handleStampShift(t.id)}
-                >
-                  {chipGlyph(t)}
-                </button>
-              ))}
-              <button
-                type="button"
-                className="stamp-chip stamp-chip--empty"
-                disabled={markedDates.size === 0}
-                title="Schicht(en) entfernen"
-                onClick={handleClearShifts}
-              >
-                Schicht leeren
-              </button>
-            </span>
-          )}
-          <span className="stamp-row">
-            <span className="stamp-row-label">Abwesenheiten</span>
-            {absenceTypes.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className="stamp-chip stamp-chip--absence"
-                style={{ "--chip-color": t.color }}
-                disabled={markedDates.size === 0}
-                title={`${t.name} für alle markierten Tage eintragen`}
-                onClick={() => handleStampAbsence(t.id)}
-              >
-                {t.name}
-              </button>
-            ))}
-            <button
-              type="button"
-              className="stamp-chip stamp-chip--empty"
-              disabled={markedDates.size === 0}
-              title="Absenz(en) der markierten Tage entfernen -- löscht den ganzen Zeitraum, nicht nur die markierten Tage daraus"
-              onClick={handleRemoveAbsences}
-            >
-              Absenz entfernen
-            </button>
-          </span>
-          {canManage && specialTemplates.length > 0 && (
-            <span className="stamp-row">
-              <span className="stamp-row-label">Spezialitäten</span>
-              {specialTemplates.map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  className="stamp-chip"
-                  style={{ "--chip-color": t.color }}
-                  disabled={markedDates.size === 0}
-                  title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
-                  onClick={() => handleStampShift(t.id)}
-                >
-                  {chipGlyph(t)}
-                </button>
-              ))}
-            </span>
-          )}
+          <PlacementToolbar
+            placementMode={placementMode}
+            onPlacementModeChange={setPlacementMode}
+            regularTemplates={canManage ? regularTemplates : []}
+            specialTemplates={canManage ? specialTemplates : []}
+            absenceTypes={absenceTypes}
+            markedCount={markedDates.size}
+            onApplyTool={applyToolToMarked}
+            onClearMarked={() => setMarkedDates(new Set())}
+          />
           {isOwnEmployeeSelected && (
             <span className="stamp-row">
               <span className="stamp-row-label">Wünsche</span>
@@ -661,19 +711,6 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
               </button>
             </span>
           )}
-          <span className="stamp-row">
-            <button
-              type="button"
-              className="btn-ghost"
-              disabled={markedDates.size === 0}
-              onClick={() => {
-                setMarkedDates(new Set());
-                setStampSecondSlot(false);
-              }}
-            >
-              Auswahl aufheben
-            </button>
-          </span>
         </span>
       </div>
 
@@ -709,12 +746,8 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                     // nur reguläre Zuweisungen zählen für die Haupt-Zellenfarbe,
                     // Spezialitäten zeigen sich rein informativ als kleiner Punkt
                     // (siehe year-day-special-dot unten).
-                    const regularDayAssignments = dayAssignments.filter(
-                      (a) => templates.find((t) => t.id === a.template)?.category !== "special"
-                    );
-                    const hasSpecialAssignment = dayAssignments.some(
-                      (a) => templates.find((t) => t.id === a.template)?.category === "special"
-                    );
+                    const regularDayAssignments = regularAssignmentsOf(date);
+                    const hasSpecialAssignment = specialAssignmentsOf(date).length > 0;
                     const [assignment, secondAssignment] = regularDayAssignments;
                     const template = assignment ? templates.find((t) => t.id === assignment.template) : null;
                     const secondTemplate = secondAssignment
@@ -725,9 +758,31 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                     const wishedTemplate =
                       preference?.type === "wunschdienst" ? templates.find((t) => t.id === preference.template) : null;
                     const marked = markedDates.has(date);
-                    const kind = absence ? "absence" : assignment ? "shift" : "empty";
-                    const color = absence ? absenceTypesById.get(absence.type)?.color ?? "var(--ink-muted)" : template?.color;
-                    const secondColor = !absence ? secondTemplate?.color : null;
+                    // Port (2026-08): ein durchgehender Dienst bleibt bei einer
+                    // Halbtags-Absenz unverändert bestehen (applyToolToMarked) --
+                    // beide können also koexistieren (nur bei
+                    // day_portion !== "full", eine ganztägige Absenz blockiert
+                    // wie bisher jeden Dienst). Ohne diese Fallunterscheidung
+                    // würde kind="absence" den weiterlaufenden Dienst
+                    // unsichtbar machen.
+                    const halfDayAbsenceWithShift = Boolean(absence) && absence.day_portion !== "full" && Boolean(assignment);
+                    const kind = absence && !halfDayAbsenceWithShift ? "absence" : assignment ? "shift" : "empty";
+                    const absenceColor = absence ? absenceTypesById.get(absence.type)?.color ?? "var(--ink-muted)" : null;
+                    const color = kind === "absence" ? absenceColor : template?.color;
+                    // Bei einem echten Split zeigt secondColor den zweiten
+                    // Dienst; koexistiert stattdessen eine Halbtags-Absenz mit
+                    // dem Dienst, tritt die Absenzfarbe an ihre Stelle --
+                    // Reihenfolge nach day_portion (vormittags → Absenz zuerst,
+                    // nachmittags → Absenz an zweiter Stelle), damit die
+                    // Diagonale die betroffene Tageshälfte widerspiegelt.
+                    const secondColor = halfDayAbsenceWithShift
+                      ? absenceColor
+                      : kind === "shift"
+                        ? secondTemplate?.color
+                        : null;
+                    const isSplit = halfDayAbsenceWithShift ? true : Boolean(secondColor);
+                    const [chipColor, chipColor2] =
+                      halfDayAbsenceWithShift && absence.day_portion === "morning" ? [secondColor, color] : [color, secondColor];
                     const holidayName = holidays.get(date);
                     // Nutzer-Feedback (2026-08): Halbtags-Absenzen ("ich kann auch
                     // einen Nachmittag frei nehmen") sollen auch im Jahresplan
@@ -738,14 +793,18 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                         : absence?.day_portion === "afternoon"
                           ? "Nur nachmittags"
                           : null;
-                    let title = absence
-                      ? `${date}: ${absenceTypesById.get(absence.type)?.name ?? absence.type}${absencePortionLabel ? `, ${absencePortionLabel}` : ""} (${STATUS_LABELS[absence.status] ?? absence.status})`
-                      : assignment && template
-                        ? `${date}: ${template.name} (${template.start_time.slice(0, 5)}–${template.end_time.slice(0, 5)})` +
-                          (secondTemplate
-                            ? ` + ${secondTemplate.name} (${secondTemplate.start_time.slice(0, 5)}–${secondTemplate.end_time.slice(0, 5)})`
-                            : "")
-                        : `${date}: frei`;
+                    let title = halfDayAbsenceWithShift
+                      ? `${date}: ${template.name} (${template.start_time.slice(0, 5)}–${template.end_time.slice(0, 5)}) + ` +
+                        `${absenceTypesById.get(absence.type)?.name ?? absence.type}${absencePortionLabel ? `, ${absencePortionLabel}` : ""} ` +
+                        `(${STATUS_LABELS[absence.status] ?? absence.status})`
+                      : absence
+                        ? `${date}: ${absenceTypesById.get(absence.type)?.name ?? absence.type}${absencePortionLabel ? `, ${absencePortionLabel}` : ""} (${STATUS_LABELS[absence.status] ?? absence.status})`
+                        : assignment && template
+                          ? `${date}: ${template.name} (${template.start_time.slice(0, 5)}–${template.end_time.slice(0, 5)})` +
+                            (secondTemplate
+                              ? ` + ${secondTemplate.name} (${secondTemplate.start_time.slice(0, 5)}–${secondTemplate.end_time.slice(0, 5)})`
+                              : "")
+                          : `${date}: frei`;
                     if (preference) {
                       title +=
                         preference.type === "wunschfrei"
@@ -783,12 +842,12 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                         }}
                       >
                         <span
-                          className={`year-day-fill year-day-fill--${kind}${secondColor ? " is-split" : ""}${absencePortionLabel ? " is-half-day" : ""}`}
+                          className={`year-day-fill year-day-fill--${kind}${isSplit ? " is-split" : ""}${kind === "absence" && absencePortionLabel ? ` is-half-day is-half-day--${absence.day_portion}` : ""}`}
                           style={
-                            secondColor
-                              ? { "--chip-color": color, "--chip-color-2": secondColor }
-                              : color
-                                ? { "--chip-color": color }
+                            chipColor2
+                              ? { "--chip-color": chipColor, "--chip-color-2": chipColor2 }
+                              : chipColor
+                                ? { "--chip-color": chipColor }
                                 : undefined
                           }
                         >

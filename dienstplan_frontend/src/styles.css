@@ -2253,13 +2253,24 @@ thead .col-employee {
 }
 
 /* Nutzer-Feedback (2026-08): Halbtags-Absenzen sollen auch im Jahresplan als
-   solche erkennbar sein -- linke Hälfte der Zelle bleibt ungefärbt, damit ein
-   halber Tag optisch von einem ganzen Abwesenheitstag unterscheidbar ist. */
-.year-day-fill--absence.is-half-day {
+   solche erkennbar sein -- eine Hälfte der Zelle bleibt ungefärbt, damit ein
+   halber Tag optisch von einem ganzen Abwesenheitstag unterscheidbar ist.
+   Nachbesserung (Port PlanGrid-Logik, 2026-08): welche Hälfte gefärbt ist,
+   richtet sich jetzt nach der tatsächlichen Absence.day_portion (vorher
+   immer die rechte Hälfte, unabhängig von vormittags/nachmittags). */
+.year-day-fill--absence.is-half-day--afternoon {
   background: linear-gradient(
     90deg,
     transparent 50%,
     color-mix(in srgb, var(--chip-color) 26%, white) 50%
+  );
+}
+
+.year-day-fill--absence.is-half-day--morning {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--chip-color) 26%, white) 50%,
+    transparent 50%
   );
 }
 

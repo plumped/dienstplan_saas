@@ -1955,6 +1955,42 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       diese Lücke zwischen Modell- und API-Test erneut unbemerkt bleibt. Volle Test-Suite
       (354 Tests) grün.
 
+26. ✅ **Jahresplan auf dieselbe Alles/Oben/Unten-Beplanungslogik wie das Planblatt umgestellt
+    (2026-08)**. Nutzer-Feedback: "der Jahresplan hat noch die alte Logik, übernimm die genau
+    gleiche Logik wie im Planblatt um zu beplanen" -- der Jahresplan (`YearPlan.jsx`) beplante bisher
+    mit einem eigenen, älteren Modell (mehrzeilige Stempelleiste + `stampSecondSlot`-Checkbox für
+    Split-Shifts), das die in dieser Session eingeführte Halbtags-Absenz-Logik des Planblatts
+    (Alles/Oben/Unten, durchgehender Dienst bleibt bei Halbtags-Absenz unverändert stehen, siehe
+    Punkt 24) nicht kannte.
+    - `PlacementToolbar.jsx` (bereits eine reine, wiederverwendbare Komponente ohne
+      Planblatt-spezifische Abhängigkeiten) direkt im Jahresplan eingesetzt statt einer zweiten,
+      abweichenden Stempelleiste -- ersetzt die drei alten Zeilen "Dienste"/"Abwesenheiten"/
+      "Spezialitäten". Mitarbeitende ohne Planer-/Admin-Rolle erhalten weiterhin nur die
+      Absenz-Gruppe (Dienste/Spezialitäten-Templates werden als leere Arrays übergeben); die
+      "Wünsche"-Zeile (Wunschfrei/Wunschdienst, kein Planblatt-Äquivalent) bleibt unverändert
+      bestehen.
+    - `applyToolToCell()`/`applyToolToMarked()`/`shiftShouldBeReplacedByAbsencePortion()`/
+      `shrinkAbsence()` 1:1 aus `PlanGrid.jsx` auf die einfacheren Jahresplan-Datenstrukturen
+      portiert (ein Mitarbeiter/eine Anstellung immer fix, `markedDates` bleibt ein flaches
+      `Set<date>`) -- identisches Verhalten: ein durchgehender Dienst bleibt bei einer
+      Halbtags-Absenz unverändert stehen, eine bestehende ganztägige Einzeltag-Absenz wird beim
+      Bestempeln nur einer Hälfte auf die verbleibende Hälfte reduziert statt gelöscht.
+    - Zellenfüllung erweitert: koexistieren ein Dienst und eine Halbtags-Absenz am selben Tag
+      (die neue Logik lässt genau das zu), zeigt die Zelle jetzt einen diagonalen Farb-Split
+      (Dienstfarbe/Absenzfarbe, Reihenfolge nach `day_portion`) statt die Absenz den Dienst
+      komplett zu verdecken (vorher: `kind = absence ? "absence" : ...` blendete einen
+      koexistierenden Dienst unsichtbar aus). Nebenbei behoben: die reine
+      Halbtags-Absenz-Füllung (`.year-day-fill--absence.is-half-day`) färbte bisher immer die
+      rechte Zellenhälfte, unabhängig von `day_portion` -- jetzt vormittags links, nachmittags
+      rechts.
+    - Playwright-Verifikation (Station "Pflege Tag", durchgehende Frühschicht 07:00–17:00):
+      Tag markieren, Modus "Unten" + Ferien stempeln -- kein `DELETE` auf die Frühschicht-Zuweisung
+      (nur ein `POST /api/absences/` mit `day_portion=afternoon`), Zellen-Tooltip nennt beides
+      ("Frühschicht ... + Ferien, Nur nachmittags"), Zellenfüllung zeigt den erwarteten
+      grün/grau-Diagonalsplit. Mitarbeiter-Ansicht (`peter`, ohne Planer-Rolle) bestätigt: keine
+      Dienst-Chips in der Toolbar, Absenz-Chips + Wünsche-Zeile weiterhin nutzbar. Volle
+      Test-Suite (354 Tests) grün.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

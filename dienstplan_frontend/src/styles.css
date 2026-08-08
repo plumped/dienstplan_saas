@@ -1875,33 +1875,27 @@ thead .col-employee {
   height: 36px;
 }
 
-/* Nutzer-Feedback (2026-08, Nachbesserung): 0.5px Abstand rundherum sollte
+/* Nutzer-Feedback (2026-08, Nachbesserung): der Abstand rundherum sollte
    NICHT auf der innersten Farbfläche (.shift-chip) sitzen, während
    .shift-chip-btn (Klickfläche) weiterhin die volle Zelle beansprucht --
    das ergab zwei sichtbar verschieden grosse, verschachtelte Boxen (unschön,
    v. a. beim Hover). Stattdessen rückt der GESAMTE Container
    (.day-cell-slots, enthält Klick- UND Farbfläche als eine Einheit) selbst
-   0.5px von der Zellkante ab -- position:absolute + inset:0.5px, analog
-   zum bereits bewährten Muster bei .cell-wrap--span/--top/--bottom weiter
-   unten. .day-cell hat mit height:36px eine garantiert definierte Grösse
-   (kein Prozent-Auflösungsproblem wie bei einer <td> ohne explizites
-   height). */
+   von der Zellkante ab -- position:absolute + inset:1px, analog zum
+   bereits bewährten Muster bei .cell-wrap--span/--top/--bottom weiter
+   unten. .day-cell IST die gesamte Zelle (position:relative, height:36px,
+   also eine garantiert definierte Grösse -- kein Prozent-Auflösungsproblem
+   wie bei einer <td> ohne explizites height) -- .day-cell-slots füllt sie
+   mit exakt 1px Rand auf allen vier Seiten, zentriert, EINHEITLICH für
+   Einzeldienst UND Split (dieselbe Basisregel, kein Sonderfall für
+   .day-cell-slots--split mehr nötig). */
 .day-cell-slots {
   position: absolute;
-  inset: 0.5px;
+  inset: 1px;
   border-radius: 5px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-}
-
-/* Nutzer-Feedback: bei zwei Diensten (Split) zusätzlich margin: 1px --
-   der Container selbst rückt dadurch nochmals von der Zellkante ab (auf
-   einem position:absolute-Element addiert sich margin ganz normal zum
-   bestehenden inset), damit auch die Split-Zelle rundherum spürbar Platz
-   hat statt knapp anzuliegen. */
-.day-cell-slots.day-cell-slots--split {
-  margin: 1px;
 }
 
 .day-cell-slots .cell-wrap--span {

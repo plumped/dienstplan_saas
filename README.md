@@ -1940,14 +1940,39 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
-1. **Setup-Wizard**: eine neue Praxis registriert sich selbst (Tenant, erster Admin-Account,
-   Grundstruktur Node/Skills/TimeTemplates) — heute nur über den Django-Admin möglich, für
-   nicht-technische Kund:innen nicht zumutbar.
-2. **Einladungs-Flow** für weitere Mitarbeitende (E-Mail-Einladung statt manuellem Anlegen im
-   Admin).
-3. **Passwort-Reset** — aktuell nicht vorhanden, nur `POST /api/auth/token/` mit bekanntem
-   Passwort.
-4. **Rollenverwaltung im Frontend**, sobald Block 2.1 (rollenbasierte Berechtigungen) steht.
+**Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend
+zu einem B2B-Vertical-SaaS für Heime/Kliniken, wo Datenschutz (revDSG) und ArG-Konformität eine
+höhere Vertrauenshürde als bei einem generischen Tool bedeuten. Landing Page mit zwei
+gleichwertigen CTAs ("Kostenlos testen" für Self-Serve, "Demo buchen" für Ketten/grössere Häuser,
+die vor dem Hochladen echter Mitarbeiterdaten mit jemandem sprechen wollen), Self-Serve-Pfad führt
+über einen vorbefüllten Demo-Tenant (Aha-Moment vor der Commitment-Hürde) in einen geführten
+Setup-Wizard statt direkt in den Django-Admin.
+
+1. **Landing Page** (eigenständige Marketing-Seite ausserhalb der App, kein Login nötig):
+   Nutzenversprechen konkret statt generisch (z. B. "ArG-konforme Planung ohne Excel-Chaos" statt
+   "Software für Dienstpläne"). Zwei CTAs nebeneinander:
+   - **"Kostenlos testen"** → Self-Serve-Signup-Flow (Punkt 2).
+   - **"Demo buchen"** → Kontaktformular/Kalender-Link, sales-assistiertes Onboarding für grössere
+     Institutionen (kein Code-Task, aber als bewusster zweiter Pfad einzuplanen, nicht nachträglich
+     anzuflicken).
+2. **Self-Serve-Signup-Flow**: E-Mail-basiert, Magic Link statt Passwort-Ping-Pong beim ersten
+   Login (weniger Reibung als klassisches Passwort-Setzen). Landet nach dem Signup sofort in einem
+   vorbefüllten **Demo-Tenant** (Beispiel-Stationen/-Mitarbeitende/-Dienstplan zum Anfassen), bevor
+   der eigene, echte Tenant angelegt wird — senkt die Hürde, weil man das Produkt fühlt, bevor man
+   sich für echte Personendaten committen muss.
+3. **Geführter Setup-Wizard** für den eigenen Tenant (ersetzt die heutige Django-Admin-Pflicht):
+   Tenant-Name → Kanton (für Feiertagskalender, Block 1.4) → erste Station(en)/Teams → Schichttypen
+   (mit sinnvollen Vorlagen zur Auswahl statt Leerformular) → Mitarbeitende (CSV-Import statt
+   Einzelanlage). Mit sichtbarer Fortschritts-Checkliste (Muster: Linear/Notion-Onboarding) statt
+   alles auf einer langen Formularseite abzufragen.
+4. **Einladungs-Flow** für weitere Mitarbeitende (E-Mail-Einladung statt manuellem Anlegen im
+   Admin) — Folgeschritt nach dem Setup-Wizard, für den laufenden Betrieb.
+5. **Passwort-Reset/Magic-Link-Login** — aktuell nicht vorhanden, nur `POST /api/auth/token/` mit
+   bekanntem Passwort. Voraussetzung für Punkt 2 (Self-Serve-Signup ohne Passwort-Vergabe durch
+   einen Admin).
+6. **Rollenverwaltung im Frontend**, sobald Block 2.1 (rollenbasierte Berechtigungen) steht —
+   damit der Setup-Wizard (Punkt 3) dem ersten Account direkt die Admin-Rolle zuweisen kann, ohne
+   Django-Admin-Umweg.
 
 ### 4. Produktionsreife & Sicherheit
 

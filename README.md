@@ -1063,6 +1063,30 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       Drei-Tage-Ferienwoche komplett markieren und mit einem ANDEREN Absenztyp (Krankheit)
       überstempeln läuft ohne 400/404-Fehler durch und ergibt weiterhin einen einzigen,
       korrekt umgruppierten Datensatz im Abwesenheiten-Tab (nicht drei fragmentierte).
+    - ✅ **Bugfix: Klick auf belegte Zelle markierte beim blossen Bewegen der Maus weiter
+      (2026-08)**: Nutzer-Beobachtung -- "klicke ich auf eine belegte Zelle aktiviert er sofort
+      Mehrfachauswahl und markiert alles was unter den Zeiger kommt", während es bei leeren und
+      Absenz-Zellen einwandfrei funktionierte. Ursache lag im Zusammenspiel zweier Funktionen in
+      PlanGrid.jsx: `startMark()` setzt beim Markieren-Beginn `dragMarkModeRef` (den Ziehmodus)
+      UND wird von `window`s globalem `mouseup`-Listener wieder auf `null` zurückgesetzt, sobald
+      die Maustaste losgelassen wird -- das funktioniert für leere/Absenz-Zellen, weil dort
+      `mousedown` (VOR dem `mouseup`) `startMark()` aufruft. Bei einer belegten, per natives
+      Drag&Drop verschiebbaren Zelle gibt es bewusst KEINEN `mousedown`-Handler (siehe Punkt 11
+      oben, damit natives Drag&Drop nicht gestört wird) -- dort rief stattdessen der `onClick`-
+      Fallback `startMark()` auf. Ein `click`-Event feuert aber IMMER NACH dem zugehörigen
+      `mouseup`: der globale Listener hatte den Ziehmodus zu diesem Zeitpunkt schon (unnötig)
+      zurückgesetzt, und `startMark()` setzte ihn im Klick-Handler erneut -- diesmal blieb er
+      hängen, weil kein weiteres `mouseup` mehr folgte. Jede spätere Mausbewegung über andere
+      Zellen (auch OHNE gedrückte Taste) löste dadurch `continueMark()` aus und markierte ungewollt
+      weiter. Gefixt durch klare Trennung: eine neue Funktion `toggleMark()` (reines Ein-Zellen-
+      Toggle OHNE `dragMarkModeRef`-Seiteneffekt) übernimmt jetzt den `onClick`-Fallback in
+      `ShiftCell.jsx` (neue Prop `onMarkToggle`, in beiden betroffenen Zweigen -- belegte Zelle und
+      der Tastatur-Fallback bei Absenz/leerer Zelle); `startMark()`/`onMarkStart` bleiben
+      ausschliesslich dem `mousedown`-gestarteten Ziehen vorbehalten. Mit Playwright verifiziert:
+      Klick auf eine belegte Zelle, danach die Maus (OHNE gedrückte Taste) über zehn weitere Zellen
+      bewegt -- bleibt bei "1 markiert" (vorher hätte jede überstrichene Zelle mitmarkiert). Ziehen
+      über mehrere leere Zellen sowie Einzelklick + anschliessende Mausbewegung ohne Taste auf
+      leeren Zellen funktionieren unverändert korrekt (Regressionscheck).
 12. ✅ **Jahresplan pro Mitarbeiter -- anzeigbar und bearbeitbar**: das Planblatt (`PlanGrid.jsx`)
     zeigt weiterhin nur einen Monat (`MonthNav.jsx`). Der Jahresplan (`YearPlan.jsx`, neuer Tab
     "Jahresplan") deckt den Hauptfall ab, eine einzelne Person übers ganze Jahr zu bearbeiten --

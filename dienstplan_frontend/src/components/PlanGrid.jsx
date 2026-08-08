@@ -785,6 +785,23 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     applyMark(`${employeeId}:${date}:${rowNodeId}`, dragMarkModeRef.current === "mark");
   }
 
+  // Bugfix (Nutzer-Feedback): reines Klick-Toggle für den `onClick`-Pfad in
+  // ShiftCell.jsx (belegte/draggable Zellen ohne eigenen mousedown-Handler,
+  // s. dort -- sowie der Tastatur-Fallback bei leeren/Absenz-Zellen). Anders
+  // als startMark() setzt diese Funktion dragMarkModeRef NICHT: startMark()
+  // ist für die mousedown-gestartete Ziehmarkierung gedacht, deren
+  // Ziehmodus per globalem window-"mouseup" wieder beendet wird (s. o.).
+  // Ein `click`-Event feuert aber IMMER NACH diesem mouseup -- rief die
+  // click-Fallback bislang ebenfalls startMark() auf, blieb
+  // dragMarkModeRef unbemerkt "aktiv" hängen (kein weiteres mouseup folgt
+  // mehr), und jede spätere Mausbewegung über andere Zellen (auch OHNE
+  // gedrückte Taste) markierte über continueMark() ungewollt weiter --
+  // genau das vom Nutzer beschriebene Verhalten bei belegten Zellen.
+  function toggleMark(employeeId, date, rowNodeId) {
+    const key = `${employeeId}:${date}:${rowNodeId}`;
+    applyMark(key, !markedCells.has(key));
+  }
+
   // Markierte Zellen (Schlüssel employeeId:date:rowNodeId) auf ihre reinen
   // Datumsmengen je Mitarbeiter reduzieren -- rowNodeId ist für Absenzen
   // irrelevant (eine Absenz gehört zur Person, nicht zum Team), ein Set
@@ -1024,6 +1041,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           marked={marked}
                           onMarkStart={() => startMark(emp.id, date, rowNodeId)}
                           onMarkEnter={() => continueMark(emp.id, date, rowNodeId)}
+                          onMarkToggle={() => toggleMark(emp.id, date, rowNodeId)}
                         />
                       );
                     }

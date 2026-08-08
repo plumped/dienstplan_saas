@@ -52,6 +52,15 @@ export default function ShiftCell({
   marked = false,
   onMarkStart,
   onMarkEnter,
+  // Bugfix (Nutzer-Feedback): reines Toggle für den `onClick`-Fallback
+  // (belegte/draggable Zellen ohne eigenen mousedown-Handler weiter unten,
+  // sowie der Tastatur-Fallback bei Enter/Leertaste) -- bewusst NICHT
+  // onMarkStart, das den Ziehmodus in PlanGrid.jsx (dragMarkModeRef) startet.
+  // Ein `click` feuert immer NACH dem zugehörigen `mouseup`, der den
+  // Ziehmodus dort beendet -- rief der Klick-Fallback onMarkStart() auf,
+  // blieb der Ziehmodus unbemerkt aktiv (kein weiteres mouseup folgt), und
+  // jede spätere Mausbewegung markierte ungewollt weitere Zellen.
+  onMarkToggle,
   // README Punkt 18 (Split-Shifts): assignmentId identifiziert, WELCHE der
   // (bis zu zwei) Zuweisungen dieses Tages diese ShiftCell-Instanz gerade
   // darstellt -- undefined für einen leeren Slot. Wird 1:1 an onMove/
@@ -255,7 +264,7 @@ export default function ShiftCell({
         suppressClickRef.current = false;
         return;
       }
-      onMarkStart();
+      onMarkToggle();
     };
     return (
       <button
@@ -382,7 +391,7 @@ export default function ShiftCell({
       suppressClickRef.current = false;
       return;
     }
-    onMarkStart();
+    onMarkToggle();
   };
 
   return (

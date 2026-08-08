@@ -37,23 +37,21 @@ export default function ShiftCell({
   canEditOwnWish = false,
   onSaveWish,
   onDeleteWish,
-  // Mehrfachauswahl + Schicht-Stempel (siehe README, inspiriert von Polypoint):
-  // solange aktiv, markiert ein Klick/Ziehen die Zelle statt die übliche
-  // Dropdown-Zuweisung zu öffnen -- die eigentliche Zuweisung passiert
-  // gesammelt über die Stempel-Leiste in PlanGrid.jsx. onMarkStart entscheidet
-  // anhand von `marked`, ob markiert oder entmarkiert wird, und startet damit
-  // den Ziehen-Modus in PlanGrid; onMarkEnter wendet denselben Modus beim
-  // Drüberziehen auf weitere Zellen an.
-  selectionMode = false,
+  // Workflow-Redesign (2026-08, Nutzer-Feedback: "erst Tage markieren, dann
+  // beplanen -- nicht umgekehrt"): ein Klick auf eine Zelle markiert IMMER
+  // (kein separater "selectionMode" mehr) -- das tatsächliche Beplanen
+  // passiert gesammelt über die Icon-Toolbar in PlanGrid.jsx
+  // (applyToolToMarked). onMarkStart entscheidet anhand von `marked`, ob
+  // markiert oder entmarkiert wird, und startet damit den Ziehen-Modus in
+  // PlanGrid; onMarkEnter wendet denselben Modus beim Drüberziehen auf
+  // weitere Zellen an. `marked` gilt pro TAG (nicht pro Slot) -- beide
+  // ShiftCell-Instanzen eines Split-Tages bekommen denselben Wert, nur für
+  // aria-pressed/Titel; die sichtbare Markierung sitzt eine Ebene höher an
+  // .day-cell-slots (PlanGrid.jsx), weil sie sonst bei einem belegten Tag
+  // hinter der opaken Farbfläche verschwinden würde.
   marked = false,
   onMarkStart,
   onMarkEnter,
-  // README (2026-08, Bugfix): zweiter (Split-Shift-)Dienst desselben Tages,
-  // nur zur Anzeige -- die Mehrfachauswahl stempelt weiterhin die ganze
-  // Zelle als Einheit (siehe stampSecondSlot in PlanGrid.jsx), aber ohne
-  // dieses Badge wäre nach dem Stempeln des zweiten Slots in der
-  // Mehrfachauswahl-Ansicht kein Unterschied zum einfachen Fall sichtbar.
-  secondTemplateInfo,
   // README Punkt 18 (Split-Shifts): assignmentId identifiziert, WELCHE der
   // (bis zu zwei) Zuweisungen dieses Tages diese ShiftCell-Instanz gerade
   // darstellt -- undefined für einen leeren Slot. Wird 1:1 an onMove/
@@ -66,11 +64,6 @@ export default function ShiftCell({
   // verwirrendes Duplikat.
   assignmentId,
   showWishBadge = true,
-  // Icon-Toolbar (2026-08, "genau wie Polypoint"): ersetzt das frühere
-  // Klick-öffnet-Dropdown komplett -- ein Klick auf die Zelle wendet
-  // stattdessen das in PlanGrid.jsx aktuell "bewaffnete" Werkzeug an
-  // (handleCellClick dort orchestriert, welche Mutation daraus wird).
-  onCellClick,
 }) {
   const absenceType = absence ? absenceTypes.find((t) => t.id === absence.type) : null;
   const [offering, setOffering] = useState(false);
@@ -230,28 +223,27 @@ export default function ShiftCell({
     );
   }
 
-  if (selectionMode && canEdit) {
-    // README (2026-08, Bugfix): Absenz-Tage waren hier komplett ausgenommen
-    // (der frühere `if (absence)`-Zweig stand VOR diesem Block und griff
-    // zuerst) -- ein Tag mit bestehender Absenz war dadurch NIE markierbar,
-    // in keinem Modus. Für Schicht-Stempeln war das durchaus gewollt (eine
-    // Zuweisung würde die Regel-Engine ohnehin ablehnen,
-    // _check_no_absence_conflict, das Stempeln würde also nur still
-    // übersprungen), aber es blockierte damit auch "Absenz entfernen" in
-    // der Mehrfachauswahl-Stempelleiste (PlanGrid.jsx) komplett -- ein
-    // Absenz-Tag liess sich so nie auswählen, um ihn wieder zu löschen.
-    // Jetzt bleibt ein Absenz-Tag markierbar (zeigt weiterhin seinen
-    // FER/KRA/SON-Chip statt eines Schichttyps), Schicht-Stempeln darauf
-    // wird weiterhin vom Backend abgelehnt und als übersprungen gezählt.
-    //
-    // Markieren per Ziehen: onMouseDown startet den Ziehen-Modus (mark/
-    // unmark, je nach aktuellem Zustand dieser Zelle) und markiert sie
-    // gleich mit; onMouseEnter wendet denselben Modus beim Drüberziehen mit
-    // gedrückter Maustaste auf weitere Zellen an. onClick bleibt als
-    // Tastatur-Fallback (Enter/Leertaste lösen click ohne vorheriges
-    // mousedown aus) -- ein durch Maus-Klick bereits verarbeitetes
-    // mousedown unterdrückt das nachfolgende click, damit nicht doppelt
-    // markiert/entmarkiert wird.
+  if (absence) {
+    // Workflow-Redesign (2026-08): eine Absenz-Zelle ist -- wie jede andere
+    // -- Ziel des Markierens, nicht mehr eines direkt platzierenden
+    // Werkzeugklicks. Nicht draggable (kein Verschieben einer Absenz per
+    // Drag&Drop), daher hier -- anders als beim belegten Dienst unten --
+    // volle mousedown+mouseenter-Ziehmarkierung ohne Rücksicht auf
+    // natives HTML5-Drag-and-Drop. Für rein lesende Ansichten (!canEdit)
+    // bleibt es bei der reinen Anzeige.
+    const title = `${absenceType?.name ?? absence.type} (${absence.start_date} – ${absence.end_date})`;
+    const chip = (
+      <span className="shift-chip shift-chip--absence" style={{ "--chip-color": absenceType?.color }}>
+        {absenceType ? chipGlyph(absenceType) : absence.type}
+      </span>
+    );
+    if (!canEdit) {
+      return (
+        <span className="shift-chip-btn is-absence" title={title}>
+          {chip}
+        </span>
+      );
+    }
     const handleMouseDown = (e) => {
       if (e.button !== 0) return;
       e.preventDefault(); // verhindert Text-/Bild-Selektion beim Ziehen
@@ -268,68 +260,13 @@ export default function ShiftCell({
     return (
       <button
         type="button"
-        className={`shift-chip-btn is-selectable${marked ? " is-marked" : ""}`}
+        className="shift-chip-btn is-absence"
         aria-pressed={marked}
-        title={
-          absence
-            ? `${absenceType?.name ?? absence.type} (${absence.start_date} – ${absence.end_date}) -- ` +
-              (marked ? "Markierung aufheben" : "Für Absenz entfernen markieren")
-            : marked
-              ? "Markierung aufheben"
-              : "Für Mehrfachzuweisung markieren (auch durch Ziehen)"
-        }
+        title={`${title} -- ${marked ? "Markierung aufheben" : "Zum Beplanen markieren (auch durch Ziehen)"}`}
         onMouseDown={handleMouseDown}
         onMouseEnter={onMarkEnter}
         onClick={handleClick}
       >
-        {absence ? (
-          <span className="shift-chip shift-chip--absence" style={{ "--chip-color": absenceType?.color }}>
-            {absenceType ? chipGlyph(absenceType) : absence.type}
-          </span>
-        ) : templateInfo ? (
-          <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>
-            {chipGlyph(templateInfo)}
-          </span>
-        ) : (
-          <span className="shift-chip shift-chip--empty" aria-hidden="true">
-            +
-          </span>
-        )}
-        {!absence && secondTemplateInfo && (
-          <span className="shift-chip" style={{ "--chip-color": secondTemplateInfo.color }}>
-            {chipGlyph(secondTemplateInfo)}
-          </span>
-        )}
-        {marked && (
-          <span className="select-check" aria-hidden="true">
-            ✓
-          </span>
-        )}
-      </button>
-    );
-  }
-
-  if (absence) {
-    // Icon-Toolbar (2026-08): anders als bisher (nicht klickbar) ist eine
-    // Absenz-Zelle jetzt ebenfalls Ziel eines Werkzeugklicks -- jedes
-    // Werkzeug ersetzt konsequent, was vorher da war (siehe
-    // PlanGrid.jsx: handleCellClick). Für rein lesende Ansichten (!canEdit)
-    // bleibt es bei der reinen Anzeige.
-    const title = `${absenceType?.name ?? absence.type} (${absence.start_date} – ${absence.end_date})`;
-    const chip = (
-      <span className="shift-chip shift-chip--absence" style={{ "--chip-color": absenceType?.color }}>
-        {absenceType ? chipGlyph(absenceType) : absence.type}
-      </span>
-    );
-    if (!canEdit) {
-      return (
-        <span className="shift-chip-btn is-absence" title={title}>
-          {chip}
-        </span>
-      );
-    }
-    return (
-      <button type="button" className="shift-chip-btn is-absence" title={title} onClick={onCellClick}>
         {chip}
       </button>
     );
@@ -419,18 +356,54 @@ export default function ShiftCell({
     onMove(source.employeeId, source.date, source.assignmentId, employeeId, date, assignmentId);
   }
 
+  // Workflow-Redesign (2026-08): ein Klick markiert (statt direkt zu
+  // beplanen), OHNE das bestehende Drag&Drop (Schicht auf einen anderen Tag
+  // ziehen, s. o.) zu brechen -- beide Gesten beginnen mit mousedown auf
+  // demselben Button. Bei einer LEEREN Zelle (nicht draggable) ist volle
+  // Ziehmarkierung (mousedown+mouseenter, wie bei der Absenz oben) völlig
+  // unproblematisch. Bei einer BELEGTEN (draggable) Zelle würde
+  // preventDefault auf mousedown das native Drag-and-Drop verhindern (der
+  // Browser startet keinen Drag, wenn sein mousedown gecancelt wurde) --
+  // dort daher KEIN eigener mousedown-Handler, nur ein normales onClick
+  // (markiert bei einfachem Klick ohne Bewegung, wie gehabt; ein
+  // tatsächlicher Drag löst ohnehin kein click aus). onMouseEnter bleibt in
+  // beiden Fällen aktiv: es feuert nur bei normaler Mausbewegung, ein
+  // aktiver nativer Drag unterdrückt es im Browser ohnehin zugunsten von
+  // dragenter/dragover.
+  const handleMouseDown = (e) => {
+    if (templateInfo) return; // belegt+draggable -- natives Drag nicht stören
+    if (e.button !== 0) return;
+    e.preventDefault();
+    suppressClickRef.current = true;
+    onMarkStart();
+  };
+  const handleClick = () => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false;
+      return;
+    }
+    onMarkStart();
+  };
+
   return (
     <span className="cell-wrap">
       <button
         type="button"
         className={`shift-chip-btn${dragOver ? " is-drop-target" : ""}`}
         draggable={Boolean(templateInfo)}
-        onClick={onCellClick}
+        aria-pressed={marked}
+        onMouseDown={handleMouseDown}
+        onMouseEnter={onMarkEnter}
+        onClick={handleClick}
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragLeave={() => setDragOver(false)}
         onDrop={handleDrop}
-        aria-label={templateInfo ? `${templateInfo.name}, Schicht ändern oder ziehen` : "Schicht zuweisen"}
+        aria-label={
+          templateInfo
+            ? `${templateInfo.name}${marked ? ", markiert" : ""} -- klicken zum Markieren, ziehen zum Verschieben`
+            : `Leer${marked ? ", markiert" : ""} -- klicken zum Markieren (auch durch Ziehen)`
+        }
       >
         {templateInfo ? (
           <span className="shift-chip" style={{ "--chip-color": templateInfo.color }}>

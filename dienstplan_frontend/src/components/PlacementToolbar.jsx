@@ -7,26 +7,28 @@ const MODES = [
   { value: "pikett", label: "Pikett" },
 ];
 
-function isArmed(armedTool, kind, id) {
-  return Boolean(armedTool) && armedTool.kind === kind && armedTool.id === id;
-}
-
-// Nutzer-Feedback (2026-08, "genau wie Polypoint"): ersetzt das bisherige
-// Klick-auf-Zelle-Dropdown komplett. Werkzeug wählen (Modus + Icon), dann
-// auf eine Zielzelle klicken -- sofortige Zuweisung (siehe
-// PlanGrid.jsx: handleCellClick). Immer sichtbar für canManage, unabhängig
-// von der bestehenden Mehrfachauswahl-Stempelleiste (bulk, viele Tage auf
-// einmal), die als eigenständiges Feature unverändert bestehen bleibt.
+// Workflow-Redesign (2026-08, Nutzer-Feedback: "erst Tage markieren, dann
+// beplanen -- nicht umgekehrt"): ersetzt das frühere Zwei-Werkzeuge-Modell
+// (diese Toolbar zum sofortigen Platzieren per Klick auf eine Zelle, plus
+// eine separate Mehrfachauswahl-Stempelleiste mit genau umgekehrter
+// Reihenfolge). Jetzt EIN Modell: Klicken/Ziehen auf eine Zelle markiert
+// immer (PlanGrid.jsx: startMark/continueMark), diese Toolbar ist der
+// Stempel für die aktuelle Markierung -- ein Klick auf ein Dienst-Icon
+// wendet es sofort auf ALLE markierten Tage an (onApplyTool), egal ob das
+// einer oder zwanzig sind. Deaktiviert (disabled), solange nichts markiert
+// ist, mit Hinweistext + "Auswahl aufheben"-Kontrolle.
 export default function PlacementToolbar({
   placementMode,
   onPlacementModeChange,
-  armedTool,
-  onArmTool,
   regularTemplates,
   specialTemplates,
   absenceTypes,
+  markedCount,
+  onApplyTool,
+  onClearMarked,
 }) {
   const isPikett = placementMode === "pikett";
+  const disabled = markedCount === 0;
 
   return (
     <div className="placement-toolbar">
@@ -53,10 +55,11 @@ export default function PlacementToolbar({
               <button
                 key={`t-${t.id}`}
                 type="button"
-                className={`stamp-chip${isArmed(armedTool, "template", t.id) ? " is-armed" : ""}`}
+                className="stamp-chip"
                 style={{ "--chip-color": t.color }}
-                title={t.name}
-                onClick={() => onArmTool({ kind: "template", id: t.id })}
+                title={`${t.name} auf alle markierten Tage anwenden`}
+                disabled={disabled}
+                onClick={() => onApplyTool({ kind: "template", id: t.id })}
               >
                 {chipGlyph(t)}
               </button>
@@ -68,10 +71,11 @@ export default function PlacementToolbar({
               <button
                 key={`t-${t.id}`}
                 type="button"
-                className={`stamp-chip${isArmed(armedTool, "template", t.id) ? " is-armed" : ""}`}
+                className="stamp-chip"
                 style={{ "--chip-color": t.color }}
-                title={t.name}
-                onClick={() => onArmTool({ kind: "template", id: t.id })}
+                title={`${t.name} auf alle markierten Tage anwenden`}
+                disabled={disabled}
+                onClick={() => onApplyTool({ kind: "template", id: t.id })}
               >
                 {chipGlyph(t)}
               </button>
@@ -80,23 +84,35 @@ export default function PlacementToolbar({
               <button
                 key={`a-${t.id}`}
                 type="button"
-                className={`stamp-chip stamp-chip--absence${isArmed(armedTool, "absence", t.id) ? " is-armed" : ""}`}
+                className="stamp-chip stamp-chip--absence"
                 style={{ "--chip-color": t.color }}
-                title={t.name}
-                onClick={() => onArmTool({ kind: "absence", id: t.id })}
+                title={`${t.name} für alle markierten Tage eintragen`}
+                disabled={disabled}
+                onClick={() => onApplyTool({ kind: "absence", id: t.id })}
               >
                 {chipGlyph(t)}
               </button>
             ))}
             <button
               type="button"
-              className={`stamp-chip stamp-chip--empty${isArmed(armedTool, "empty", null) ? " is-armed" : ""}`}
-              title="Radiergummi -- entfernt die Zuweisung beim Klick auf eine Zelle"
-              onClick={() => onArmTool({ kind: "empty", id: null })}
+              className="stamp-chip stamp-chip--empty"
+              title="Radiergummi -- entfernt die Zuweisung der markierten Tage"
+              disabled={disabled}
+              onClick={() => onApplyTool({ kind: "empty", id: null })}
             >
               ×
             </button>
           </>
+        )}
+      </span>
+      <span className="placement-selection">
+        <span className="multi-select-hint">
+          {markedCount === 0 ? "Tage anklicken oder ziehen, um sie zu markieren." : `${markedCount} markiert`}
+        </span>
+        {markedCount > 0 && (
+          <button type="button" className="btn-ghost" onClick={onClearMarked}>
+            Auswahl aufheben
+          </button>
         )}
       </span>
     </div>

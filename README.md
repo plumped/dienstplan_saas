@@ -993,6 +993,54 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       vorheriges `mousedown` aus) -- ein bereits per `mousedown` verarbeiteter Klick unterdrückt das
       nachfolgende `click`, damit nicht doppelt (ent-)markiert wird. Gleiches Muster in
       `ShiftCell.jsx` (Planblatt) und `YearPlan.jsx` (Jahresplan, Punkt 12 unten).
+    - ✅ **Planblatt-Nachbesserung, Teil 3: einheitlicher 1px-Rand (2026-08)**: letzte Feinabstimmung
+      der randlosen Farbfläche oben -- ein Zwischenschritt hatte `margin: 1px` nur auf
+      `.day-cell-slots--split` gelegt (zusätzlich zum bereits vorhandenen `inset: 0.5px` der
+      Basisregel), wodurch Split-Zellen einen sichtbar anderen (grösseren) Rand hatten als
+      Einzeldienst-Zellen -- vom Nutzer exakt so benannt ("day-cell-slots soll diese komplett
+      ausfüllen mit 1 margin rundherum zentriert"). Vereinheitlicht auf eine einzige Regel
+      `.day-cell-slots { inset: 1px }` ohne Sonderfall für `--split`: beide Zustände bekommen
+      dadurch exakt denselben, zentrierten 1px-Rand auf allen vier Seiten.
+    - ✅ **Beplanen neu gedacht: erst markieren, dann stempeln -- immer (2026-08)**: Nutzer-Feedback
+      direkt nach der obigen Design-Freigabe ("Änder nichts mehr am Design!") -- das *Beplanen*
+      selbst fühlte sich nicht mehr intuitiv an: die Icon-Toolbar (Punkt 11 oben, "Polypoint-Stil")
+      verlangte "erst Dienst auswählen, dann Zelle anklicken", während eine parallel bestehende,
+      separate Mehrfachauswahl-Stempelleiste genau umgekehrt funktionierte ("erst Tage markieren,
+      dann stempeln") -- zwei widersprüchliche Bedienmodelle im selben Grid, je nachdem ob ein
+      oder mehrere Tage beplant werden sollten. Auf die Rückfrage "was wäre wirklich effizient und
+      intuitiv" (inkl. Klärung, wie nicht-zusammenhängende Tage wie Montag+Mittwoch markiert
+      werden -- einfache Klicks schalten einzelne Zellen additiv um, keine Modifier-Taste nötig)
+      und explizite Zustimmung ("Ja, setz das so um!") auf EIN einziges Modell vereinheitlicht,
+      Excel-artig: Zellen anklicken/durchziehen markiert immer zuerst (egal ob eine oder zwanzig),
+      ein Klick auf ein Werkzeug-Icon in der (jetzt einzigen) `PlacementToolbar.jsx` wendet es auf
+      ALLE markierten Zellen an. Die alte, separate Mehrfachauswahl-Stempelleiste (Bulk-Feature)
+      entfällt dadurch komplett -- ihre teamgefilterte Icon-Logik (nur Templates der markierten
+      Zeilen, Fallback auf stationsweite) übernimmt jetzt die Icon-Toolbar. `armedTool`-State
+      (das bisherige "Werkzeug bewaffnen") entfällt ersatzlos; `applyToolToMarked()` in
+      `PlanGrid.jsx` ersetzt sowohl das alte `handleCellClick()`-Routing als auch
+      `handleStampAssign`/`handleStampAbsence`, inkl. Gruppierung zusammenhängender Tage zu
+      EINEM `Absence`-Datensatz beim Absenz-Stempeln (`groupConsecutiveDates()`, verhindert
+      fragmentierte 1-Tages-Einträge im Abwesenheiten-Tab). Technisch heikelster Teil: Zellen mit
+      bestehender Zuweisung sind gleichzeitig per natives HTML5-Drag verschiebbar (bestehendes
+      Feature) -- ein naives `mousedown`+`preventDefault()` für das neue Ziehen-zum-Markieren hätte
+      `dragstart` unterdrückt (Spezifikationsverhalten) und die Verschieben-Funktion stillgelegt.
+      Gelöst durch eine bewusste Asymmetrie in `ShiftCell.jsx`: `handleMouseDown` greift nur bei
+      `!templateInfo` (leere/Absenz-Zellen, nie `draggable`) und ruft dort `preventDefault()` +
+      startet das Ziehen-Markieren; belegte, `draggable`-Zellen bekommen gar keinen
+      `mousedown`-Handler und verlassen sich stattdessen auf `onClick` (feuert nur, wenn kein
+      tatsächliches Drag stattfand) zum Markieren per Einzelklick. Die "markiert"-Kennzeichnung
+      (`.day-cell-slots.is-marked`, inset-`box-shadow`-Ring) sitzt bewusst am äusseren Container statt
+      am innersten `.shift-chip-btn`, weil dessen eigener, deckender `.shift-chip`-Kindknoten (bei
+      belegten Zellen) jeden Hintergrund/Schatten des Buttons sonst optisch verdeckt hätte. Mit
+      Playwright gegen echte Testheim-Daten verifiziert (danach wieder bereinigt): Einzelzell-Klick
+      + Stempel, Ziehen über mehrere leere Zellen + Stempel (Markierungsring sichtbar, Stempel-Icons
+      erst ab 1 markierter Zelle aktiv), nicht-zusammenhängendes Markieren zweier Tage per
+      Einzelklicks, Absenz-Stempeln dreier zusammenhängender Tage erzeugt EINEN gruppierten
+      Abwesenheits-Datensatz (nicht drei), Radiergummi löscht die Zuweisung markierter Zellen,
+      und -- kritischster Fall -- natives Ziehen einer belegten Zelle auf einen anderen Tag
+      verschiebt weiterhin korrekt und markiert dabei NICHT versehentlich die Quellzelle. Ausserdem
+      unterwegs eine bereits unabhängig ausstehende Migration (`AbsenceType.icon`, Punkt 11 oben)
+      angewendet, die den lokalen Dev-Stand zuvor mit HTTP-500 bei `/api/absence-types/` blockierte.
 12. ✅ **Jahresplan pro Mitarbeiter -- anzeigbar und bearbeitbar**: das Planblatt (`PlanGrid.jsx`)
     zeigt weiterhin nur einen Monat (`MonthNav.jsx`). Der Jahresplan (`YearPlan.jsx`, neuer Tab
     "Jahresplan") deckt den Hauptfall ab, eine einzelne Person übers ganze Jahr zu bearbeiten --

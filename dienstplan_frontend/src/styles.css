@@ -377,47 +377,6 @@ main {
 
 /* ---------- Plan grid ---------- */
 
-/* Mehrfachauswahl + Schicht-Stempel (README-Task, inspiriert von Polypoint):
-   Tage markieren, dann per Klick auf einen Schichttyp alle markierten Tage
-   auf einmal beplanen -- Ergänzung zum bestehenden Einzel-Dropdown. */
-.multi-select-toolbar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-/* Nutzer-Feedback (2026-08): die Stempelleiste soll immer unterhalb des
-   "Mehrfachauswahl"-Umschalters stehen, nicht nur bei Platzmangel mittendrin
-   umbrechen -- gleicher flex-basis:100%-Trick wie bei .year-plan-toolbar
-   unten, hier auf .multi-select-toolbar gescoped. */
-.multi-select-toolbar > .stamp-palette,
-.multi-select-toolbar > .multi-select-hint {
-  flex-basis: 100%;
-}
-
-.btn-toggle-multiselect {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--ink-muted);
-  padding: 7px 12px;
-  border-radius: 6px;
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.btn-toggle-multiselect:hover {
-  border-color: var(--primary);
-  color: var(--primary);
-}
-
-.btn-toggle-multiselect.is-active {
-  border-color: var(--primary);
-  background: var(--primary-soft);
-  color: var(--primary);
-}
-
 .multi-select-hint {
   font-size: 12.5px;
   color: var(--ink-muted);
@@ -479,13 +438,6 @@ main {
 .placement-hint {
   font-size: 12.5px;
   color: var(--ink-muted);
-}
-
-/* Analog PEPs grünem Rahmen um das aktive Icon -- das aktuell "bewaffnete"
-   Werkzeug ist optisch klar hervorgehoben, solange es auf eine Zielzelle
-   wartet. */
-.placement-palette .stamp-chip.is-armed {
-  box-shadow: 0 0 0 2px var(--chip-color);
 }
 
 /* Nutzer-Feedback (2026-08): die Stempelleiste war eine einzige, lange
@@ -579,16 +531,6 @@ main {
    selbst), damit klar bleibt: das ist ein Wunsch, keine echte Zuweisung. */
 .stamp-chip--wish {
   border-style: dashed;
-}
-
-.shift-chip-btn.is-selectable {
-  cursor: pointer;
-  position: relative;
-}
-
-.shift-chip-btn.is-marked {
-  background: var(--primary-soft);
-  box-shadow: inset 0 0 0 2px var(--primary);
 }
 
 .select-check {
@@ -1896,6 +1838,16 @@ thead .col-employee {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* Workflow-Redesign (2026-08): Markierungs-Ring lebt hier auf dem äusseren
+   Container statt am innersten .shift-chip-btn -- der (bei belegten Zellen
+   deckende) .shift-chip liegt sonst optisch ÜBER jedem Hintergrund/Schatten
+   des Buttons und würde ihn unsichtbar machen. inset-box-shadow statt
+   outline, da .day-cell-slots overflow:hidden hat (ein outline würde an der
+   Kante abgeschnitten). */
+.day-cell-slots.is-marked {
+  box-shadow: inset 0 0 0 2px var(--primary);
 }
 
 .day-cell-slots .cell-wrap--span {

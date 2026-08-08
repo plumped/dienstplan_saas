@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
-import { chipGlyph } from "../chipGlyph.js";
 import BalanceBadge from "./BalanceBadge.jsx";
 import FloatingPopover from "./FloatingPopover.jsx";
 import PlacementToolbar from "./PlacementToolbar.jsx";
@@ -121,29 +120,22 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // fürs Markieren der Spalten/Zellen unten.
   const [holidays, setHolidays] = useState(new Map());
   const [loading, setLoading] = useState(true);
-  // Mehrfachauswahl + Schicht-Stempel (README-Task, inspiriert von Polypoint):
-  // Zellen markieren, dann per Klick auf einen Schichttyp alle markierten
-  // Zellen auf einmal beplanen -- Ergänzung zum bestehenden Einzel-Dropdown,
-  // nicht dessen Ersatz.
-  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  // Workflow-Redesign (2026-08, Nutzer-Feedback: "erst Tage markieren, dann
+  // beplanen -- nicht umgekehrt"): EIN einziges Modell für Einzel- UND
+  // Mehrfachplanung statt zweier widersprüchlicher (Werkzeug-zuerst beim
+  // Icon-Toolbar-Klick vs. Ziel-zuerst bei der alten separaten
+  // Mehrfachauswahl). Klicken/Ziehen auf eine Zelle markiert IMMER (kein
+  // Moduswechsel mehr nötig); die Icon-Toolbar (PlacementToolbar.jsx) ist
+  // der Stempel für die aktuelle Markierung -- ein Klick auf ein Dienst-Icon
+  // wendet es sofort auf alle markierten Tage an (bei nur einem markierten
+  // Tag exakt wie ein Einzelklick vorher, keine Mehrarbeit). Ersetzt sowohl
+  // die alte separate Mehrfachauswahl-Stempelleiste als auch das frühere
+  // "Werkzeug bewaffnen, dann Zelle klicken"-Modell komplett.
   const [markedCells, setMarkedCells] = useState(() => new Set());
-  // README (2026-08, Bugfix): die Stempelleiste zielte fest auf den ersten
-  // Slot einer Zelle -- ein zweiter (Split-Shift-)Dienst war darüber nicht
-  // stempelbar, nur einzeln über das Zelle-für-Zelle-Dropdown. Dieser
-  // Umschalter lässt den Stempel stattdessen auf den zweiten Slot zielen,
-  // ohne den ersten anzutasten.
-  const [stampSecondSlot, setStampSecondSlot] = useState(false);
-  // Icon-Toolbar (2026-08, "genau wie Polypoint"): ersetzt das bisherige
-  // Klick-auf-Zelle-Dropdown komplett. placementMode bestimmt, welche Hälfte
-  // einer Zelle ein Klick trifft (Ganz spannt beide, Links/Rechts je eine
-  // feste Hälfte, Pikett fügt additiv eine Spezialität hinzu); armedTool ist
-  // das aktuell "bewaffnete" Werkzeug (Dienst/Absenz/Radiergummi) -- null,
-  // solange nichts gewählt ist. Unabhängig von multiSelectMode (bulk,
-  // s. oben): beide Werkzeuge können nicht gleichzeitig wirken, weil
-  // ShiftCell im selectionMode Klicks ohnehin zum Markieren statt Platzieren
-  // umleitet.
+  // placementMode bestimmt, welche Hälfte einer Zelle ein Stempel trifft
+  // (Ganz spannt beide, Links/Rechts je eine feste Hälfte, Pikett fügt
+  // additiv eine Spezialität hinzu).
   const [placementMode, setPlacementMode] = useState("ganz");
-  const [armedTool, setArmedTool] = useState(null);
   // Ziehen mit gedrückter Maustaste markiert mehrere Zellen am Stück, statt
   // jede einzeln anklicken zu müssen: "mark" oder "unmark", je nachdem, ob
   // die Zelle, auf der die Maustaste gedrückt wurde, schon markiert war;
@@ -367,9 +359,14 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // Nutzer-Feedback (2026-08): Stempelleiste soll mehrzeilig sein -- eine
   // Zeile für reguläre Dienste, eine für Spezialitäten (z. B. Pikettdienst,
   // TimeTemplate.category === "special", siehe TimeTemplateSettings.jsx).
-  // Beide Gruppen stempeln weiterhin über dasselbe handleStampAssign (eine
+  // Beide Gruppen werden über dieselbe applyToolToMarked() gestempelt (eine
   // Spezialität ist technisch dasselbe wie ein regulärer Dienst, nur anders
-  // eingeordnet für die Anzeige).
+  // eingeordnet für die Anzeige). Diese team-bewusste Auswahl (stampTemplates
+  // oben) versorgt jetzt auch die Icon-Toolbar (PlacementToolbar) -- vorher
+  // hatte die Toolbar ihre eigene, simplere "immer der volle Katalog"-Version
+  // (placementRegularTemplates/placementSpecialTemplates), die mit der
+  // Vereinheitlichung von Werkzeug-Toolbar und Mehrfachauswahl (s. o.)
+  // überflüssig wurde.
   const regularStampTemplates = useMemo(
     () => stampTemplates.filter((t) => t.category !== "special"),
     [stampTemplates]
@@ -379,34 +376,8 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     [stampTemplates]
   );
 
-  // Icon-Toolbar: anders als die Stempelleiste oben gibt es hier keine
-  // markedCells, über die sich teamspezifische Schichttypen nachträglich
-  // dazuholen liessen -- und anders als das frühere Zelle-für-Zelle-Dropdown
-  // ist diese EINE Toolbar nicht auf eine Zeile beschränkt. Sie zeigt daher
-  // den kompletten, für diese Ansicht bereits geladenen Katalog (templates
-  // ist beim Fetch auf templateScopeIds = Station + ihre Teams begrenzt,
-  // siehe oben) -- nicht nur die stationsweiten. Bugfix (Playwright-
-  // Verifikation 2026-08): mit `t.node === stationId` blieb die Palette bei
-  // Testdaten, deren Schichttypen ausschliesslich auf Team-Ebene liegen
-  // (der Normalfall in diesem Testheim-Datensatz), komplett leer. Das
-  // entspricht ausserdem eher Polypoints Vorbild: EINE globale Icon-Palette
-  // für die ganze Station, nicht pro Zeile.
-  const placementRegularTemplates = useMemo(
-    () => templates.filter((t) => t.category !== "special"),
-    [templates]
-  );
-  const placementSpecialTemplates = useMemo(
-    () => templates.filter((t) => t.category === "special"),
-    [templates]
-  );
-
   function handlePlacementModeChange(mode) {
     setPlacementMode(mode);
-    setArmedTool(null);
-  }
-
-  function handleArmTool(tool) {
-    setArmedTool((prev) => (prev && prev.kind === tool.kind && prev.id === tool.id ? null : tool));
   }
 
   async function handleSaveWish(date, existing, payload) {
@@ -563,51 +534,34 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
-  // Icon-Toolbar (2026-08, "genau wie Polypoint"): zentrale
-  // Klick-Orchestrierung, ersetzt das bisherige Klick-auf-Zelle-Dropdown
-  // komplett. Bildet (placementMode, armedTool, aktueller Zustand der
-  // Zelle) rein auf die schon vorhandenen Mutations-Funktionen ab -- keine
-  // neue Backend-Logik. Jedes Werkzeug ersetzt konsequent, was vorher in
-  // der Zelle war (auch eine Absenz wird jetzt klickbar, anders als
-  // bisher). slot0/slot1 sind regularAssignments[0]/[1] der Zelle, specials
-  // die Spezialitäten-Zuweisungen (Pikett-Zeile) desselben Tages.
-  async function handleCellClick(employeeId, date, rowNodeId, slot0, slot1, absence, specials = []) {
-    if (!armedTool) return;
-
-    if (armedTool.kind === "absence") {
-      // Eine Absenz belegt immer den ganzen Tag, unabhängig vom Modus --
-      // das Backend lehnt eine Absenz ab, solange IRGENDEINE Zuweisung
-      // (auch eine additive Spezialität wie Pikett) an diesem Tag besteht
-      // (siehe ShiftAssignment._check_no_absence_conflict), daher müssen
-      // hier auch die Specials mit geräumt werden, nicht nur Slot 0/1.
-      if (absence) await handleRemoveAbsence(absence.id);
-      if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
-      if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
-      for (const special of specials) {
-        await handleRemoveSpecial(special.id);
-      }
-      await handleAssignAbsence(employeeId, date, armedTool.id, undefined);
-      return;
-    }
-
-    if (armedTool.kind === "template") {
+  // Workflow-Redesign (2026-08): pro-Zelle-Anwendung eines Werkzeugs
+  // (Dienst/Radiergummi -- Absenzen laufen separat über applyToolToMarked
+  // unten, siehe dort). Vorher hiess das handleCellClick() und wurde direkt
+  // von einem Zellklick ausgelöst (mit dem "bewaffneten" armedTool aus dem
+  // State); jetzt ist `tool` ein expliziter Parameter, aufgerufen aus
+  // applyToolToMarked() für jede markierte Zelle -- ein Klick auf eine
+  // Zelle markiert nur noch, er wendet nichts mehr direkt an. slot0/slot1
+  // sind regularAssignments[0]/[1] der Zelle, specials die
+  // Spezialitäten-Zuweisungen (Pikett-Zeile) desselben Tages.
+  async function applyToolToCell(tool, employeeId, date, rowNodeId, slot0, slot1, absence) {
+    if (tool.kind === "template") {
       if (placementMode === "pikett") {
-        await handleAddSpecial(employeeId, date, rowNodeId, armedTool.id);
+        await handleAddSpecial(employeeId, date, rowNodeId, tool.id);
         return;
       }
       if (absence) await handleRemoveAbsence(absence.id);
       if (placementMode === "ganz") {
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
-        await handleAssign(employeeId, date, armedTool.id, rowNodeId, slot0?.id);
+        await handleAssign(employeeId, date, tool.id, rowNodeId, slot0?.id);
       } else if (placementMode === "links") {
-        await handleAssign(employeeId, date, armedTool.id, rowNodeId, slot0?.id);
+        await handleAssign(employeeId, date, tool.id, rowNodeId, slot0?.id);
       } else if (placementMode === "rechts") {
-        await handleAssign(employeeId, date, armedTool.id, rowNodeId, slot1?.id);
+        await handleAssign(employeeId, date, tool.id, rowNodeId, slot1?.id);
       }
       return;
     }
 
-    if (armedTool.kind === "empty") {
+    if (tool.kind === "empty") {
       if (placementMode === "pikett") return; // Radiergummi in der Toolbar ausgeblendet
       if (placementMode === "ganz") {
         if (absence) await handleRemoveAbsence(absence.id);
@@ -619,6 +573,76 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
       }
     }
+  }
+
+  // Löst für eine Zellenkoordinate (employeeId, date, rowNodeId) ihren
+  // aktuellen Zustand auf -- dieselbe Logik wie im Render-Loop weiter unten
+  // (regularAssignments/specialAssignments/absence), aber als eigenständige
+  // Funktion, damit applyToolToMarked() sie für JEDE markierte Zelle einzeln
+  // aufrufen kann, ausserhalb des JSX-Loops.
+  function resolveCellState(employeeId, date, rowNodeId) {
+    const cellAssignments = rowAssignmentsFor(employeeId, date, rowNodeId);
+    const regularAssignments = cellAssignments.filter(
+      (a) => templates.find((t) => t.id === a.template)?.category !== "special"
+    );
+    const specialAssignments = cellAssignments.filter(
+      (a) => templates.find((t) => t.id === a.template)?.category === "special"
+    );
+    return { regularAssignments, specialAssignments, absence: findAbsence(employeeId, date) };
+  }
+
+  // Zentrale Stempel-Funktion (Workflow-Redesign 2026-08): wendet `tool`
+  // (Dienst/Absenz/Radiergummi aus der Icon-Toolbar) auf ALLE aktuell
+  // markierten Zellen an -- bei nur einer markierten Zelle exakt das
+  // Verhalten des früheren Einzelklicks. Absenzen sind ein Sonderfall:
+  // anders als Dienste/Radiergummi (die pro Tag ohnehin einzelne
+  // ShiftAssignment-Datensätze sind) ist eine Absenz ein zusammenhängender
+  // Zeitraum (start_date/end_date) -- mehrere markierte, aufeinander
+  // folgende Tage sollen EINEN Absenz-Eintrag ergeben, nicht einen pro Tag
+  // (sonst zeigt AbsencePanel.jsx z. B. eine Ferienwoche als fünf einzelne
+  // Zeilen statt einer). Erst wie gewohnt räumen (jede Zelle ersetzt, was
+  // vorher da war), dann je Mitarbeiter zu möglichst wenigen
+  // zusammenhängenden Zeiträumen gruppiert neu anlegen (gleiches Muster wie
+  // YearPlan.jsx: groupConsecutiveDates).
+  async function applyToolToMarked(tool) {
+    if (markedCells.size === 0) return;
+    const keys = Array.from(markedCells);
+
+    if (tool.kind === "absence") {
+      for (const key of keys) {
+        const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
+        const employeeId = Number(employeeIdStr);
+        const rowNodeId = Number(rowNodeIdStr);
+        const { regularAssignments, specialAssignments, absence } = resolveCellState(employeeId, date, rowNodeId);
+        if (absence) await handleRemoveAbsence(absence.id);
+        if (regularAssignments[0]) await handleAssign(employeeId, date, null, rowNodeId, regularAssignments[0].id);
+        if (regularAssignments[1]) await handleAssign(employeeId, date, null, rowNodeId, regularAssignments[1].id);
+        for (const special of specialAssignments) await handleRemoveSpecial(special.id);
+      }
+      const byEmployee = absenceDatesByEmployee(keys);
+      const created = [];
+      for (const [employeeId, dateSet] of byEmployee) {
+        for (const [start, end] of groupConsecutiveDates(Array.from(dateSet))) {
+          try {
+            created.push(await api.createAbsence({ employee: employeeId, start_date: start, end_date: end, type: tool.id }));
+          } catch (e) {
+            onError(e.message);
+          }
+        }
+      }
+      if (created.length) setAbsences((prev) => [...prev, ...created]);
+      setMarkedCells(new Set());
+      return;
+    }
+
+    for (const key of keys) {
+      const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
+      const employeeId = Number(employeeIdStr);
+      const rowNodeId = Number(rowNodeIdStr);
+      const { regularAssignments, absence } = resolveCellState(employeeId, date, rowNodeId);
+      await applyToolToCell(tool, employeeId, date, rowNodeId, regularAssignments[0], regularAssignments[1], absence);
+    }
+    setMarkedCells(new Set());
   }
 
   // README Punkt 18 (Split-Shifts): Quelle UND Ziel werden direkt über ihre
@@ -711,12 +735,6 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
-  function toggleMultiSelectMode() {
-    setMultiSelectMode((v) => !v);
-    setMarkedCells(new Set());
-    setStampSecondSlot(false);
-  }
-
   function applyMark(key, shouldMark) {
     setMarkedCells((prev) => {
       if (prev.has(key) === shouldMark) return prev;
@@ -747,99 +765,6 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     applyMark(`${employeeId}:${date}:${rowNodeId}`, dragMarkModeRef.current === "mark");
   }
 
-  // Stempel-Leiste: weist templateId (oder null zum Leeren) allen markierten
-  // Zellen auf einmal zu. Läuft absichtlich sequenziell wie
-  // handleCopyWeekPattern -- ein Konflikt (z. B. Ruhezeit) auf einer Zelle
-  // soll die übrigen nicht blockieren, nur summarisch gemeldet werden.
-  //
-  // README (2026-08, Bugfix): zielt bei aktivem stampSecondSlot auf den
-  // zweiten Slot (Split-Shift) statt den ersten, analog zum "+"-Slot im
-  // Einzelzell-Dropdown (ShiftCell), der ebenfalls erst ab einer
-  // vorhandenen ersten Zuweisung als Split-Shift-Angebot erscheint -- eine
-  // Zelle ohne ersten Dienst wird deshalb übersprungen statt einen
-  // "zweiten" Dienst ohne ersten anzulegen.
-  async function handleStampAssign(templateId) {
-    const keys = Array.from(markedCells);
-    const upserted = [];
-    const deletedIds = [];
-    let skipped = 0;
-    // Nutzer-Feedback (2026-08, Punkt 4): ein Chip aus der "Spezialitäten"-
-    // Zeile legt IMMER eine additive neue Zuweisung an (unabhängig von
-    // stampSecondSlot/Slot 0/1) statt fälschlich um einen der beiden Slots
-    // zu konkurrieren -- eine Spezialität ist ein Zusatz, kein Ersatz.
-    const stampedTemplate = templateId !== null ? templates.find((t) => t.id === templateId) : null;
-    const isSpecial = stampedTemplate?.category === "special";
-
-    for (const key of keys) {
-      const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
-      const employeeId = Number(employeeIdStr);
-      const rowNodeId = Number(rowNodeIdStr);
-      if (isSpecial) {
-        try {
-          const created = await api.createShiftAssignment({
-            employee: employeeId,
-            node: rowNodeId,
-            date,
-            template: templateId,
-          });
-          upserted.push(created);
-        } catch {
-          skipped += 1;
-        }
-        continue;
-      }
-      const rowAssignments = rowAssignmentsFor(employeeId, date, rowNodeId).filter(
-        (a) => templates.find((t) => t.id === a.template)?.category !== "special"
-      );
-      if (stampSecondSlot && !rowAssignments[0]) {
-        skipped += 1;
-        continue;
-      }
-      const existing = stampSecondSlot ? rowAssignments[1] : rowAssignments[0];
-      try {
-        if (templateId === null) {
-          if (existing) {
-            await api.deleteShiftAssignment(existing.id);
-            deletedIds.push(existing.id);
-          }
-        } else if (existing) {
-          const updated = await api.updateShiftAssignment(existing.id, { template: templateId });
-          upserted.push(updated);
-        } else {
-          const created = await api.createShiftAssignment({
-            employee: employeeId,
-            node: rowNodeId,
-            date,
-            template: templateId,
-          });
-          upserted.push(created);
-        }
-      } catch {
-        // z. B. Ruhezeit-, Höchstarbeitszeit- oder Absenz-Konflikt -- Zelle
-        // überspringen, restliche markierte Zellen trotzdem weiterstempeln.
-        skipped += 1;
-      }
-    }
-
-    if (upserted.length) {
-      setAssignments((prev) => {
-        const byId = new Map(prev.map((a) => [a.id, a]));
-        for (const a of upserted) byId.set(a.id, a);
-        return Array.from(byId.values());
-      });
-    }
-    if (deletedIds.length) {
-      setAssignments((prev) => prev.filter((a) => !deletedIds.includes(a.id)));
-    }
-    setMarkedCells(new Set());
-    if (skipped > 0) {
-      onError(
-        `${keys.length - skipped} von ${keys.length} markierten Zellen zugewiesen, ${skipped} wegen ` +
-          "Regel-Konflikten (z. B. Ruhezeit) übersprungen."
-      );
-    }
-  }
-
   // Markierte Zellen (Schlüssel employeeId:date:rowNodeId) auf ihre reinen
   // Datumsmengen je Mitarbeiter reduzieren -- rowNodeId ist für Absenzen
   // irrelevant (eine Absenz gehört zur Person, nicht zum Team), ein Set
@@ -854,73 +779,6 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       map.get(employeeId).add(date);
     }
     return map;
-  }
-
-  // README (2026-08, Bugfix): Absenz-Stempeln fehlte im Planblatt komplett --
-  // nur der Jahresplan (YearPlan.jsx) konnte Ferien/Krankheit/Sonstiges
-  // eintragen. Gleiches Muster wie dort (handleStampAbsence), aber über
-  // mehrere Mitarbeiter hinweg gruppiert, da im Planblatt (anders als im
-  // Jahresplan) Zellen verschiedener Personen gleichzeitig markiert sein
-  // können.
-  async function handleStampAbsence(type) {
-    const byEmployee = absenceDatesByEmployee(Array.from(markedCells));
-    const created = [];
-    let skippedExisting = 0;
-    let skippedConflict = 0;
-    for (const [employeeId, dateSet] of byEmployee) {
-      const dates = Array.from(dateSet).filter((d) => !findAbsence(employeeId, d));
-      skippedExisting += dateSet.size - dates.length;
-      const ranges = groupConsecutiveDates(dates);
-      for (const [start, end] of ranges) {
-        try {
-          created.push(await api.createAbsence({ employee: employeeId, start_date: start, end_date: end, type }));
-        } catch {
-          skippedConflict += 1;
-        }
-      }
-    }
-    if (created.length) setAbsences((prev) => [...prev, ...created]);
-    setMarkedCells(new Set());
-    const notes = [];
-    if (skippedExisting > 0) {
-      notes.push(`${skippedExisting} Tag(e) übersprungen, dort besteht bereits eine Absenz.`);
-    }
-    if (skippedConflict > 0) {
-      notes.push(`${skippedConflict} Zeitraum(e) konnten nicht angelegt werden.`);
-    }
-    if (notes.length) onError(notes.join(" "));
-  }
-
-  async function handleRemoveAbsences() {
-    // Löscht die GANZE Absenz, nicht nur die markierten Tage daraus, falls
-    // nur ein Teil eines mehrtägigen Zeitraums markiert war (gleiches
-    // Verhalten wie YearPlan.jsx: eine Absenz lässt sich nicht teilweise
-    // löschen, ohne sie in zwei neue Zeiträume aufzuspalten).
-    const byEmployee = absenceDatesByEmployee(Array.from(markedCells));
-    const toDelete = new Map();
-    for (const [employeeId, dateSet] of byEmployee) {
-      for (const date of dateSet) {
-        const absence = findAbsence(employeeId, date);
-        if (absence) toDelete.set(absence.id, absence);
-      }
-    }
-    const deletedIds = [];
-    let failed = 0;
-    for (const absence of toDelete.values()) {
-      try {
-        await api.deleteAbsence(absence.id);
-        deletedIds.push(absence.id);
-      } catch {
-        failed += 1;
-      }
-    }
-    if (deletedIds.length) {
-      setAbsences((prev) => prev.filter((a) => !deletedIds.includes(a.id)));
-    }
-    setMarkedCells(new Set());
-    if (failed > 0) {
-      onError(`${failed} Absenz(en) konnten nicht entfernt werden.`);
-    }
   }
 
   // README Punkt 18: assignmentId statt employeeId+date -- bei mehreren
@@ -957,117 +815,13 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
         <PlacementToolbar
           placementMode={placementMode}
           onPlacementModeChange={handlePlacementModeChange}
-          armedTool={armedTool}
-          onArmTool={handleArmTool}
-          regularTemplates={placementRegularTemplates}
-          specialTemplates={placementSpecialTemplates}
+          regularTemplates={regularStampTemplates}
+          specialTemplates={specialStampTemplates}
           absenceTypes={absenceTypes}
+          markedCount={markedCells.size}
+          onApplyTool={applyToolToMarked}
+          onClearMarked={() => setMarkedCells(new Set())}
         />
-      )}
-      {canManage && (
-        <div className="multi-select-toolbar">
-          <button
-            type="button"
-            className={`btn-toggle-multiselect${multiSelectMode ? " is-active" : ""}`}
-            onClick={toggleMultiSelectMode}
-          >
-            {multiSelectMode ? "✕ Mehrfachauswahl beenden" : "☐ Mehrfachauswahl"}
-          </button>
-          {multiSelectMode && (
-            <span className="stamp-palette">
-              <span className="multi-select-hint">
-                {markedCells.size === 0 ? "Tage anklicken, um sie zu markieren." : `${markedCells.size} markiert:`}
-              </span>
-              <span className="stamp-row">
-                <span className="stamp-row-label">Dienste</span>
-                <label className="stamp-second-slot-toggle" title="Bestehenden ersten Dienst nicht ersetzen, sondern einen zweiten (Split-Shift) danebenstellen. Gilt auch für Spezialitäten unten.">
-                  <input
-                    type="checkbox"
-                    checked={stampSecondSlot}
-                    disabled={markedCells.size === 0}
-                    onChange={(e) => setStampSecondSlot(e.target.checked)}
-                  />
-                  Als zweiten Dienst hinzufügen
-                </label>
-                {regularStampTemplates.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    className="stamp-chip"
-                    style={{ "--chip-color": t.color }}
-                    disabled={markedCells.size === 0}
-                    title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
-                    onClick={() => handleStampAssign(t.id)}
-                  >
-                    {chipGlyph(t)}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  className="stamp-chip stamp-chip--empty"
-                  disabled={markedCells.size === 0}
-                  title="Markierte Tage leeren"
-                  onClick={() => handleStampAssign(null)}
-                >
-                  — leer —
-                </button>
-              </span>
-              <span className="stamp-row">
-                <span className="stamp-row-label">Abwesenheiten</span>
-                {absenceTypes.map((t) => (
-                  <button
-                    key={t.id}
-                    type="button"
-                    className="stamp-chip stamp-chip--absence"
-                    style={{ "--chip-color": t.color }}
-                    disabled={markedCells.size === 0}
-                    title={`${t.name} für alle markierten Tage eintragen`}
-                    onClick={() => handleStampAbsence(t.id)}
-                  >
-                    {t.name}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  className="stamp-chip stamp-chip--empty"
-                  disabled={markedCells.size === 0}
-                  title="Absenz(en) der markierten Tage entfernen -- löscht den ganzen Zeitraum, nicht nur die markierten Tage daraus"
-                  onClick={handleRemoveAbsences}
-                >
-                  Absenz entfernen
-                </button>
-              </span>
-              {specialStampTemplates.length > 0 && (
-                <span className="stamp-row">
-                  <span className="stamp-row-label">Spezialitäten</span>
-                  {specialStampTemplates.map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      className="stamp-chip"
-                      style={{ "--chip-color": t.color }}
-                      disabled={markedCells.size === 0}
-                      title={`${t.name} (${t.start_time.slice(0, 5)}–${t.end_time.slice(0, 5)}) auf alle markierten Tage anwenden`}
-                      onClick={() => handleStampAssign(t.id)}
-                    >
-                      {chipGlyph(t)}
-                    </button>
-                  ))}
-                </span>
-              )}
-              <span className="stamp-row">
-                <button
-                  type="button"
-                  className="btn-ghost"
-                  disabled={markedCells.size === 0}
-                  onClick={() => setMarkedCells(new Set())}
-                >
-                  Auswahl aufheben
-                </button>
-              </span>
-            </span>
-          )}
-        </div>
       )}
       <div className="grid-scroll">
         <table className="plan-grid">
@@ -1131,17 +885,6 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
               const pctLabel = employment
                 ? `${employment.pensum_pct}%${employment.title ? ` ${employment.title}` : ""}`
                 : `${emp.employment_pct}%`;
-              // Schichttypen direkt auf diesem Team stehen exklusiv dieser
-              // Zeile zur Auswahl (z. B. "Nachtwache" nur beim Nacht-Team,
-              // nicht auch beim Tag-Team derselben Station); Schichttypen
-              // direkt auf der Station (t.node === stationId) gelten als
-              // geteilter Katalog und stehen JEDER Team-Zeile zusätzlich zur
-              // Verfügung -- das ist der Normalfall, solange niemand einen
-              // Schichttyp manuell auf eine einzelne Team-Ebene verschoben
-              // hat (siehe TimeTemplateSettings-Hinweistext).
-              const rowAssignableTemplates = templates.filter(
-                (t) => t.node === rowNodeId || t.node === stationId
-              );
               return (
                 <tr key={row.key}>
                   <th scope="row" className="col-employee">
@@ -1200,18 +943,22 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
                     const holidayName = holidays.get(date);
                     const canOfferTrade = canManage || me?.employee?.id === emp.id;
+                    // Workflow-Redesign (2026-08): Markierung ist jetzt pro Tag
+                    // (nicht pro Slot) -- derselbe Wert geht an beide
+                    // renderSlot()-Aufrufe eines Split-Tages, damit ein Klick auf
+                    // IRGENDEINEN der beiden Slots denselben Tag markiert/entmarkiert.
+                    const cellKey = `${emp.id}:${date}:${rowNodeId}`;
+                    const marked = markedCells.has(cellKey);
                     // Nutzer-Feedback (2026-08): der zweite Slot -- und damit
                     // der horizontale Split (oben/unten) -- erscheint nur, wenn
                     // WIRKLICH zwei Dienste an diesem Tag liegen. Der frühere leere
                     // "+"-Zweitslot für Admin/Planer (auch bei nur einem echten
                     // Dienst) stammte noch aus der Zeit des Klick-auf-Zelle-
                     // Dropdowns, wo ein sichtbares Klickziel nötig war, um
-                    // einen zweiten Dienst anzulegen. Die Icon-Toolbar
-                    // (handleCellClick) braucht das nicht mehr -- Modus
-                    // "Rechts" wählen und irgendwo auf die (jetzt wieder voll
-                    // ausfüllende) Zelle klicken reicht. Zählt nur reguläre
-                    // Zuweisungen (eine Spezialität allein soll keinen zweiten
-                    // Slot erzwingen).
+                    // einen zweiten Dienst anzulegen. Die Icon-Toolbar braucht das
+                    // nicht mehr -- Modus "Rechts" wählen, Tag markieren, stempeln
+                    // reicht. Zählt nur reguläre Zuweisungen (eine Spezialität
+                    // allein soll keinen zweiten Slot erzwingen).
                     const showSecondSlot = !absence && regularAssignments.length >= 2;
 
                     function renderSlot(assignment, slotIndex) {
@@ -1254,17 +1001,9 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           onSaveWish={(payload) => handleSaveWish(date, preference, payload)}
                           onDeleteWish={() => handleDeleteWish(preference)}
                           showWishBadge={slotIndex === 0}
-                          onCellClick={() =>
-                            handleCellClick(
-                              emp.id,
-                              date,
-                              rowNodeId,
-                              regularAssignments[0],
-                              regularAssignments[1],
-                              absence,
-                              specialAssignments
-                            )
-                          }
+                          marked={marked}
+                          onMarkStart={() => startMark(emp.id, date, rowNodeId)}
+                          onMarkEnter={() => continueMark(emp.id, date, rowNodeId)}
                         />
                       );
                     }
@@ -1275,59 +1014,50 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                         className={[weekend && "is-weekend", holidayName && "is-holiday"].filter(Boolean).join(" ")}
                         title={holidayName || undefined}
                       >
-                        {multiSelectMode ? (
-                          <ShiftCell
-                            templates={templates}
-                            assignableTemplates={rowAssignableTemplates}
-                            selectedTemplateId={regularAssignments[0]?.template ?? null}
-                            templateInfo={templates.find((t) => t.id === regularAssignments[0]?.template)}
-                            secondTemplateInfo={templates.find((t) => t.id === regularAssignments[1]?.template)}
-                            employeeId={emp.id}
-                            date={date}
-                            absence={absence}
-                            absenceTypes={absenceTypes}
-                            selectionMode
-                            marked={markedCells.has(`${emp.id}:${date}:${rowNodeId}`)}
-                            onMarkStart={() => startMark(emp.id, date, rowNodeId)}
-                            onMarkEnter={() => continueMark(emp.id, date, rowNodeId)}
-                          />
-                        ) : (
-                          <div className="day-cell">
-                            {/* Polypoint-Vorbild (2026-08): die Zelle bleibt IMMER
-                                gleich breit (table-layout: fixed) statt zu wachsen.
-                                Redesign (2026-08, "hand aufs Herz"-Nachbesserung):
-                                zwei Dienste werden horizontal gestapelt (oben =
-                                zeitlich früher, unten = später) statt diagonal --
-                                eine echte, sofort verständliche Achse statt einer
-                                willkürlichen Dreiecksgeometrie. --chip-color muss
-                                hier nicht mehr am Wrapper gesetzt werden: die Farbe
-                                lebt direkt am .shift-chip (ShiftCell.jsx setzt sie
-                                dort schon selbst), nicht mehr am .shift-chip-btn
-                                darüber. Nur ein Dienst ("Ganz") spannt weiterhin die
-                                ganze Zelle. */}
-                            <div className={`day-cell-slots${showSecondSlot ? " day-cell-slots--split" : ""}`}>
-                              <div className={`cell-wrap${showSecondSlot ? " cell-wrap--top" : " cell-wrap--span"}`}>
-                                {renderSlot(regularAssignments[0], 0)}
-                              </div>
-                              {showSecondSlot && (
-                                <div className="cell-wrap cell-wrap--bottom">{renderSlot(regularAssignments[1], 1)}</div>
-                              )}
+                        <div className="day-cell">
+                          {/* Polypoint-Vorbild (2026-08): die Zelle bleibt IMMER
+                              gleich breit (table-layout: fixed) statt zu wachsen.
+                              Redesign (2026-08, "hand aufs Herz"-Nachbesserung):
+                              zwei Dienste werden horizontal gestapelt (oben =
+                              zeitlich früher, unten = später) statt diagonal --
+                              eine echte, sofort verständliche Achse statt einer
+                              willkürlichen Dreiecksgeometrie. --chip-color muss
+                              hier nicht mehr am Wrapper gesetzt werden: die Farbe
+                              lebt direkt am .shift-chip (ShiftCell.jsx setzt sie
+                              dort schon selbst), nicht mehr am .shift-chip-btn
+                              darüber. Nur ein Dienst ("Ganz") spannt weiterhin die
+                              ganze Zelle.
+                              Workflow-Redesign (2026-08): is-marked hier auf dem
+                              äusseren Container statt auf dem inneren
+                              .shift-chip-btn -- der wird bei einem belegten Tag
+                              vollständig von der opaken Farbfläche (.shift-chip)
+                              überdeckt, ein Ring dort wäre unsichtbar. Hier, am
+                              Rand des GESAMTEN Tagesinhalts, bleibt er immer
+                              sichtbar, unabhängig vom Zellinhalt. */}
+                          <div
+                            className={`day-cell-slots${showSecondSlot ? " day-cell-slots--split" : ""}${marked ? " is-marked" : ""}`}
+                          >
+                            <div className={`cell-wrap${showSecondSlot ? " cell-wrap--top" : " cell-wrap--span"}`}>
+                              {renderSlot(regularAssignments[0], 0)}
                             </div>
-                            {/* Redesign (2026-08): Spezialitäten (z. B. Pikettdienst)
-                                als kleiner Eck-Badge statt eigener Zeile unter den
-                                Slots -- siehe SpecialBadge.jsx. Nicht bei einer
-                                Absenz (schliesst Spezialitäten am selben Tag
-                                ohnehin aus). */}
-                            {!absence && (
-                              <SpecialBadge
-                                specialAssignments={specialAssignments}
-                                templates={templates}
-                                canEdit={canManage}
-                                onRemove={(specialAssignmentId) => handleRemoveSpecial(specialAssignmentId)}
-                              />
+                            {showSecondSlot && (
+                              <div className="cell-wrap cell-wrap--bottom">{renderSlot(regularAssignments[1], 1)}</div>
                             )}
                           </div>
-                        )}
+                          {/* Redesign (2026-08): Spezialitäten (z. B. Pikettdienst)
+                              als kleiner Eck-Badge statt eigener Zeile unter den
+                              Slots -- siehe SpecialBadge.jsx. Nicht bei einer
+                              Absenz (schliesst Spezialitäten am selben Tag
+                              ohnehin aus). */}
+                          {!absence && (
+                            <SpecialBadge
+                              specialAssignments={specialAssignments}
+                              templates={templates}
+                              canEdit={canManage}
+                              onRemove={(specialAssignmentId) => handleRemoveSpecial(specialAssignmentId)}
+                            />
+                          )}
+                        </div>
                       </td>
                     );
                   })}

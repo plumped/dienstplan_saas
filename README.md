@@ -1991,6 +1991,29 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       Dienst-Chips in der Toolbar, Absenz-Chips + Wünsche-Zeile weiterhin nutzbar. Volle
       Test-Suite (354 Tests) grün.
 
+27. ✅ **Bugfix: Radiergummi in Oben/Unten löschte einen einzelnen durchgehenden Dienst gar nicht
+    (2026-08)**. Nutzer-Feedback: "ganzen Tag Dienst eingeplant, dann halben Tag frei genommen,
+    jetzt will ich den Dienst 'oben' löschen -- ich glaube das geht nicht korrekt". Zutreffend:
+    `applyToolToCell()`s Radiergummi-Zweig für Oben/Unten prüfte `isSplit = Boolean(slot0) &&
+    Boolean(slot1)` -- das verlangt ZWEI eigenständige Dienst-Zuweisungen. Eine koexistierende
+    Halbtags-Absenz (siehe Punkt 24/26) zählt nicht als zweiter Slot, also war `isSplit` bei einem
+    einzelnen durchgehenden Dienst immer `false`, und der Code brach mit einem stillen `if
+    (!isSplit) return;` ab -- Klick auf "Oben"/"Unten" + × tat buchstäblich nichts, ohne
+    Fehlermeldung. Klargestellt: der Radiergummi in Oben/Unten betrifft ausschliesslich den
+    *Plan* (ShiftAssignment) -- tatsächlich abweichend geleistete Ist-Zeit (z. B. "nur bis Mittag
+    gearbeitet, dann krank") wird unverändert separat über die Zeiterfassung erfasst (Block 1.13),
+    nicht durch Kürzen des Plan-Datensatzes.
+    - `PlanGrid.jsx` und `YearPlan.jsx` (`applyToolToCell()`): bei `!isSplit` wird jetzt, falls
+      genau ein Dienst existiert (`slot0`), dieser komplett gelöscht -- unabhängig ob "Oben" oder
+      "Unten" geklickt wurde, da beide auf denselben, einzigen (nicht halbierbaren) Datensatz
+      zielen. Der echte Split-Fall (zwei eigenständige Dienste, `isSplit === true`) ist
+      unverändert: weiterhin wird gezielt nur der Dienst der Zielhälfte gelöscht.
+    - Playwright-Verifikation (Station "Pflege Tag"/"Therapie"): durchgehender Dienst +
+      Halbtags-Absenz, "Oben" + × -- Dienst wird komplett gelöscht (ein `DELETE
+      /api/shift-assignments/<id>/`), Absenz bleibt unangetastet stehen (Tooltip zeigt danach nur
+      noch die Absenz). Regressionstest mit echtem Split (Therapie Vormittag + Nachmittag): "Oben"
+      + × löscht weiterhin nur den Vormittag-Dienst, Nachmittag-Dienst bleibt unangetastet.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

@@ -1840,13 +1840,15 @@ thead .col-employee {
   flex-direction: column;
 }
 
-/* Workflow-Redesign (2026-08): Markierungs-Ring lebt hier auf dem äusseren
-   Container statt am innersten .shift-chip-btn -- der (bei belegten Zellen
-   deckende) .shift-chip liegt sonst optisch ÜBER jedem Hintergrund/Schatten
-   des Buttons und würde ihn unsichtbar machen. inset-box-shadow statt
-   outline, da .day-cell-slots overflow:hidden hat (ein outline würde an der
-   Kante abgeschnitten). */
-.day-cell-slots.is-marked {
+/* Workflow-Redesign (2026-08, Nachbesserung): Nutzer-Feedback -- bei einem
+   gesetzten Dienst war der Markierungs-Ring unsichtbar. Ursache: er sass auf
+   .day-cell-slots, aber das füllt die Zelle bei belegtem Tag randlos mit der
+   opaken .shift-chip-Farbfläche aus -- der Ring lag darunter/dahinter. Jetzt
+   auf .day-cell selbst (der äusserste Container, 1px GRÖSSER als
+   .day-cell-slots dank dessen inset) -- genau in diesem 1px-Rand ringsum ist
+   seit dem Redesign Platz, den kein Kind-Element beansprucht, der Ring bleibt
+   daher immer sichtbar, ob leer oder belegt. */
+.day-cell.is-marked {
   box-shadow: inset 0 0 0 2px var(--primary);
 }
 

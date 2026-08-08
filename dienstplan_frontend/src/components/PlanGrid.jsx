@@ -543,13 +543,15 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // Zelle markiert nur noch, er wendet nichts mehr direkt an. slot0/slot1
   // sind regularAssignments[0]/[1] der Zelle, specials die
   // Spezialitäten-Zuweisungen (Pikett-Zeile) desselben Tages.
-  async function applyToolToCell(tool, employeeId, date, rowNodeId, slot0, slot1, absence) {
+  // Absenz-Entfernung läuft NICHT mehr hier drin, sondern zentral vorab in
+  // applyToolToMarked() (dedupliziert nach Absenz-ID) -- siehe Kommentar
+  // dort, Bugfix für "No Absence matches the given query".
+  async function applyToolToCell(tool, employeeId, date, rowNodeId, slot0, slot1) {
     if (tool.kind === "template") {
       if (placementMode === "pikett") {
         await handleAddSpecial(employeeId, date, rowNodeId, tool.id);
         return;
       }
-      if (absence) await handleRemoveAbsence(absence.id);
       if (placementMode === "ganz") {
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
         await handleAssign(employeeId, date, tool.id, rowNodeId, slot0?.id);
@@ -564,7 +566,6 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     if (tool.kind === "empty") {
       if (placementMode === "pikett") return; // Radiergummi in der Toolbar ausgeblendet
       if (placementMode === "ganz") {
-        if (absence) await handleRemoveAbsence(absence.id);
         if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
       } else if (placementMode === "links") {
@@ -608,13 +609,32 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     if (markedCells.size === 0) return;
     const keys = Array.from(markedCells);
 
+    // Bugfix ("No Absence matches the given query"): eine Absenz ist EIN
+    // Datensatz über einen ganzen Zeitraum (start_date/end_date) -- markiert
+    // man mehrere Tage, die zur selben Absenz gehören (z. B. alle drei Tage
+    // einer bestehenden Ferienwoche), lösten frühere Versuche pro markierter
+    // Zelle einzeln `handleRemoveAbsence(absence.id)` aus: derselbe
+    // Datensatz wurde dadurch mehrfach zu löschen versucht, der zweite
+    // Versuch schlug serverseitig fehl (404, da schon gelöscht). Jetzt erst
+    // alle betroffenen Absenz-IDs über alle markierten Zellen hinweg
+    // sammeln (ein Set dedupliziert automatisch) und JEDE genau einmal
+    // löschen, bevor irgendein Werkzeug angewendet wird.
+    const absenceIdsToClear = new Set();
+    for (const key of keys) {
+      const [employeeIdStr, date] = key.split(":");
+      const absence = findAbsence(Number(employeeIdStr), date);
+      if (absence) absenceIdsToClear.add(absence.id);
+    }
+    for (const absenceId of absenceIdsToClear) {
+      await handleRemoveAbsence(absenceId);
+    }
+
     if (tool.kind === "absence") {
       for (const key of keys) {
         const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
         const employeeId = Number(employeeIdStr);
         const rowNodeId = Number(rowNodeIdStr);
-        const { regularAssignments, specialAssignments, absence } = resolveCellState(employeeId, date, rowNodeId);
-        if (absence) await handleRemoveAbsence(absence.id);
+        const { regularAssignments, specialAssignments } = resolveCellState(employeeId, date, rowNodeId);
         if (regularAssignments[0]) await handleAssign(employeeId, date, null, rowNodeId, regularAssignments[0].id);
         if (regularAssignments[1]) await handleAssign(employeeId, date, null, rowNodeId, regularAssignments[1].id);
         for (const special of specialAssignments) await handleRemoveSpecial(special.id);
@@ -639,8 +659,8 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
       const employeeId = Number(employeeIdStr);
       const rowNodeId = Number(rowNodeIdStr);
-      const { regularAssignments, absence } = resolveCellState(employeeId, date, rowNodeId);
-      await applyToolToCell(tool, employeeId, date, rowNodeId, regularAssignments[0], regularAssignments[1], absence);
+      const { regularAssignments } = resolveCellState(employeeId, date, rowNodeId);
+      await applyToolToCell(tool, employeeId, date, rowNodeId, regularAssignments[0], regularAssignments[1]);
     }
     setMarkedCells(new Set());
   }
@@ -1014,7 +1034,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                         className={[weekend && "is-weekend", holidayName && "is-holiday"].filter(Boolean).join(" ")}
                         title={holidayName || undefined}
                       >
-                        <div className="day-cell">
+                        <div className={`day-cell${marked ? " is-marked" : ""}`}>
                           {/* Polypoint-Vorbild (2026-08): die Zelle bleibt IMMER
                               gleich breit (table-layout: fixed) statt zu wachsen.
                               Redesign (2026-08, "hand aufs Herz"-Nachbesserung):
@@ -1027,16 +1047,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                               dort schon selbst), nicht mehr am .shift-chip-btn
                               darüber. Nur ein Dienst ("Ganz") spannt weiterhin die
                               ganze Zelle.
-                              Workflow-Redesign (2026-08): is-marked hier auf dem
-                              äusseren Container statt auf dem inneren
-                              .shift-chip-btn -- der wird bei einem belegten Tag
-                              vollständig von der opaken Farbfläche (.shift-chip)
-                              überdeckt, ein Ring dort wäre unsichtbar. Hier, am
-                              Rand des GESAMTEN Tagesinhalts, bleibt er immer
-                              sichtbar, unabhängig vom Zellinhalt. */}
-                          <div
-                            className={`day-cell-slots${showSecondSlot ? " day-cell-slots--split" : ""}${marked ? " is-marked" : ""}`}
-                          >
+                              Workflow-Redesign (2026-08, Nachbesserung): is-marked
+                              sitzt auf .day-cell (dem äussersten Container), nicht
+                              mehr auf .day-cell-slots -- Letzteres füllt bei einem
+                              belegten Tag die Zelle randlos mit der opaken
+                              .shift-chip-Farbfläche aus, ein Ring DORT war bei
+                              gesetztem Dienst unsichtbar. .day-cell selbst hat
+                              KEIN overflow:hidden und ist genau 1px grösser als
+                              .day-cell-slots (dessen inset) -- der Ring liegt
+                              dadurch sichtbar in diesem 1px-Rand, unabhängig davon
+                              ob die Zelle leer oder belegt ist. */}
+                          <div className={`day-cell-slots${showSecondSlot ? " day-cell-slots--split" : ""}`}>
                             <div className={`cell-wrap${showSecondSlot ? " cell-wrap--top" : " cell-wrap--span"}`}>
                               {renderSlot(regularAssignments[0], 0)}
                             </div>

@@ -1041,6 +1041,28 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       verschiebt weiterhin korrekt und markiert dabei NICHT versehentlich die Quellzelle. Ausserdem
       unterwegs eine bereits unabhängig ausstehende Migration (`AbsenceType.icon`, Punkt 11 oben)
       angewendet, die den lokalen Dev-Stand zuvor mit HTTP-500 bei `/api/absence-types/` blockierte.
+    - ✅ **Zwei Nachbesserungen zum Markieren (2026-08)**: Nutzer-Feedback direkt nach dem obigen
+      Redesign. (1) Der Markierungsring war bei einem gesetzten Dienst unsichtbar -- er sass auf
+      `.day-cell-slots`, aber das füllt die Zelle bei belegtem Tag randlos mit der opaken
+      `.shift-chip`-Farbfläche aus, der Ring lag optisch darunter. Nutzer-Hinweis: "links rechts
+      oben und unten ist Platz dafür" -- der 1px-Rand aus dem vorherigen Layout-Redesign (Punkt 11,
+      Nachbesserung Teil 3) wird von keinem Kind-Element beansprucht. Ring jetzt auf `.day-cell`
+      selbst (dem äussersten Container, 1px grösser als `.day-cell-slots`) statt auf
+      `.day-cell-slots` -- bleibt dadurch immer sichtbar, ob leer oder belegt. (2) "No Absence
+      matches the given query" beim Entfernen/Ersetzen von Ferien: eine Absenz ist EIN Datensatz
+      über einen ganzen Zeitraum, aber `applyToolToMarked()` löste pro markierter ZELLE einen
+      eigenen `handleRemoveAbsence(absence.id)`-Aufruf aus -- markierte man mehrere Tage derselben
+      bestehenden Absenz (z. B. alle drei Tage einer Ferienwoche) und stempelte darüber (Radiergummi
+      oder ein anderes Werkzeug), wurde derselbe Datensatz mehrfach zu löschen versucht: der erste
+      Versuch löschte ihn wirklich, jeder weitere schlug serverseitig mit 404 fehl. Gefixt durch
+      Vorab-Deduplizierung: `applyToolToMarked()` sammelt zuerst alle betroffenen Absenz-IDs über
+      ALLE markierten Zellen in einem `Set` (dedupliziert automatisch) und löscht jede genau
+      einmal, bevor irgendein Werkzeug angewendet wird -- `applyToolToCell()` kümmert sich seitdem
+      nicht mehr selbst um Absenzen. Mit Playwright verifiziert: Markieren einer belegten Zelle
+      zeigt den Ring sichtbar am Zellrand (Screenshot-Crop bestätigt); eine bestehende
+      Drei-Tage-Ferienwoche komplett markieren und mit einem ANDEREN Absenztyp (Krankheit)
+      überstempeln läuft ohne 400/404-Fehler durch und ergibt weiterhin einen einzigen,
+      korrekt umgruppierten Datensatz im Abwesenheiten-Tab (nicht drei fragmentierte).
 12. ✅ **Jahresplan pro Mitarbeiter -- anzeigbar und bearbeitbar**: das Planblatt (`PlanGrid.jsx`)
     zeigt weiterhin nur einen Monat (`MonthNav.jsx`). Der Jahresplan (`YearPlan.jsx`, neuer Tab
     "Jahresplan") deckt den Hauptfall ab, eine einzelne Person übers ganze Jahr zu bearbeiten --

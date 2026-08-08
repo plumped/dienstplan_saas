@@ -6,7 +6,7 @@ import BalanceBadge from "./BalanceBadge.jsx";
 import FloatingPopover from "./FloatingPopover.jsx";
 import PlacementToolbar from "./PlacementToolbar.jsx";
 import ShiftCell from "./ShiftCell.jsx";
-import SpecialStrip from "./SpecialStrip.jsx";
+import SpecialBadge from "./SpecialBadge.jsx";
 
 // README Block 2.9: kleines, klickbares Warn-Badge in der Tages-Kopfzelle,
 // wenn mindestens ein Schichttyp mit minimum_staffing an diesem Tag
@@ -1187,8 +1187,9 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     // Nutzer-Feedback (2026-08, Punkt 4): eine Spezialität (z. B.
                     // Pikettdienst) ist ein additiver Zusatz zu einem Dienst, kein
                     // Konkurrent um Slot 0/1 -- daher getrennt von den regulären
-                    // Zuweisungen behandelt und in einer eigenen, dünnen Zeile
-                    // unter den Slots gerendert (SpecialStrip.jsx, siehe unten).
+                    // Zuweisungen behandelt und als kleiner Eck-Badge dargestellt
+                    // (SpecialBadge.jsx, siehe unten), statt Platz in der Zelle
+                    // zu beanspruchen.
                     const regularAssignments = cellAssignments.filter(
                       (a) => templates.find((t) => t.id === a.template)?.category !== "special"
                     );
@@ -1200,8 +1201,8 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     const holidayName = holidays.get(date);
                     const canOfferTrade = canManage || me?.employee?.id === emp.id;
                     // Nutzer-Feedback (2026-08): der zweite Slot -- und damit
-                    // die diagonale Darstellung -- erscheint nur, wenn WIRKLICH
-                    // zwei Dienste an diesem Tag liegen. Der frühere leere
+                    // der horizontale Split (oben/unten) -- erscheint nur, wenn
+                    // WIRKLICH zwei Dienste an diesem Tag liegen. Der frühere leere
                     // "+"-Zweitslot für Admin/Planer (auch bei nur einem echten
                     // Dienst) stammte noch aus der Zeit des Klick-auf-Zelle-
                     // Dropdowns, wo ein sichtbares Klickziel nötig war, um
@@ -1294,48 +1295,31 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           <div className="day-cell">
                             {/* Polypoint-Vorbild (2026-08): die Zelle bleibt IMMER
                                 gleich breit (table-layout: fixed) statt zu wachsen.
-                                Nutzer-Feedback (2026-08, Nachbesserung): zwei Dienste
-                                diagonal wie im Jahresplan (.year-day-fill--shift.
-                                is-split) statt in einer festen Spaltenbreite -- jedes
-                                Dreieck trägt die VOLLE Dienstfarbe (clip-path), der
-                                Glyph sitzt gross in der freien Ecke, kein separater
-                                blasser Pill-Chip mehr. --chip-color wird hier (statt
-                                nur tief innen auf .shift-chip wie sonst) auch am
-                                äusseren .cell-wrap gesetzt, weil .shift-chip-btn als
-                                Vorfahre von .shift-chip dessen CSS-Variable sonst nicht
-                                lesen könnte (Custom Properties vererben nur abwärts).
-                                Nur ein Dienst ("Ganz") spannt weiterhin die ganze
-                                Breite. */}
-                            <div className={`day-cell-slots${showSecondSlot ? " day-cell-slots--diagonal" : ""}`}>
-                              <div
-                                className={`cell-wrap${
-                                  showSecondSlot ? " cell-wrap--diag-tl" : " cell-wrap--span"
-                                }`}
-                                style={
-                                  showSecondSlot
-                                    ? { "--chip-color": templates.find((t) => t.id === regularAssignments[0]?.template)?.color ?? "var(--border)" }
-                                    : undefined
-                                }
-                              >
+                                Redesign (2026-08, "hand aufs Herz"-Nachbesserung):
+                                zwei Dienste werden horizontal gestapelt (oben =
+                                zeitlich früher, unten = später) statt diagonal --
+                                eine echte, sofort verständliche Achse statt einer
+                                willkürlichen Dreiecksgeometrie. --chip-color muss
+                                hier nicht mehr am Wrapper gesetzt werden: die Farbe
+                                lebt direkt am .shift-chip (ShiftCell.jsx setzt sie
+                                dort schon selbst), nicht mehr am .shift-chip-btn
+                                darüber. Nur ein Dienst ("Ganz") spannt weiterhin die
+                                ganze Zelle. */}
+                            <div className={`day-cell-slots${showSecondSlot ? " day-cell-slots--split" : ""}`}>
+                              <div className={`cell-wrap${showSecondSlot ? " cell-wrap--top" : " cell-wrap--span"}`}>
                                 {renderSlot(regularAssignments[0], 0)}
                               </div>
                               {showSecondSlot && (
-                                <div
-                                  className="cell-wrap cell-wrap--diag-br"
-                                  style={{ "--chip-color": templates.find((t) => t.id === regularAssignments[1]?.template)?.color ?? "var(--border)" }}
-                                >
-                                  {renderSlot(regularAssignments[1], 1)}
-                                </div>
+                                <div className="cell-wrap cell-wrap--bottom">{renderSlot(regularAssignments[1], 1)}</div>
                               )}
                             </div>
-                            {/* Nutzer-Feedback (2026-08, Nachbesserung): Spezialitäten
-                                (z. B. Pikettdienst) waren im Split-Shift-Badge (in der
-                                ShiftCell-Ecke) faktisch unsichtbar -- eigene, dünne
-                                Chip-Zeile unter den Dienst-Slots statt versteckt hinter
-                                einem Zähler. Nicht bei einer Absenz (schliesst
-                                Spezialitäten am selben Tag ohnehin aus). */}
+                            {/* Redesign (2026-08): Spezialitäten (z. B. Pikettdienst)
+                                als kleiner Eck-Badge statt eigener Zeile unter den
+                                Slots -- siehe SpecialBadge.jsx. Nicht bei einer
+                                Absenz (schliesst Spezialitäten am selben Tag
+                                ohnehin aus). */}
                             {!absence && (
-                              <SpecialStrip
+                              <SpecialBadge
                                 specialAssignments={specialAssignments}
                                 templates={templates}
                                 canEdit={canManage}

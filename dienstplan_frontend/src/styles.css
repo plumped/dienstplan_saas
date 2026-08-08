@@ -632,25 +632,6 @@ main {
   padding: 0;
 }
 
-/* Bugfix (Playwright-Verifikation, per Nutzer-Foto belegt): .day-cell (s. u.)
-   soll IMMER die tatsächliche (durch evtl. höhere Nachbarzellen in
-   derselben <tr> gestreckte) Zeilenhöhe ausfüllen. Ein blosses height:100%
-   auf .day-cell allein reicht dafür NICHT -- per Chromium-Verhalten
-   getestet (siehe scratchpad/repro*.html dieser Session): eine Prozent-
-   Höhe auf einem normal-flow-Kind einer <td> löst sich nur auf, wenn die
-   <td> selbst ein EXPLIZITES (wenn auch beliebig kleines) height hat --
-   sonst bleibt es bei 'auto' (Kind schrumpft auf eigene Inhaltsgrösse),
-   selbst wenn die <td> durch eine Nachbarzelle sichtbar höher gerendert
-   wird. height: 1px ist der dafür etablierte Standard-Trick: es macht die
-   Höhe "explizit" (schaltet die Prozent-Auflösung beim Kind frei), ohne
-   die eigentliche, inhaltsgetriebene Zeilenhöhen-Berechnung der Tabelle zu
-   verändern -- eine <td>, deren EIGENER Inhalt mehr als die Zeile braucht
-   (z. B. eine sichtbare .special-strip an genau diesem Tag), wächst
-   weiterhin ganz normal darüber hinaus. */
-.plan-grid td {
-  height: 1px;
-}
-
 .plan-grid thead th {
   position: sticky;
   top: 0;
@@ -668,9 +649,12 @@ main {
    auf ".plan-grid thead th" -- letzteres hätte (Klasse+Typ+Typ) höhere
    Spezifität als "th.col-employee"/"th.col-balance" (Typ+Klasse) unten und
    deren eigene Breite überschrieben (derselbe Spezifitäts-Stolperstein, der
-   oben beim padding schon dokumentiert ist). */
+   oben beim padding schon dokumentiert ist).
+   56px statt vorher 44px (Redesign 2026-08, horizontaler Split statt
+   Diagonale): zwei gestapelte Kürzel (z. B. "T1"/"T2") brauchen bequem
+   lesbaren Platz, ohne dass jedes Pixel erkämpft werden muss. */
 .plan-grid thead th:not(.col-employee):not(.col-balance) {
-  width: 44px;
+  width: 56px;
 }
 
 .plan-grid thead th.is-weekend {
@@ -750,12 +734,12 @@ th.col-employee {
   font-size: 13px;
   white-space: nowrap;
   width: 170px;
-  /* Höhe exakt an .shift-chip-btn (30px) + Zeilenrahmen angleichen, statt
-     sich allein aus dem Zelleninhalt zu ergeben -- sonst weicht die Höhe je
-     nach Namenslänge/Pensum minim von den Dienst-Zellen ab. Nur ein
-     Minimum -- Zeilen mit Split-Shift und/oder sichtbarer
-     Spezialitäten-Zeile (.special-strip) wachsen darüber hinaus. */
-  height: 31px;
+  /* Exakt an die feste Höhe von .day-cell (36px, siehe unten) angeglichen,
+     statt sich allein aus dem Zelleninhalt zu ergeben -- seit dem Redesign
+     (horizontaler Split + Eck-Badge statt Spezialitäten-Zeile) ist JEDE
+     Tageszelle einer Zeile garantiert exakt gleich hoch, kein Wachsen mehr
+     nötig/möglich. */
+  height: 36px;
   vertical-align: middle;
 }
 
@@ -952,27 +936,42 @@ thead .col-employee {
 
 /* Nutzer-Feedback (2026-08, "genau wie Polypoint, optisch moderner"): eine
    feste, quadratische Glyph-Box statt der pillenförmigen Text-Abkürzung --
-   füllt (width: 100%) immer genau ihre halbe/ganze Zellbreite (siehe
-   .day-cell-slots oben), Grösse bleibt dadurch bei einem oder zwei Diensten
-   gleich. Nur innerhalb des Planblatt-Grids kleiner als der globale
-   .shift-chip-Standard (der auch ausserhalb des Grids verwendet wird, z. B.
-   Dashboard/Settings-Listen/TradeRequestPanel, dort bewusst unverändert). */
+   füllt (width: 100%) immer genau ihre halbe/ganze Zellhöhe (siehe
+   .day-cell-slots unten), Grösse bleibt dadurch bei einem oder zwei
+   Diensten konsistent. Nur innerhalb des Planblatt-Grids kleiner/kräftiger
+   als der globale .shift-chip-Standard (der auch ausserhalb des Grids
+   verwendet wird, z. B. Dashboard/Settings-Listen/TradeRequestPanel, dort
+   bewusst unverändert).
+   Redesign (2026-08, "hand aufs Herz"-Nachbesserung): kräftigerer
+   Farbton (30%/85%-Mix statt 16%/80%) statt einer sehr blassen Füllung --
+   ein Dienst soll auf den ersten Blick als klar erkennbare, satte Farbfläche
+   wirken (wie bei Polypoint), nicht nur als dezent eingefärbter Pill. */
 .plan-grid .shift-chip {
   width: 100%;
   height: 20px;
   min-width: 0;
   padding: 0 2px;
   border-radius: 5px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 800;
   /* Bugfix (2026-08): ohne overflow:hidden liess flexbox ein zu breites
      Kürzel (z. B. ein manuell gesetztes zweistelliges Icon) über die
-     ~20px schmale Zellhälfte hinaus sichtbar in den Nachbar-Chip
-     hineinlaufen -- reine Sicherheitsnetz-Regel, der Regelfall (ein
-     Zeichen, siehe chipGlyph.js) passt ohnehin ohne zu clippen. */
+     schmale Zellhälfte hinaus sichtbar in den Nachbar-Chip hineinlaufen --
+     reine Sicherheitsnetz-Regel, der Regelfall (ein Zeichen, siehe
+     chipGlyph.js) passt ohnehin ohne zu clippen. */
   overflow: hidden;
   text-overflow: clip;
   white-space: nowrap;
+}
+
+/* :not(.shift-chip--empty) -- sonst hätte diese Regel (2 Klassen) die
+   transparente Füllung der leeren "+"-Zelle oben (1 Klasse, .shift-chip--
+   empty) per höherer Spezifität überschrieben und jede unbelegte Zelle
+   fälschlich mit --primary eingefärbt (--chip-color ist dort nicht
+   gesetzt, fällt auf den Basiswert von .shift-chip zurück). */
+.plan-grid .shift-chip:not(.shift-chip--empty) {
+  background: color-mix(in srgb, var(--chip-color) 30%, white);
+  color: color-mix(in srgb, var(--chip-color) 85%, black);
 }
 
 .cell-select {
@@ -989,14 +988,14 @@ thead .col-employee {
   display: block;
 }
 
-/* Polypoint-Vorbild (2026-08): die Tageszelle ist jetzt fix ~21px schmal
-   (halbe Zellbreite bei zwei Diensten) statt vorher beliebig breit -- ein
-   16x16px-Button in der Ecke hätte den grössten Teil des winzigen Glyphen
-   verdeckt und Klicks der neuen Icon-Toolbar (handleCellClick) abgefangen,
-   noch bevor sie den darunterliegenden Chip erreichen. Deutlich kleiner,
-   damit die Zellmitte -- und damit ein normaler Klick zum Platzieren --
-   frei bleibt; der Tausch-Button selbst bleibt bei Hover weiterhin exakt
-   in der Ecke klickbar. */
+/* Polypoint-Vorbild (2026-08): die Tageszelle ist fix und bei zwei Diensten
+   nur noch 18px pro Hälfte hoch (horizontaler Split, siehe .day-cell-slots
+   unten) -- ein 16x16px-Button in der Ecke hätte den grössten Teil des
+   winzigen Glyphen verdeckt und Klicks der Icon-Toolbar (handleCellClick)
+   abgefangen, noch bevor sie den darunterliegenden Chip erreichen. Deutlich
+   kleiner, damit die Zellmitte -- und damit ein normaler Klick zum
+   Platzieren -- frei bleibt; der Tausch-Button selbst bleibt bei Hover
+   weiterhin exakt in der Ecke klickbar. */
 .btn-offer-trade {
   position: absolute;
   top: 1px;
@@ -1857,62 +1856,32 @@ thead .col-employee {
   margin-top: 2px;
 }
 
-/* Nutzer-Feedback (2026-08, Nachbesserung): Spezialitäten (z. B.
-   Pikettdienst) als eigene, dünne Chip-Zeile UNTER den Dienst-Slots (PEP-
-   Vorbild) statt hinter einem Zähler-Badge in der Zell-Ecke versteckt --
-   letzteres wurde bei einem Split-Shift (zwei Slots) faktisch unsichtbar.
-   .day-cell fasst Slot-Zeile + Spezialitäten-Zeile pro Tageszelle zusammen.
-
-   Nutzer-Feedback (2026-08, "genau wie Polypoint"): .day-cell-slots sitzt
-   innerhalb der (seit table-layout: fixed oben) unveränderlich breiten
-   Tagesspalte -- die Spalte wird NIE breiter, egal wie viele Dienste an
-   einem Tag liegen.
-
-   Nutzer-Feedback (2026-08, Nachbesserung): zwei Dienste nebeneinander
-   waren anfangs ein reiner Links/Rechts-Spaltensplit (je ~20px) -- ohne
-   gesetztes Icon lief der Zwei-Buchstaben-Fallback dabei sichtbar
-   ineinander (siehe chipGlyph.js). Jetzt stattdessen diagonal wie im
-   Jahresplan (.year-day-fill--shift.is-split unten): .day-cell-slots--
-   diagonal, jeder Chip in seiner eigenen Ecke (oben/links, unten/rechts)
-   statt in einer festen Spaltenbreite -- mehr Platz pro Glyph, gleiche
-   visuelle Sprache wie "zwei Dienste an einem Tag" im Jahresplan.
-
-   Nutzer-Feedback (2026-08, Nachbesserung): bei nur einem Dienst ("Ganz",
-   .cell-wrap--span) blieb bisher sichtbar Weissraum um den Chip -- der
-   Button war nur 26px/20px hoch, während die Zeile durch th.col-employee
-   (31px) bzw. eine diagonale Nachbarzelle (34px) tatsächlich höher war,
-   und der Chip füllte diese Höhe nicht aus. .day-cell-slots bekommt jetzt
-   fest dieselbe Höhe wie die Diagonal-Variante (34px, für beide Fälle
-   einheitlich), und .cell-wrap--span/.shift-chip-btn/.shift-chip füllen
-   sie per position:absolute + inset:0 randlos aus -- ein einzelner Dienst
-   nimmt jetzt wirklich das GANZE Viereck ein, nicht nur einen kleinen
-   Pill mittendrin.
-
-   Nutzer-Feedback (2026-08, Nachbesserung #2, per Foto belegt): der Chip
-   füllte zwar SEINE eigene 34px-Box randlos aus, aber .day-cell selbst war
-   nur so hoch wie sein Inhalt (shrink-to-fit) -- sobald eine ANDERE Zelle
-   in derselben Tabellenzeile höher war (z. B. eine sichtbare
-   .special-strip an einem Nachbartag), wurde die ganze <tr> höher, und der
-   Browser zentriert Zellinhalt per Default (vertical-align: middle) in der
-   dadurch höheren <td> -- die feste 34px-Box blieb klein und schwamm mit
-   sichtbarem Weissraum oben/unten in der Zelle statt sie auszufüllen.
-   .day-cell füllt jetzt (dank ".plan-grid td { height: 1px }" oben) per
-   height:100% IMMER die tatsächliche Zeilenhöhe aus statt nur seinen
-   eigenen Inhalt. .day-cell-slots ist ein Flex-Kind mit Mindesthöhe
-   (flex: 1 0 34px) -- so wächst der Slot-Bereich mit, wenn die Zeile höher
-   ist, während .special-strip (zweites Flex-Kind, kein flex-grow) ihre
-   natürliche Höhe behält. */
+/* Redesign (2026-08, "hand aufs Herz"-Nachbesserung): das bisherige
+   Diagonal-Dreieck (clip-path) für zwei Dienste an einem Tag sah zwar
+   "clever" aus, war aber nicht intuitiv -- oben-links/unten-rechts hat
+   keinen Bezug zur Tageszeit, jeder Klick musste in eine Dreiecksecke
+   treffen, und allein das Randlos-Füllen einer Farbe hat mehrere Runden
+   Flex-Basis-/Containing-Block-Hacks gebraucht. Jetzt stattdessen ein
+   simpler horizontaler Stapel: oberer Dienst = zeitlich früher, unterer =
+   später -- das mappt auf eine echte, sofort verständliche Achse statt
+   auf eine willkürliche Geometrie. Genauso wird die separate
+   Spezialitäten-Zeile UNTER den Slots (frühere .special-strip) durch einen
+   kleinen Eck-Punkt ersetzt (siehe .special-day-badge unten) -- dadurch
+   bleibt jede Tageszelle IMMER gleich hoch, unabhängig davon, ob an einem
+   Nachbartag eine Spezialität hängt. Kein Höhen-Wettrüsten zwischen
+   Zellen mehr, keine table-row-Stretch-Tricks nötig. */
 .day-cell {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
+  position: relative;
+  height: 36px;
 }
 
 .day-cell-slots {
   position: relative;
-  flex: 1 0 34px;
+  height: 100%;
   border-radius: 5px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .day-cell-slots .cell-wrap--span {
@@ -1920,7 +1889,7 @@ thead .col-employee {
   inset: 0;
 }
 
-/* Bugfix (wie bei --diag-tl/--br unten): die Basisregel ".cell-wrap" setzt
+/* Bugfix (wie bei --top/--bottom unten): die Basisregel ".cell-wrap" setzt
    position:relative auf JEDES cell-wrap -- auch auf ShiftCell.jsx's
    inneres <span>, direktes Kind von .cell-wrap--span. Ohne diese
    Override-Regel würde DIESES innere <span> zum Containing Block für den
@@ -1959,127 +1928,120 @@ thead .col-employee {
   border-radius: 0;
 }
 
-/* Bugfix (Playwright-Verifikation): ShiftCell.jsx wickelt sein eigenes
-   Markup zusätzlich in ein <span className="cell-wrap"> (für den
-   Tausch-Button-Ankerpunkt) -- ein ungescoptes ".cell-wrap" hier hätte
-   also auch DIESES innere, unmodifizierte cell-wrap getroffen. Nur auf
-   die beiden Modifier-Klassen scopen, die ausschliesslich am äusseren
-   Wrapper hängen. Jeder Wrapper füllt (inset: 0) die GANZE Zelle, aber
-   clip-path zeigt nur sein eigenes Dreieck -- --chip-color kommt hier
-   von PlanGrid.jsx (inline style), nicht von ShiftCell.jsx's eigenem
-   .shift-chip weiter unten im Baum (Custom Properties vererben nur
-   abwärts, .shift-chip-btn kann die Variable seines Kindes nicht lesen). */
-.day-cell-slots--diagonal .cell-wrap--diag-tl,
-.day-cell-slots--diagonal .cell-wrap--diag-br {
-  position: absolute;
-  inset: 0;
-  width: auto;
-  min-width: 0;
+/* Horizontaler Split (zwei Dienste an einem Tag): .cell-wrap--top/--bottom
+   sind normale Flex-Kinder von .day-cell-slots (flex-direction: column) --
+   flex: 1 1 0 teilt die Höhe automatisch exakt zur Hälfte, ganz ohne
+   clip-path oder manuelles inset:0 auf DIESER Ebene (anders als beim
+   Diagonal-Vorgänger). Ein Flex-Item hat nach dem Layout eine definierte
+   Grösse, an der sich Kinder (s. u.) problemlos per position:absolute
+   orientieren können -- kein Flex-Basis-Auflösungsproblem wie beim
+   .shift-chip innerhalb von .shift-chip-btn, weil .cell-wrap--top/--bottom
+   selbst kein Flex-Item eines ANDEREN Flex-Elements mehr ist. */
+.day-cell-slots--split .cell-wrap--top,
+.day-cell-slots--split .cell-wrap--bottom {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
 }
 
-.day-cell-slots--diagonal .cell-wrap--diag-tl {
-  clip-path: polygon(0 0, 100% 0, 0 100%);
+/* Dünne Trennlinie zwischen den beiden Hälften -- border-box (global,
+   siehe "* { box-sizing: border-box }") sorgt dafür, dass der 1px-Rand von
+   der Höhe ABGEZOGEN wird, statt die Zelle zu vergrössern, und dass das
+   inset:0 des Kind-Chips (s. u.) sich an der PADDING-Kante orientiert --
+   die Linie bleibt dadurch sichtbar, auch wenn der Chip seine Hälfte
+   randlos ausfüllt. */
+.day-cell-slots--split .cell-wrap--top {
+  border-bottom: 1px solid var(--surface);
 }
 
-.day-cell-slots--diagonal .cell-wrap--diag-br {
-  clip-path: polygon(100% 0, 100% 100%, 0 100%);
-}
-
-/* Bugfix (Playwright-Verifikation, Fortsetzung): die Basisregel ".cell-wrap"
-   setzt position:relative auf JEDES cell-wrap -- also auch auf ShiftCell.
-   jsx's inneres <span>, das direkte Kind von .cell-wrap--diag-tl/--br. Ein
-   position:relative-Element ist selbst ein Containing Block für
-   position:absolute-Nachkommen, daher hätte .shift-chip-btn (s. u.) diese
-   innere Box als Bezugsrahmen genommen statt der äusseren -- und die ist
-   wieder nur so gross wie ihr eigener (auto-)Inhalt, derselbe Zirkelschluss
-   wie zuvor. position:static NUR hier (direktes Kind, scoped) nimmt ihr
-   diese Rolle, ohne die allgemeine .cell-wrap-Regel (Tausch-Button-Anker
-   ausserhalb der Diagonalzellen) anzutasten. */
-.day-cell-slots--diagonal .cell-wrap--diag-tl > .cell-wrap,
-.day-cell-slots--diagonal .cell-wrap--diag-br > .cell-wrap {
+.day-cell-slots--split .cell-wrap--top > .cell-wrap,
+.day-cell-slots--split .cell-wrap--bottom > .cell-wrap {
   position: static;
 }
 
-/* Bugfix (Playwright-Verifikation): .shift-chip-btn liegt nicht direkt in
-   .cell-wrap--diag-tl/--br, sondern in ShiftCell.jsx's eigenem, dazwischen
-   liegendem <span className="cell-wrap"> (auto-Höhe) -- height:100% hatte
-   dadurch keinen Vorfahren mit definierter Höhe zum Auflösen und wurde
-   still ignoriert (fiel auf die intrinsische Höhe von ~16px zurück, der
-   zweite Glyph landete dadurch fast auf der Dreieckskante). position:
-   absolute + inset:0 überspringt diese Kette: der nächste POSITIONIERTE
-   Vorfahre ist ohnehin .cell-wrap--diag-tl/--br, egal wie viele
-   nicht-positionierte Boxen dazwischenliegen. */
-.day-cell-slots--diagonal .shift-chip-btn {
+.day-cell-slots--split .shift-chip-btn {
   position: absolute;
   inset: 0;
   width: auto;
   height: auto;
-  background: color-mix(in srgb, var(--chip-color) 55%, white);
 }
 
-.day-cell-slots--diagonal .cell-wrap--diag-tl .shift-chip-btn {
-  align-items: flex-start;
-  justify-content: flex-start;
-  padding: 2px 0 0 4px;
-}
-
-.day-cell-slots--diagonal .cell-wrap--diag-br .shift-chip-btn {
-  align-items: flex-end;
-  justify-content: flex-end;
-  padding: 0 4px 2px 0;
-}
-
-.day-cell-slots--diagonal .shift-chip {
-  background: transparent;
-  color: color-mix(in srgb, var(--chip-color) 92%, black);
+.day-cell-slots--split .shift-chip {
+  position: absolute;
+  inset: 0;
   width: auto;
-  min-width: 0;
   height: auto;
+  border-radius: 0;
+  font-size: 11px;
+}
+
+/* Eck-Badge für Spezialitäten (z. B. Pikettdienst) statt einer eigenen
+   Zeile unter den Dienst-Slots (siehe Kommentar bei .day-cell oben) --
+   .day-cell ist position:relative, der Badge sitzt absolut in der Ecke
+   und nimmt keinen Platz im Layout ein, damit alle Tageszellen einer
+   Zeile immer exakt gleich hoch bleiben. Vorbild: das bestehende
+   .staffing-warning-badge-Muster (PlanGrid.jsx, DayStaffingBadge).
+   Unten-rechts statt oben-rechts: .btn-offer-trade (Diensttausch anbieten)
+   sitzt bereits oben-rechts in der Zelle -- unten-rechts vermeidet, dass
+   sich beide Badges bei einem Tag mit Dienst UND Spezialität überlappen. */
+.special-day-badge {
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  z-index: 1;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid var(--surface);
+  border-radius: 50%;
   padding: 0;
-  font-size: 12px;
-  font-weight: 800;
+  background: var(--chip-color, var(--primary));
+  cursor: pointer;
 }
 
-.special-strip {
+.special-day-badge:hover {
+  transform: scale(1.2);
+}
+
+.special-day-popover {
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  box-shadow: 0 6px 20px rgba(20, 30, 25, 0.16);
+  min-width: 170px;
+}
+
+.special-day-popover-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px;
-  min-height: 14px;
-  padding: 1px 2px;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.special-chip {
-  --chip-color: var(--primary);
-  display: inline-flex;
+.special-day-popover-item {
+  display: flex;
   align-items: center;
-  gap: 2px;
-  height: 13px;
-  padding: 0 3px;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--chip-color) 20%, white);
-  color: color-mix(in srgb, var(--chip-color) 80%, black);
-  font-size: 8px;
-  font-weight: 700;
-  line-height: 1;
-  text-transform: uppercase;
-  letter-spacing: 0.02em;
-  border: none;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--ink);
 }
 
-.special-chip-remove {
+.special-day-popover-remove {
   border: none;
   background: none;
-  padding: 0;
-  margin: 0;
-  font-size: 9px;
+  padding: 0 2px;
+  font-size: 14px;
   line-height: 1;
-  color: inherit;
-  opacity: 0.6;
+  color: var(--ink-muted);
+  cursor: pointer;
 }
 
-.special-chip-remove:hover {
-  opacity: 1;
+.special-day-popover-remove:hover {
+  color: var(--warn);
 }
 
 /* ---------- Jahresplan (README Block 2.12) ---------- */

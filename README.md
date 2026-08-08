@@ -945,6 +945,45 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       bereits ein gültiger Containing Block. Mit Playwright verifiziert (Pixel-Vergleich der
       Bounding-Box von `.shift-chip` gegen `.shift-chip-btn`, vorher/nachher, für leere UND
       belegte Zellen): beide Boxen sind jetzt deckungsgleich.
+    - ✅ **Planblatt-Redesign: horizontaler Split + Eck-Badge statt Diagonale/Spezialitäten-Zeile
+      (2026-08, "hand aufs Herz"-Nachbesserung)**: der Nutzer fragte direkt, ob das bisherige
+      Diagonal-Dreieck (clip-path) für zwei Dienste an einem Tag wirklich intuitiv sei -- war es
+      nicht: oben-links/unten-rechts hat keinen Bezug zur Tageszeit, und allein das randlose Füllen
+      einer Farbe hatte mehrere Runden Flex-Basis-/Containing-Block-Hacks gebraucht (s. o.), ein
+      Indiz dafür, dass das Design gegen das Layout-Modell statt mit ihm arbeitete. Auf explizite
+      Zustimmung ("Ja mach das") umgesetzt:
+      1. **Horizontaler Stapel statt Diagonale**: `.day-cell-slots--split` (vorher `--diagonal`)
+         ist jetzt ein einfacher Flex-`column`-Container, `.cell-wrap--top`/`--bottom` (vorher
+         `--diag-tl`/`--diag-br`) teilen sich die Höhe automatisch via `flex: 1 1 0` -- kein
+         `clip-path` mehr. Oben = zeitlich früher, unten = später, eine echte, sofort verständliche
+         Achse statt einer willkürlichen Geometrie. Da `.cell-wrap--top`/`--bottom` selbst
+         Flex-Items von `.day-cell-slots` sind (nicht mehr ein weiteres Flex-Item INNERHALB eines
+         schon gestreckten `position:absolute`-Elements), hat ihr `.shift-chip` ein sauberes,
+         definiertes Eltern-Element zum Ausfüllen -- das Flex-Basis-Problem von oben trat hier gar
+         nicht erst auf.
+      2. **Spezialitäten als Eck-Badge statt eigener Zeile**: `SpecialStrip.jsx` (dünne Chip-Zeile
+         UNTER den Slots) ersetzt durch `SpecialBadge.jsx` -- ein kleiner, farbiger Punkt in der
+         Zellecke (unten-rechts, um nicht mit dem `.btn-offer-trade`-Button oben-rechts zu
+         kollidieren), Klick öffnet ein `FloatingPopover` mit Liste + Entfernen-Button (gleiches
+         Muster wie `DayStaffingBadge`). Der Badge ist `position: absolute` und nimmt keinen Platz
+         im Layout ein -- **strukturell** kann eine Tageszelle dadurch nicht mehr höher werden als
+         eine andere in derselben Zeile, die ganze Klasse von Höhen-Wettrüsten-Bugs (der Grund für
+         mehrere vorherige Nachbesserungsrunden) ist damit nicht nur gefixt, sondern unmöglich
+         gemacht: `th.col-employee`/`.day-cell` haben jetzt beide eine feste Höhe (36px), kein
+         `flex`/`height:100%`/table-row-stretch-Trick mehr nötig.
+      3. **Breitere Tagesspalten** (44px -> 56px): zwei gestapelte Kürzel (z. B. "T1"/"T2")
+         brauchen bequem lesbaren Platz statt um jedes Pixel zu kämpfen.
+      4. **Kräftigere Farbfläche**: `.plan-grid .shift-chip` von einem blassen 16%/80%-Farbmix auf
+         30%/85% angehoben (nur für Zuweisungen, `:not(.shift-chip--empty)` -- sonst hätte die
+         höhere Spezifität die transparente Füllung leerer "+"-Zellen überschrieben) -- ein Dienst
+         wirkt jetzt auf den ersten Blick als klar erkennbare Farbfläche statt als dezenter Pill,
+         einheitlich ob ein oder zwei Dienste an einem Tag liegen.
+      Mit Playwright verifiziert: (a) Zeilenhöhe aller Tageszellen einer Zeile identisch (37px inkl.
+      Rand), unabhängig davon, ob eine Nachbarzelle eine Spezialität trägt; (b) Klick exakt am
+      oberen/unteren Rand einer Split-Zelle trifft zuverlässig die richtige Hälfte (per
+      `aria-label`-Vergleich zweier unterschiedlicher Dienste verifiziert, nicht nur per
+      Screenshot); (c) Spezialitäten-Badge + Popover (Anzeige, Entfernen) funktioniert additiv neben
+      einem regulären Dienst; (d) volle Backend-Testsuite weiterhin grün (reine Frontend-Änderung).
     - ✅ **Markieren durch Ziehen** (statt jede Zelle einzeln anklicken zu müssen): `onMouseDown`
       entscheidet anhand des Zustands der zuerst berührten Zelle, ob markiert oder entmarkiert
       wird, und startet damit den Ziehen-Modus; `onMouseEnter` wendet denselben Modus beim

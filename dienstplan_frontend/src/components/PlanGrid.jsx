@@ -622,6 +622,31 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
+  // Nutzer-Feedback (2026-08, Phase 2): "Oben überschreibt nur die obere
+  // Hälfte" -- eine bestehende GANZTÄGIGE Absenz (an einem einzelnen Tag)
+  // wird beim Bestempeln nur einer Hälfte nicht mehr komplett gelöscht,
+  // sondern auf die jeweils NICHT angeklickte Hälfte reduziert (day_portion
+  // full -> morning/afternoon, gleicher Typ, gleiches Datum). Absence hat
+  // (anders als ShiftAssignment) ein explizites day_portion-Feld -- ein
+  // sauberer Delete-und-Neuanlegen-Mechanismus dafür, im Gegensatz zum
+  // Dienst, der bei diesem Vorgang unverändert bleibt (siehe
+  // shiftShouldBeReplacedByAbsencePortion() weiter unten).
+  async function handleShrinkAbsence(absence, keepPortion) {
+    try {
+      await api.deleteAbsence(absence.id);
+      const created = await api.createAbsence({
+        employee: absence.employee,
+        start_date: absence.start_date,
+        end_date: absence.end_date,
+        type: absence.type,
+        day_portion: keepPortion,
+      });
+      setAbsences((prev) => [...prev.filter((a) => a.id !== absence.id), created]);
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
   // Workflow-Redesign (2026-08): pro-Zelle-Anwendung eines Werkzeugs
   // (Dienst/Radiergummi -- Absenzen laufen separat über applyToolToMarked
   // unten, siehe dort). Vorher hiess das handleCellClick() und wurde direkt
@@ -656,10 +681,22 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       if (placementMode === "full") {
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
         await handleAssign(employeeId, date, tool.id, rowNodeId, slot0?.id);
-      } else if (placementMode === "top") {
-        await handleAssign(employeeId, date, tool.id, rowNodeId, slot0?.id);
-      } else if (placementMode === "bottom") {
-        await handleAssign(employeeId, date, tool.id, rowNodeId, slot1?.id);
+      } else if (placementMode === "top" || placementMode === "bottom") {
+        // Nutzer-Feedback (2026-08): "oben/unten überschreibt nur die
+        // jeweilige Hälfte" -- ein bestehender EINZELNER (durchgehender)
+        // Dienst wird dabei nie umbenannt/ersetzt, sondern bleibt exakt der
+        // Datensatz, der er ist (z. B. beim Playwright-Test dieser Session
+        // beobachtet: "Unten"+Nachmittag, danach "Oben"+Vormittag hat den
+        // Nachmittag-Dienst fälschlich in Vormittag umbenannt statt beide
+        // nebeneinander anzulegen). Nur wenn BEREITS zwei eigenständige
+        // Dienste an diesem Tag liegen (ein echter Split), wird gezielt der
+        // in der Zielhälfte ersetzt -- sonst wird immer ein NEUER,
+        // unabhängiger Dienst angelegt. Ein echter Zeit-Overlap zwischen dem
+        // neuen und dem bestehenden Dienst wird dabei weiterhin korrekt vom
+        // Backend (ShiftAssignment._check_no_overlap) verhindert.
+        const isSplit = Boolean(slot0) && Boolean(slot1);
+        const target = placementMode === "top" ? slot0 : slot1;
+        await handleAssign(employeeId, date, tool.id, rowNodeId, isSplit ? target?.id : undefined);
       }
       return;
     }
@@ -672,10 +709,14 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       if (placementMode === "full") {
         if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
-      } else if (placementMode === "top") {
-        if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
-      } else if (placementMode === "bottom") {
-        if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
+      } else if (placementMode === "top" || placementMode === "bottom") {
+        // Analog oben: der Radiergummi in Oben/Unten-Modus löscht nur einen
+        // Dienst, der Teil eines ECHTEN Splits ist -- ein einzelner,
+        // durchgehender Dienst wird nur von "Alles" gelöscht.
+        const isSplit = Boolean(slot0) && Boolean(slot1);
+        if (!isSplit) return;
+        const target = placementMode === "top" ? slot0 : slot1;
+        await handleAssign(employeeId, date, null, rowNodeId, target.id);
       }
     }
   }
@@ -706,14 +747,20 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     return { regularAssignments, specialAssignments, absence: findAbsence(employeeId, date) };
   }
 
-  // JS-Gegenstück zu Absence._half_day_window() im Backend (fester
-  // Mittagsschnitt um 12:00) -- prüft, ob ein Dienst zeitlich in die
-  // Vormittags- oder Nachmittagshälfte eines Tages fällt. Ein über
-  // Mitternacht laufender Dienst (Ende <= Start, z. B. Nachtwache
-  // 20:00–07:00) wird konservativ als beide Hälften überlappend behandelt,
-  // damit er bei einer Halbtags-Absenz sicher geräumt wird statt einen
-  // serverseitigen Konflikt zu provozieren.
-  function shiftOverlapsPortion(templateId, dayPortion) {
+  // JS-Gegenstück zu Absence._shift_extends_into_other_half() im Backend
+  // (scheduling/models.py). Nutzer-Feedback (2026-08): "ein normaler
+  // (durchgehender) Dienst bleibt bei einer Halbtags-Absenz unverändert
+  // stehen -- Krankheit/Ferien sind arbeitszeitrechtlich weiterhin
+  // Arbeitszeit (Lohnfortzahlungspflicht, Schweizer ArG)". Ein Dienst wird
+  // beim Stempeln einer Halbtags-Absenz nur dann geräumt, wenn er
+  // AUSSCHLIESSLICH in der Zielhälfte liegt (ein echter, eigenständiger
+  // Halbtags-Dienst, z. B. "Nachmittag" 13:30-17:00 bei einer
+  // Nachmittags-Absenz) -- reicht er auch in die jeweils ANDERE Hälfte
+  // hinein (ein durchgehender Dienst über Mittag hinweg), bleibt er
+  // unangetastet. Ein über Mitternacht laufender Dienst (Ende <= Start,
+  // z. B. Nachtwache 20:00–07:00) gilt konservativ immer als "reicht in die
+  // andere Hälfte hinein" (wird nie automatisch geräumt).
+  function shiftShouldBeReplacedByAbsencePortion(templateId, dayPortion) {
     if (dayPortion === "full") return true;
     const template = templates.find((t) => t.id === templateId);
     if (!template?.start_time || !template?.end_time) return true;
@@ -723,9 +770,12 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     };
     const start = toMinutes(template.start_time);
     const end = toMinutes(template.end_time);
-    if (end <= start) return true; // über Mitternacht
+    if (end <= start) return false; // über Mitternacht -- nie automatisch ersetzen
     const noon = 12 * 60;
-    return dayPortion === "morning" ? start < noon : end > noon;
+    const overlapsTargetPortion = dayPortion === "morning" ? start < noon : end > noon;
+    if (!overlapsTargetPortion) return false; // berührt die Zielhälfte gar nicht
+    const extendsIntoOtherHalf = dayPortion === "morning" ? end > noon : start < noon;
+    return !extendsIntoOtherHalf;
   }
 
   // Zentrale Stempel-Funktion (Workflow-Redesign 2026-08): wendet `tool`
@@ -749,14 +799,29 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     // sein" wie Dienste -- Oben/Unten/Alles bestimmt jetzt auch bei einer
     // Absenz, welche Tageshälfte betroffen ist (Absence.day_portion, siehe
     // scheduling/models.py), statt eine Absenz immer als ganzen Tag
-    // anzulegen. Ein Klick mit dem Absenz-Werkzeug ersetzt weiterhin
-    // GANZ, was an bestehender Absenz auf dem Tag lag (einfaches
-    // Ein-Absenz-pro-Tag-Modell, kein Nebeneinander zweier Absenz-
-    // Datensätze) -- nur ein Dienst-/Radiergummi-Werkzeug in Oben/Unten-
-    // Modus lässt eine bestehende Absenz der JEWEILS ANDEREN Hälfte in Ruhe,
-    // damit ein "Vormittags frei, nachmittags Dienst"-Tag nicht durch das
-    // blosse Beplanen der Dienst-Hälfte wieder verschwindet.
+    // anzulegen. "Alles" ersetzt weiterhin GANZ, was an bestehender Absenz
+    // auf dem Tag lag. "Oben"/"Unten" lässt eine bestehende Absenz der
+    // JEWEILS ANDEREN Hälfte in Ruhe, damit ein "Vormittags frei,
+    // nachmittags Dienst"-Tag nicht durch das blosse Beplanen der
+    // Dienst-Hälfte wieder verschwindet.
+    //
+    // Phase 2 (Nutzer-Feedback: "Oben überschreibt nur die obere Hälfte"):
+    // eine bestehende GANZTÄGIGE Absenz an einem EINZELNEN Tag wird beim
+    // Bestempeln nur einer Hälfte mit einem DIENST oder dem Radiergummi
+    // nicht mehr komplett gelöscht, sondern auf die nicht angeklickte
+    // Hälfte reduziert (handleShrinkAbsence) -- ein Dienst "oben" lässt eine
+    // bisher ganztägige Absenz z. B. nur noch "unten" bestehen. Stempelt man
+    // dagegen selbst eine ANDERE Absenz auf die Zielhälfte (tool.kind ===
+    // "absence"), bleibt es beim einfachen Ein-Absenz-pro-Tag-Modell (volles
+    // Löschen) -- zwei verschiedene Absenzarten am selben Tag nebeneinander
+    // würde die Zell-Anzeige (die pro Tag nur EINE Absenz kennt,
+    // findAbsence()) nicht abbilden können. Bei einer MEHRTÄGIGEN Absenz
+    // (z. B. eine Ferienwoche) wäre eine Reduktion ausserdem ein
+    // Range-Split (den einzelnen Tag aus dem Zeitraum heraustrennen) --
+    // bewusst nicht Teil dieses Features, dort bleibt es beim vollständigen
+    // Löschen (bestehendes Verhalten).
     const absenceIdsToClear = new Set();
+    const absencesToShrink = new Map(); // absenceId -> { absence, keepPortion }
     for (const key of keys) {
       const [employeeIdStr, date] = key.split(":");
       const absence = findAbsence(Number(employeeIdStr), date);
@@ -767,8 +832,16 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       }
       if (placementMode === "pikett") continue; // Pikett betrifft nie Absenzen
       const existingPortion = absence.day_portion ?? "full";
+      if (existingPortion === "full") {
+        if (absence.start_date === absence.end_date) {
+          const keepPortion = placementMode === "top" ? "afternoon" : "morning";
+          absencesToShrink.set(absence.id, { absence, keepPortion });
+        } else {
+          absenceIdsToClear.add(absence.id);
+        }
+        continue;
+      }
       const overlapsThisMode =
-        existingPortion === "full" ||
         (placementMode === "top" && existingPortion === "morning") ||
         (placementMode === "bottom" && existingPortion === "afternoon");
       if (overlapsThisMode) absenceIdsToClear.add(absence.id);
@@ -781,9 +854,12 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     // Datensatz wurde dadurch mehrfach zu löschen versucht, der zweite
     // Versuch schlug serverseitig fehl (404, da schon gelöscht). Ein Set
     // dedupliziert automatisch, jede betroffene Absenz wird genau einmal
-    // gelöscht, bevor irgendein Werkzeug angewendet wird.
+    // gelöscht bzw. reduziert, bevor irgendein Werkzeug angewendet wird.
     for (const absenceId of absenceIdsToClear) {
       await handleRemoveAbsence(absenceId);
+    }
+    for (const { absence, keepPortion } of absencesToShrink.values()) {
+      await handleShrinkAbsence(absence, keepPortion);
     }
 
     if (tool.kind === "absence") {
@@ -793,17 +869,16 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
         const employeeId = Number(employeeIdStr);
         const rowNodeId = Number(rowNodeIdStr);
         const { regularAssignments, specialAssignments } = resolveCellState(employeeId, date, rowNodeId);
-        // Bugfix: NICHT blind nach Slot-Index räumen ("Oben"=Index 0) --
-        // "oben" ist nur die Anzeige-Position (chronologisch erster Dienst
-        // des Tages), aber ein einzelner Dienst kann trotzdem nachmittags
-        // liegen, wenn es der einzige Dienst des Tages ist. Stattdessen wie
-        // das Backend (Absence._half_day_window/ShiftAssignment
-        // _check_no_absence_conflict) nach echter Zeitüberlappung mit der
-        // Vormittags-/Nachmittagsgrenze (12:00) räumen -- ein Dienst, der
-        // die neue Halbtags-Absenz gar nicht zeitlich berührt, bleibt so
-        // unangetastet, egal in welchem Slot er gerade angezeigt wird.
+        // Nutzer-Feedback (2026-08): "ein normaler Dienst bleibt bei einer
+        // Halbtags-Absenz unverändert stehen -- oben bleibt Dienst, unten
+        // wird frei" (bzw. umgekehrt). NICHT blind nach Slot-Index räumen
+        // ("Oben"=Index 0) -- ein durchgehender Dienst (reicht auch in die
+        // jeweils andere Hälfte hinein) wird nie geräumt, nur ein echter,
+        // ausschliesslich in der Zielhälfte liegender Dienst wird ersetzt
+        // (shiftShouldBeReplacedByAbsencePortion(), spiegelt
+        // Absence._shift_extends_into_other_half() im Backend).
         for (const a of regularAssignments) {
-          if (shiftOverlapsPortion(a.template, dayPortion)) {
+          if (shiftShouldBeReplacedByAbsencePortion(a.template, dayPortion)) {
             await handleAssign(employeeId, date, null, rowNodeId, a.id);
           }
         }

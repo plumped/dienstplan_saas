@@ -879,6 +879,31 @@ class Absence(TenantScopedModel):
             return datetime.combine(day, time(12, 0)), datetime.combine(day + timedelta(days=1), time(0, 0))
         return datetime.combine(day, time(0, 0)), datetime.combine(day + timedelta(days=1), time(0, 0))
 
+    @staticmethod
+    def _shift_extends_into_other_half(shift_start, shift_end, day, portion):
+        """
+        Nutzer-Feedback (2026-08): "ein normaler (durchgehender) Dienst bleibt
+        bei einer Halbtags-Absenz unverändert stehen -- Krankheit/Ferien sind
+        arbeitszeitrechtlich weiterhin Arbeitszeit (Lohnfortzahlungspflicht,
+        Schweizer ArG)". Ein Dienst, dessen Zeitfenster auch die jeweils
+        ANDERE (nicht von `portion` beanspruchte) Tageshälfte berührt -- z. B.
+        eine durchgehende Frühschicht 07:00-17:00 bei einer
+        Nachmittags-Absenz --, blockiert eine Halbtags-Absenz NICHT (und
+        umgekehrt): beide dürfen koexistieren. Ein Dienst, der AUSSCHLIESSLICH
+        in der von `portion` beanspruchten Hälfte liegt (ein echter,
+        eigenständiger Halbtags-Dienst, z. B. "Nachmittag" 13:30-17:00 bei
+        einer Nachmittags-Absenz), bleibt weiterhin ein echter Konflikt.
+        Gilt nicht für `FULL` -- eine ganztägige Absenz blockiert wie bisher
+        jeden Dienst am gleichen Tag ausnahmslos.
+        """
+        if portion == Absence.DayPortion.FULL:
+            return False
+        other_portion = (
+            Absence.DayPortion.AFTERNOON if portion == Absence.DayPortion.MORNING else Absence.DayPortion.MORNING
+        )
+        other_start, other_end = Absence._half_day_window(day, other_portion)
+        return shift_start < other_end and other_start < shift_end
+
     def clean(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValidationError("Enddatum darf nicht vor dem Startdatum liegen.")
@@ -906,6 +931,14 @@ class Absence(TenantScopedModel):
                         for a in candidates
                         if (lambda s, e: s < absence_end and absence_start < e)(
                             *ShiftAssignment._shift_datetimes(a.date, a.template)
+                        )
+                        # Nutzer-Feedback (2026-08): ein durchgehender Dienst
+                        # (z. B. Frühschicht 07:00-17:00), der auch die
+                        # jeweils andere Tageshälfte abdeckt, blockiert eine
+                        # Halbtags-Absenz nicht -- er bleibt unverändert
+                        # stehen (siehe _shift_extends_into_other_half()).
+                        and not self._shift_extends_into_other_half(
+                            *ShiftAssignment._shift_datetimes(a.date, a.template), a.date, self.day_portion
                         )
                     }
                 )
@@ -1425,6 +1458,17 @@ class ShiftAssignment(TenantScopedModel):
         for conflict in candidates:
             absence_start, absence_end = conflict._half_day_window(self.date, conflict.day_portion)
             if shift_start < absence_end and absence_start < shift_end:
+                # Nutzer-Feedback (2026-08): ein Dienst, der auch die jeweils
+                # andere (von der Halbtags-Absenz nicht beanspruchte)
+                # Tageshälfte abdeckt -- ein durchgehender Dienst über Mittag
+                # hinweg --, wird von einer Halbtags-Absenz nicht blockiert
+                # (Krankheit/Ferien sind weiterhin Arbeitszeit im Sinne der
+                # Lohnfortzahlungspflicht, der Dienst bleibt unverändert
+                # stehen). Siehe Absence._shift_extends_into_other_half().
+                if Absence._shift_extends_into_other_half(
+                    shift_start, shift_end, self.date, conflict.day_portion
+                ):
+                    continue
                 portion = (
                     ""
                     if conflict.day_portion == Absence.DayPortion.FULL

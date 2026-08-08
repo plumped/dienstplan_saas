@@ -1886,6 +1886,58 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       Nachmittags-Ferienabsenz in derselben Zelle (kein Backend-Fehler, Ferien-Saldo bleibt
       korrekt bei 0.5 abgezogenen Tagen).
 
+24. ✅ **Nachbesserung: durchgehender Dienst bleibt bei Halbtags-Absenz unverändert stehen
+    (2026-08)**. Punkt 23 räumte einen bestehenden Dienst noch anhand reiner Zeitüberlappung mit
+    der Zielhälfte (`shiftOverlapsPortion()`) -- das räumte fälschlich auch einen durchgehenden
+    Dienst (z. B. Frühschicht 07:00-17:00), sobald er die Zielhälfte überhaupt berührte.
+    Konkretes Nutzer-Feedback mit zwei Beispielen: "Habe ich einen normalen Dienst eingeplant und
+    nehme den Nachmittag frei, bleibt oben Dienst und unten wird frei" (und umgekehrt für
+    Vormittag frei). Vorab per Rückfrage geklärt: der bestehende Dienst-Eintrag bleibt bei einer
+    Halbtags-Absenz bewusst unverändert (kein neues Feld an `ShiftAssignment`, keine
+    Stunden-Aufteilung) -- Begründung des Nutzers: Krankheit/Ferien sind arbeitszeitrechtlich
+    weiterhin Arbeitszeit (Lohnfortzahlungspflicht, Schweizer ArG). Existiert dagegen bereits ein
+    ECHTER Split (zwei eigenständige Dienste), wird der in der Zielhälfte weiterhin ersetzt.
+    - Backend (`scheduling/models.py`): neuer Helper `Absence._shift_extends_into_other_half()`
+      -- ein Dienst blockiert eine Halbtags-Absenz nicht (und umgekehrt), wenn sein Zeitfenster
+      auch die jeweils ANDERE (nicht beanspruchte) Tageshälfte abdeckt. Genutzt in
+      `Absence.clean()` (Rückwärtsprüfung) und `ShiftAssignment._check_no_absence_conflict()`
+      (Vorwärtsprüfung) -- beide Richtungen teilen sich damit dieselbe Ausnahme. Eine ganztägige
+      Absenz (`day_portion=full`) bleibt davon unberührt und blockiert weiterhin jeden Dienst.
+      4 neue Tests (`test_afternoon_absence_does_not_conflict_with_whole_day_shift`,
+      `test_morning_absence_does_not_conflict_with_whole_day_shift`,
+      `test_full_day_absence_still_conflicts_with_whole_day_shift`,
+      `test_whole_day_shift_not_blocked_by_existing_half_day_absence`) -- die 4 bestehenden
+      Halbtags-Tests (mit sauber halbtägigen Test-Diensten) bleiben unverändert grün.
+    - Frontend (`PlanGrid.jsx`): `shiftOverlapsPortion()` ersetzt durch
+      `shiftShouldBeReplacedByAbsencePortion()` (JS-Gegenstück zum Backend-Helper) -- ein Dienst
+      wird beim Stempeln einer Halbtags-Absenz nur noch geräumt, wenn er AUSSCHLIESSLICH in der
+      Zielhälfte liegt. Zusätzlich `applyToolToCell()`-Fix für Dienst-Stempeln in Oben/Unten-Modus
+      (beim Playwright-Test dieser Session entdeckt): ein bestehender EINZELNER Dienst wurde
+      bisher fälschlich umbenannt/ersetzt statt dass ein echter zweiter, unabhängiger Dienst
+      entsteht -- jetzt wird nur dann gezielt ersetzt, wenn bereits ZWEI eigenständige Dienste an
+      dem Tag liegen, sonst immer ein neuer angelegt (ein echter Zeit-Overlap wird weiterhin vom
+      bestehenden `ShiftAssignment._check_no_overlap()` verhindert).
+    - Phase 2 (ebenfalls vom Nutzer bestätigt): eine bestehende GANZTÄGIGE Absenz an einem
+      EINZELNEN Tag wird beim Bestempeln nur einer Hälfte mit einem Dienst oder dem Radiergummi
+      nicht mehr komplett gelöscht, sondern auf die nicht angeklickte Hälfte reduziert (neuer
+      Helper `handleShrinkAbsence()`: löscht die ganztägige Absenz und legt sie mit
+      `day_portion` = der verbleibenden Hälfte neu an). Bewusst nur für Dienst-/Radiergummi-Klicks
+      und nur bei einer Absenz über genau einen Tag -- stempelt man selbst eine ANDERE Absenzart
+      auf die Zielhälfte, bleibt es beim einfachen Ein-Absenz-pro-Tag-Modell (volles Löschen), da
+      die Zelldarstellung (`findAbsence()`) pro Tag nur eine Absenz kennt; bei einer mehrtägigen
+      Absenz (Ferienwoche) wäre eine Reduktion ein Range-Split und bewusst nicht Teil dieses
+      Features (dort bleibt es beim vollständigen Löschen).
+    - Mit Playwright gegen echte Testheim-Daten verifiziert (Station "Pflege Tag",
+      Frühschicht 07:00-17:00 als durchgehender Dienst): "Alles"+Frühschicht, dann "Unten"+Ferien
+      -- Frühschicht bleibt oben unverändert (per DB-Abfrage bestätigt: derselbe Datensatz), Ferien
+      erscheint unten; umgekehrt "Oben"+Krankheit auf einem frischen Frühschicht-Tag -- Krankheit
+      oben, Frühschicht bleibt unten unverändert. Phase 2: "Alles"+Ferien (ganztägig), dann
+      "Unten"+Frühschicht -- Ferien wird zu `day_portion=morning` reduziert (nicht gelöscht),
+      Frühschicht entsteht unten, keine zwei Anfragen/kein Konflikt. Echter Split (Station
+      "Therapie", Vormittag- + Nachmittag-Dienst) weiterhin korrekt: "Unten"+Krankheit ersetzt nur
+      den Nachmittag-Dienst, der Vormittag-Dienst bleibt unangetastet. Volle Test-Suite (353 Tests)
+      grün.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 1. **Setup-Wizard**: eine neue Praxis registriert sich selbst (Tenant, erster Admin-Account,

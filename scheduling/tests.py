@@ -893,6 +893,72 @@ class AbsenceModelTests(TestCase):
         )
         assignment.clean()  # kein Konflikt -- darf nicht werfen
 
+    # --- Nutzer-Feedback (2026-08): "Alles/Oben/Unten" -- ein durchgehender
+    # Dienst über Mittag hinweg bleibt bei einer Halbtags-Absenz unverändert
+    # stehen (Krankheit/Ferien sind weiterhin Arbeitszeit im Sinne der
+    # Lohnfortzahlungspflicht, ArG). self.template ("Tagdienst", 08:00-17:00)
+    # deckt beide Tageshälften ab. ---
+
+    def test_afternoon_absence_does_not_conflict_with_whole_day_shift(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+            status=Absence.Status.APPROVED,
+        )
+        absence.clean()  # durchgehender Dienst blockiert nicht -- darf nicht werfen
+
+    def test_morning_absence_does_not_conflict_with_whole_day_shift(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.MORNING,
+            status=Absence.Status.APPROVED,
+        )
+        absence.clean()  # durchgehender Dienst blockiert nicht -- darf nicht werfen
+
+    def test_full_day_absence_still_conflicts_with_whole_day_shift(self):
+        # Ganztägige Absenzen behalten das strikte Verhalten -- die Ausnahme
+        # gilt nur für Halbtags-Absenzen.
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            status=Absence.Status.APPROVED,
+        )
+        with self.assertRaises(ValidationError):
+            absence.clean()
+
+    def test_whole_day_shift_not_blocked_by_existing_half_day_absence(self):
+        # Umgekehrte Richtung: ShiftAssignment._check_no_absence_conflict()
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.MORNING,
+            type=self._make_type(),
+            status=Absence.Status.APPROVED,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        assignment.clean()  # durchgehender Dienst wird nicht blockiert -- darf nicht werfen
+
     def _make_type(self):
         return AbsenceType.objects.create(tenant=self.tenant, name="Ferien")
 

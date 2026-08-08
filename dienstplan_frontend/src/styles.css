@@ -1919,10 +1919,16 @@ thead .col-employee {
    -- .shift-chip-btn ist bereits selbst position:absolute und damit ein
    gültiger Containing Block. display:inline-flex (Basisregel) bleibt
    erhalten und zentriert den Glyph-Text weiterhin innerhalb der jetzt
-   randlos gefüllten Box. */
+   randlos gefüllten Box.
+   Nutzer-Feedback (2026-08, Nachbesserung): inset: 0.5px statt 0 -- ein
+   winziger, gleichmässiger Abstand rundherum, damit die Farbfläche nicht
+   direkt an der Zellgrenze (und damit optisch an der Farbfläche der
+   Nachbarzelle) klebt. .shift-chip-btn (Klickfläche, s. o.) bleibt bei
+   inset: 0 -- nur die sichtbare Farbe rückt ein, die Klickfläche bleibt
+   die volle Zelle. */
 .day-cell-slots .cell-wrap--span .shift-chip {
   position: absolute;
-  inset: 0;
+  inset: 0.5px;
   width: auto;
   height: auto;
   border-radius: 0;
@@ -1966,9 +1972,12 @@ thead .col-employee {
   height: auto;
 }
 
+/* inset: 0.5px statt 0, gleicher Grund wie bei .cell-wrap--span oben --
+   winziger Abstand rundherum, auch zur Trennlinie zwischen den beiden
+   Hälften hin, damit nichts direkt aneinanderklebt. */
 .day-cell-slots--split .shift-chip {
   position: absolute;
-  inset: 0;
+  inset: 0.5px;
   width: auto;
   height: auto;
   border-radius: 0;

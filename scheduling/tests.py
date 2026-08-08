@@ -3942,6 +3942,141 @@ class ShiftAssignmentSwapAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 
+class ShiftAssignmentOtherTeamConflictsAPITests(APITestCase):
+    """
+    Regressionstest für einen Nutzer-gemeldeten "massiven Bug": eine sonst
+    leere Zelle im Planblatt liess sich trotzdem nicht beplanen ("... hat am
+    ... bereits 'Frühschicht' ... überschneidet"), obwohl weder das Grid
+    noch die Admin-Liste einen Dienst zeigten. Ursache: bei einer
+    Mehrfachanstellung (README Punkt 17) prüft
+    ShiftAssignment._check_no_overlap() tenant-weit über alle Teams/
+    Stationen, aber das Planblatt lädt nur die aktuell gewählte Station --
+    ein blockierender Dienst in einer ANDEREN Station war unsichtbar. Der
+    neue Endpoint /api/shift-assignments/other-team-conflicts/ deckt genau
+    diese Lücke: proaktive Warnung statt kryptischer Fehlermeldung erst beim
+    gescheiterten Beplanungsversuch.
+    """
+
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-conflicts", "planner_conflicts")
+        self.station_a = Node.add_root(name="Station A", tenant=self.tenant)
+        self.station_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=40
+        )
+        self.template_a = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.station_a, name="Küchendienst", start_time=time(6, 30), end_time=time(14, 30)
+        )
+        self.template_b = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.station_b, name="Frühschicht", start_time=time(7, 0), end_time=time(17, 0)
+        )
+        # Der eigentliche "unsichtbare" Konflikt: ein Dienst in Station B,
+        # während das Planblatt Station A anzeigt.
+        self.conflict = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.station_b, date=date(2026, 8, 11), template=self.template_b
+        )
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _get(self, **params):
+        query = "&".join(f"{k}={v}" for k, v in params.items())
+        return self.client.get(f"/api/shift-assignments/other-team-conflicts/?{query}")
+
+    def test_finds_conflict_in_a_different_station(self):
+        response = self._get(
+            employees=self.employee.id, date_from="2026-08-01", date_to="2026-08-31", exclude_node=self.station_a.id
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        entry = response.data[0]
+        self.assertEqual(entry["employee"], self.employee.id)
+        self.assertEqual(entry["date"], "2026-08-11")
+        self.assertEqual(entry["template_name"], "Frühschicht")
+        self.assertEqual(entry["start_time"], "07:00")
+        self.assertEqual(entry["end_time"], "17:00")
+        self.assertEqual(entry["node_name"], "Station B")
+
+    def test_excludes_conflicts_within_the_excluded_station_itself(self):
+        # Ein Dienst INNERHALB der ausgeschlossenen Station ist schon über
+        # den normalen Grid-Fetch sichtbar -- braucht keine Extra-Warnung.
+        response = self._get(
+            employees=self.employee.id, date_from="2026-08-01", date_to="2026-08-31", exclude_node=self.station_b.id
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_special_category_assignments_never_count_as_conflict(self):
+        # Wie bei _overlapping_conflict() im Modell: eine Spezialität
+        # (Pikett) ist additiv, kein Slot-Konkurrent, taucht daher hier nie
+        # als Konflikt auf.
+        special_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.station_b,
+            name="Pikett",
+            start_time=time(18, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.station_b,
+            date=date(2026, 8, 12),
+            template=special_template,
+        )
+        response = self._get(
+            employees=self.employee.id, date_from="2026-08-01", date_to="2026-08-31", exclude_node=self.station_a.id
+        )
+        dates = [entry["date"] for entry in response.data]
+        self.assertNotIn("2026-08-12", dates)
+
+    def test_date_range_filters_out_conflicts_outside_it(self):
+        response = self._get(
+            employees=self.employee.id, date_from="2026-09-01", date_to="2026-09-30", exclude_node=self.station_a.id
+        )
+        self.assertEqual(response.data, [])
+
+    def test_missing_params_return_empty_list_instead_of_error(self):
+        response = self.client.get("/api/shift-assignments/other-team-conflicts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_denied_for_employee_role(self):
+        employee_user = User.objects.create_user(username="nina-login", password="pw-not-real-456!")
+        Membership.objects.create(user=employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        token, _ = Token.objects.get_or_create(user=employee_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        response = self._get(
+            employees=self.employee.id, date_from="2026-08-01", date_to="2026-08-31", exclude_node=self.station_a.id
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_does_not_leak_other_tenants_data(self):
+        other_tenant, other_user = make_tenant_with_planner("klinik-conflicts-b", "planner_conflicts_b")
+        other_station = Node.add_root(name="Fremdstation", tenant=other_tenant)
+        other_employee = Employee.objects.create(
+            tenant=other_tenant, first_name="Fremd", last_name="Person", employment_pct=100
+        )
+        other_template = TimeTemplate.objects.create(
+            tenant=other_tenant, node=other_station, name="Fremddienst", start_time=time(6, 0), end_time=time(14, 0)
+        )
+        ShiftAssignment.objects.create(
+            tenant=other_tenant, employee=other_employee, node=other_station, date=date(2026, 8, 11), template=other_template
+        )
+        # Gleiche numerische Employee-Id wie self.employee wäre der
+        # gefährlichste Fall -- hier stattdessen einfach eine fremde Id, die
+        # zufällig im selben Query mitgesendet wird, um sicherzustellen,
+        # dass tenant=self.request.tenant im Endpoint tatsächlich greift.
+        response = self._get(
+            employees=f"{self.employee.id},{other_employee.id}",
+            date_from="2026-08-01",
+            date_to="2026-08-31",
+            exclude_node=self.station_a.id,
+        )
+        employee_ids_in_response = {entry["employee"] for entry in response.data}
+        self.assertNotIn(other_employee.id, employee_ids_in_response)
+
+
 class ShiftTradeRequestFullSwapSameDateTests(TestCase):
     """
     Regressionstest für den beim Planen von Block 2.8 gefundenen Bug: der

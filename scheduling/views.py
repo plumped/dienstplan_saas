@@ -21,6 +21,7 @@ from core.notifications import (
     notify_trade_decision,
 )
 from core.permissions import (
+    MANAGER_ROLES,
     IsTenantManager,
     OwnEmployeeRecordPermission,
     ShiftPreferencePermission,
@@ -397,6 +398,82 @@ class ShiftAssignmentViewSet(TenantScopedViewSet):
         if date_to:
             qs = qs.filter(date__lte=date_to)
         return qs
+
+    @action(detail=False, methods=["get"], url_path="other-team-conflicts")
+    def other_team_conflicts(self, request):
+        """
+        Nutzer-Feedback ("massiver Bug"): ein leeres Feld im Planblatt liess
+        sich trotzdem nicht beplanen ("Nina Kaufmann hat am ... bereits
+        'Frühschicht' ..."), obwohl weder das Grid noch die Admin-Liste einen
+        Dienst zeigten. Tatsächlich keine Datenkorruption, sondern eine
+        gezielte Design-Entscheidung, die im UI bisher unsichtbar blieb: bei
+        einer Mehrfachanstellung (README Punkt 17) prüft
+        ShiftAssignment._check_no_overlap() JEDE Zuweisung der Person
+        TENANT-WEIT über alle Teams/Stationen hinweg (zu Recht -- niemand
+        kann an zwei Orten gleichzeitig arbeiten), während das Planblatt pro
+        Zeile nur die Zuweisungen DES aktuell angezeigten Teams lädt
+        (?node=<Station>, siehe get_queryset oben) -- ein blockierender
+        Dienst in einem ANDEREN Team der Person war dadurch für den Planer
+        nicht auffindbar, ausser über die (kryptische) Fehlermeldung beim
+        Versuch, die Zelle zu beplanen.
+
+        Liefert für die übergebenen Mitarbeiter/Zeitraum genau die Info, die
+        eine Warnung auf der sonst leeren Zelle braucht (Dienstname + Team-
+        name) -- keine neuen Daten gegenüber dem, was die Fehlermeldung beim
+        Versuch, die Zelle zu beplanen, ohnehin schon preisgibt, nur
+        proaktiv statt erst nach einem fehlgeschlagenen Versuch. Bewusst
+        NICHT node-gescoped wie get_queryset oben (die Formulierung "auf die
+        eigene(n) Station(en) beschränkt" gilt hier nicht) -- genau
+        stationsübergreifend zu suchen ist der ganze Zweck dieses Endpoints
+        --, daher zusätzlich (anders als die Klassen-Permission, die GET
+        jedem Tenant-Mitglied erlaubt) explizit auf Admin/Planer beschränkt,
+        damit normale Mitarbeitende nicht versehentlich Einblick in fremde
+        Stationen bekommen, für die sie sonst keine Berechtigung hätten.
+        """
+        membership = getattr(request, "membership", None)
+        if not (membership and membership.role in MANAGER_ROLES):
+            raise PermissionDenied("Nur Admin/Planer dürfen stationsübergreifende Konflikte einsehen.")
+
+        raw_employee_ids = request.query_params.get("employees", "")
+        try:
+            employee_ids = [int(x) for x in raw_employee_ids.split(",") if x]
+        except ValueError:
+            raise ValidationError({"employees": "Muss eine kommagetrennte Liste von IDs sein."})
+        date_from = request.query_params.get("date_from")
+        date_to = request.query_params.get("date_to")
+        exclude_node = request.query_params.get("exclude_node")
+        if not employee_ids or not date_from or not date_to:
+            return Response([])
+
+        qs = (
+            ShiftAssignment.all_objects.filter(
+                tenant=request.tenant,
+                employee_id__in=employee_ids,
+                date__gte=date_from,
+                date__lte=date_to,
+            )
+            .exclude(template__category=TimeTemplate.Category.SPECIAL)
+            .select_related("template", "node")
+        )
+        if exclude_node:
+            target = Node.all_objects.filter(tenant=request.tenant, pk=exclude_node).first()
+            if target:
+                excluded_ids = [target.id] + [c.id for c in target.get_children()]
+                qs = qs.exclude(node_id__in=excluded_ids)
+
+        return Response(
+            [
+                {
+                    "employee": a.employee_id,
+                    "date": a.date.isoformat(),
+                    "template_name": a.template.name,
+                    "start_time": a.template.start_time.strftime("%H:%M"),
+                    "end_time": a.template.end_time.strftime("%H:%M"),
+                    "node_name": a.node.name,
+                }
+                for a in qs
+            ]
+        )
 
     @action(detail=False, methods=["post"])
     def swap(self, request):

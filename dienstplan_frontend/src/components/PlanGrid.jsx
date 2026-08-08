@@ -44,6 +44,42 @@ function DayStaffingBadge({ shortfalls }) {
   );
 }
 
+// Bugfix ("massiver Bug", Nutzer-Feedback): eine sonst leere Zelle liess
+// sich trotzdem nicht beplanen ("... hat am ... bereits 'Frühschicht' ...
+// überschneidet"), weil die Person eine Mehrfachanstellung (README Punkt 17)
+// hat und in einem ANDEREN Team/einer anderen Station bereits verplant ist --
+// die Regel-Engine prüft zu Recht tenant-weit, aber das Grid lädt nur die
+// aktuell gewählte Station, der blockierende Dienst war dadurch für den
+// Planer unsichtbar (siehe api.getOtherTeamConflicts). Zeigt genau das
+// proaktiv als kleines Warn-Badge an, statt dass es erst beim gescheiterten
+// Beplanungsversuch als kryptische Fehlermeldung auftaucht.
+function CrossTeamConflictBadge({ conflict }) {
+  const [open, setOpen] = useState(false);
+  const badgeRef = useRef(null);
+  if (!conflict) return null;
+  return (
+    <>
+      <button
+        ref={badgeRef}
+        type="button"
+        className="cross-team-conflict-badge"
+        title="Bereits in einem anderen Team verplant -- Details anzeigen"
+        onClick={() => setOpen((v) => !v)}
+      >
+        ⚠<span className="visually-hidden"> Bereits in einem anderen Team verplant</span>
+      </button>
+      {open && (
+        <FloatingPopover anchorRef={badgeRef} onClose={() => setOpen(false)} className="cross-team-conflict-popover">
+          <p>
+            Bereits verplant: <strong>{conflict.template_name}</strong> ({conflict.start_time}–
+            {conflict.end_time}) in Team/Station "{conflict.node_name}".
+          </p>
+        </FloatingPopover>
+      )}
+    </>
+  );
+}
+
 const WEEKDAYS_SHORT = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
 
 function pad(n) {
@@ -119,6 +155,10 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // manuelle Overrides (core.views.TenantHolidaysView) -- Map<isoDate, name>
   // fürs Markieren der Spalten/Zellen unten.
   const [holidays, setHolidays] = useState(new Map());
+  // Bugfix ("massiver Bug"): blockierende Zuweisungen aus ANDEREN Teams/
+  // Stationen derselben Person (Mehrfachanstellung), die das Grid sonst nie
+  // lädt -- siehe CrossTeamConflictBadge oben und api.getOtherTeamConflicts.
+  const [otherTeamConflicts, setOtherTeamConflicts] = useState([]);
   const [loading, setLoading] = useState(true);
   // Workflow-Redesign (2026-08, Nutzer-Feedback: "erst Tage markieren, dann
   // beplanen -- nicht umgekehrt"): EIN einziges Modell für Einzel- UND
@@ -266,6 +306,40 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeId, dateFrom, dateTo, canManage, ownEmployeeId, year, templateScopeIds]);
 
+  // Bugfix ("massiver Bug"): separat vom Haupt-Fetch oben, weil er von
+  // `employees`/`stationId` abhängt (nicht von den dortigen Deps) und nur
+  // für Admin/Planer überhaupt etwas liefert (das Backend lehnt den Aufruf
+  // sonst mit 403 ab, siehe ShiftAssignmentViewSet.other_team_conflicts) --
+  // exclude_node=stationId, weil ALLE Teams der aktuell gewählten Station
+  // ohnehin schon über den Haupt-Fetch geladen sind (README Punkt 17: das
+  // Grid zeigt Stations-Teams gemeinsam in einer Tabelle) und daher keine
+  // eigene Warnung brauchen -- nur eine WIRKLICH andere Station ist hier
+  // sonst unsichtbar.
+  useEffect(() => {
+    if (!canManage || employees.length === 0) {
+      setOtherTeamConflicts([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getOtherTeamConflicts(
+        employees.map((e) => e.id),
+        dateFrom,
+        dateTo,
+        stationId
+      )
+      .then((res) => {
+        if (!cancelled) setOtherTeamConflicts(res.results ?? res);
+      })
+      .catch(() => {
+        // Nicht kritisch fürs Kernfeature -- stumm ignorieren, das Grid
+        // bleibt ansonsten voll funktionsfähig, nur ohne die Zusatzwarnung.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canManage, employees, dateFrom, dateTo, stationId]);
+
   // Beendet einen laufenden Ziehvorgang auch dann, wenn die Maustaste
   // ausserhalb einer Zelle losgelassen wird (z. B. nach dem Verlassen des
   // Grids) -- sonst bliebe dragMarkModeRef "aktiv" hängen.
@@ -291,6 +365,20 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
     return map;
   }, [assignments]);
+
+  // Bugfix ("massiver Bug"): eine Konfliktzuweisung pro Tag reicht für die
+  // Warnung -- gäbe es mehrere (theoretisch möglich bei mehr als zwei
+  // Anstellungen), zeigt das Popover ohnehin nur die erste, die konkrete
+  // Fehlermeldung beim tatsächlichen Beplanungsversuch bleibt die
+  // vollständige, massgebliche Quelle.
+  const otherTeamConflictMap = useMemo(() => {
+    const map = new Map();
+    for (const c of otherTeamConflicts) {
+      const key = `${c.employee}:${c.date}`;
+      if (!map.has(key)) map.set(key, c);
+    }
+    return map;
+  }, [otherTeamConflicts]);
 
   const timeRecordByAssignment = useMemo(() => {
     const map = new Map();
@@ -1095,6 +1183,14 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                               canEdit={canManage}
                               onRemove={(specialAssignmentId) => handleRemoveSpecial(specialAssignmentId)}
                             />
+                          )}
+                          {/* Bugfix ("massiver Bug"): nur auf einer sonst leeren
+                              Zelle zeigen -- ist bereits ein Dienst sichtbar,
+                              braucht es die proaktive Warnung nicht (der
+                              Konflikt bezieht sich ohnehin auf den ganzen Tag,
+                              nicht auf einen einzelnen Slot). */}
+                          {!absence && regularAssignments.length === 0 && (
+                            <CrossTeamConflictBadge conflict={otherTeamConflictMap.get(`${emp.id}:${date}`)} />
                           )}
                         </div>
                       </td>

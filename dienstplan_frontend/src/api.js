@@ -191,6 +191,16 @@ export const api = {
       body: { first: firstId, second: secondId },
       affectsBalance: true,
     }),
+  // Nutzer-Feedback ("massiver Bug"): eine Mehrfachanstellung kann in einem
+  // ANDEREN Team/Station bereits einen Dienst haben, der eine neue Zuweisung
+  // hier blockiert -- ohne dass das Grid (nur das aktuelle Team geladen)
+  // das je zeigen würde. Liefert genau die Info für eine proaktive Warnung
+  // auf der sonst leeren Zelle, siehe ShiftAssignmentViewSet.other_team_conflicts.
+  getOtherTeamConflicts: (employeeIds, dateFrom, dateTo, excludeNodeId) =>
+    requestAllPages(
+      `/shift-assignments/other-team-conflicts/?employees=${employeeIds.join(",")}` +
+        `&date_from=${dateFrom}&date_to=${dateTo}&exclude_node=${excludeNodeId}`
+    ),
 
   // README Punkt 21 (Dashboard): einziger neuer Endpoint fürs Dashboard --
   // die stationsübergreifende Mindestbesetzungs-Auswertung lässt sich (anders

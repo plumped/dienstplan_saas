@@ -1087,6 +1087,38 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       bewegt -- bleibt bei "1 markiert" (vorher hätte jede überstrichene Zelle mitmarkiert). Ziehen
       über mehrere leere Zellen sowie Einzelklick + anschliessende Mausbewegung ohne Taste auf
       leeren Zellen funktionieren unverändert korrekt (Regressionscheck).
+    - ✅ **Bugfix ("massiver Bug"): unsichtbare Mehrfachanstellungs-Konflikte als Warn-Badge
+      (2026-08)**: Nutzer-Meldung mit Screenshot -- eine leere Zelle liess sich trotzdem nicht
+      beplanen ("Nina Kaufmann hat am 2026-08-11 bereits 'Frühschicht' (07:00–17:00), das sich
+      zeitlich mit 'Küchendienst' überschneidet"), obwohl weder das Grid noch die Admin-Liste einen
+      Dienst zeigten -- der Verdacht: unsichtbare Geisterdaten. Ursache im Code lokalisiert, keine
+      Datenkorruption: bei einer Mehrfachanstellung (README Punkt 17) prüft
+      `ShiftAssignment._check_no_overlap()` im Modell zu Recht ALLE Zuweisungen der Person
+      TENANT-WEIT über alle Teams/Stationen hinweg (niemand kann an zwei Orten gleichzeitig
+      arbeiten), aber das Planblatt lädt pro Ansicht nur die aktuell gewählte Station
+      (`?node=<Station>`) -- ein blockierender Dienst in einer ANDEREN Station der Person war für
+      den Planer dadurch nirgends auffindbar, ausser über die kryptische Fehlermeldung beim
+      tatsächlichen Beplanungsversuch. Per Rückfrage (`AskUserQuestion`) bestätigt: Nina Kaufmann
+      hat tatsächlich mehrere Teams/Anstellungen. Neuer Endpoint
+      `GET /api/shift-assignments/other-team-conflicts/?employees=&date_from=&date_to=&exclude_node=`
+      (`ShiftAssignmentViewSet.other_team_conflicts`, Admin/Planer-only -- bewusst NICHT node-
+      gescoped wie der Haupt-Fetch, da stationsübergreifend suchen der ganze Zweck ist) liefert für
+      die sichtbaren Mitarbeitenden/den sichtbaren Monat genau die Minimal-Info (Dienstname,
+      Uhrzeit, Team-/Stationsname) für eine proaktive Warnung -- keine neuen Daten gegenüber dem,
+      was die Fehlermeldung beim Versuch ohnehin preisgibt, nur VOR statt erst NACH einem
+      gescheiterten Versuch. `exclude_node` = die aktuell gewählte Station (nicht der einzelne
+      Knoten): alle Teams DERSELBEN Station sind ohnehin schon über den normalen Grid-Fetch geladen
+      und brauchen keine Extra-Warnung, nur eine wirklich ANDERE Station ist sonst unsichtbar.
+      Frontend: neues `CrossTeamConflictBadge` (kleines ⚠-Icon unten links auf einer sonst leeren
+      Zelle, eigene Ecke getrennt von Spezialitäten-Badge unten rechts und Tauschangebot-Button
+      oben rechts -- Popover mit Details per Klick, gleiches `FloatingPopover`-Muster wie
+      `DayStaffingBadge`/`SpecialBadge`). Mit Playwright gegen echte Testheim-Daten verifiziert:
+      der Testdatensatz enthielt bereits organisch vier solche versteckten Konflikttage für eine
+      Mitarbeiterin (Küche/Pflege Tag überschnitten sich am 3./4./10./11.8.) -- alle vier wurden
+      korrekt als Warn-Badge sichtbar, Klick öffnet das Popover mit Dienstname/Uhrzeit/Team; sieben
+      neue Backend-Tests (`ShiftAssignmentOtherTeamConflictsAPITests`) decken Cross-Station-Fund,
+      Ausschluss der eigenen Station, Spezialitäten-Ausnahme (additiv, kein Konflikt), Datumsfilter,
+      leere Parameter, Rollen-Restriktion (403 für Mitarbeitende) und Tenant-Isolation ab.
 12. ✅ **Jahresplan pro Mitarbeiter -- anzeigbar und bearbeitbar**: das Planblatt (`PlanGrid.jsx`)
     zeigt weiterhin nur einen Monat (`MonthNav.jsx`). Der Jahresplan (`YearPlan.jsx`, neuer Tab
     "Jahresplan") deckt den Hauptfall ab, eine einzelne Person übers ganze Jahr zu bearbeiten --

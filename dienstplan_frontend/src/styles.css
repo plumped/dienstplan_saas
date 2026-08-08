@@ -2002,6 +2002,46 @@ thead .col-employee {
   color: var(--ink);
 }
 
+/* Bugfix ("massiver Bug", 2026-08): eine sonst leere Zelle liess sich nicht
+   beplanen, weil die Person in einem ANDEREN, hier nicht geladenen Team/
+   einer anderen Station bereits verplant ist (Mehrfachanstellung) -- ohne
+   diese Warnung war der Grund unauffindbar. Eigene Ecke (unten links),
+   damit sie nicht mit dem Spezialitäten-Badge (unten rechts) oder dem
+   Tauschangebot-Button (oben rechts) kollidiert. */
+.cross-team-conflict-badge {
+  position: absolute;
+  bottom: 1px;
+  left: 1px;
+  z-index: 1;
+  width: 13px;
+  height: 13px;
+  border: none;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--warn);
+  font-size: 9px;
+  line-height: 1;
+  padding: 0;
+  box-shadow: 0 0 0 1px var(--warn);
+  cursor: pointer;
+}
+
+.cross-team-conflict-popover {
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  box-shadow: 0 6px 20px rgba(20, 30, 25, 0.16);
+  max-width: 220px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.cross-team-conflict-popover p {
+  margin: 0;
+}
+
 .special-day-popover-remove {
   border: none;
   background: none;

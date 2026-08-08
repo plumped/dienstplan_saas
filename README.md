@@ -1849,6 +1849,43 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       Planblatt-Grid als "F½"; Ferien-Saldo einer Testperson sank exakt von 25/0/25 auf
       25/0.5/24.5 nach Anlage einer Nachmittags-Absenz.
 
+23. ✅ **Absenzen genau gleich zuteilbar wie Dienste (Oben/Unten/Alles) (2026-08)**.
+    Nutzer-Feedback: "wofür haben wir die ganze Logik Alles/Oben/Unten gebaut? Absenzen sollen
+    genau gleich zuteilbar sein" -- bisher legte das Absenz-Werkzeug in der `PlacementToolbar.jsx`
+    IMMER eine ganztägige Absenz an, egal welcher Platzierungsmodus gerade gewählt war (der
+    Modus wirkte nur bei Dienst-Icons). Jetzt bestimmt der Modus auch bei einer Absenz, welche
+    Tageshälfte betroffen ist -- reine Frontend-Verdrahtung des bereits bestehenden
+    `Absence.day_portion`-Felds (Block 2 Punkt 22), keine Backend-Änderung nötig.
+    - `PlanGrid.jsx` `applyToolToMarked()`: das Absenz-Werkzeug legt bei Modus "Oben" eine
+      vormittags-, bei "Unten" eine nachmittags-, bei "Alles" weiterhin eine ganztägige Absenz
+      an (`day_portion` aus `placementMode` abgeleitet). Ein Tagesanteil ist laut Backend nur für
+      einen einzelnen Tag gültig (`Absence.clean()`) -- bei mehreren markierten Tagen in
+      Oben/Unten-Modus entsteht daher pro Tag ein eigener Datensatz statt einer zusammenhängenden
+      Ferienwoche (nur im Modus "Alles" weiterhin zu möglichst wenigen Zeiträumen gruppiert, wie
+      bisher).
+    - Räum-Logik vor dem Stempeln wurde von "blind nach Slot-Index" auf "nach echter
+      Zeitüberlappung" umgestellt (neuer Helper `shiftOverlapsPortion()`, JS-Gegenstück zu
+      `Absence._half_day_window()` im Backend): ein Dienst, der die neue Halbtags-Absenz zeitlich
+      gar nicht berührt (z. B. ein einzelner Nachmittagsdienst, der zufällig der einzige des Tages
+      und damit visuell "oben" ist), bleibt unangetastet -- vorher hätte "Oben" ihn blind gelöscht,
+      nur weil er an Position 0 lag. Symmetrisch auch für den umgekehrten Fall: ein Dienst- oder
+      Radiergummi-Klick in Oben/Unten-Modus lässt eine bestehende Absenz der jeweils ANDEREN
+      Tageshälfte jetzt in Ruhe (vorher wurde bei jedem Zellklick unconditional jede Absenz des
+      Tages entfernt).
+    - Grid-Darstellung (`PlanGrid.jsx` Render-Loop): eine Halbtags-Absenz belegt jetzt nur noch
+      EINEN der beiden Slots (`slotAbsence()`/`slotAssignment()`, neue Helper) -- die andere
+      Hälfte bleibt frei für einen regulären Dienst oder ein leeres "+", genau wie bei zwei
+      normalen Diensten. Eine ganztägige Absenz spannt weiterhin wie bisher die volle Zellbreite.
+      `resolveCellState()` sortiert Zuweisungen jetzt zusätzlich chronologisch (analog zum
+      Render-Loop), damit "Oben"/"Unten" beim Stempeln denselben Slot trifft, der auch angezeigt
+      wird.
+    - Mit Playwright gegen echte Testheim-Daten verifiziert (Station "Therapie", Vormittags-/
+      Nachmittags-Dienst rund um 12:00 Uhr geteilt): leerer Tag + Modus "Unten" + Ferien-Icon
+      füllt nur die untere Hälfte, die obere bleibt ein leeres "+"; anschliessendes Stempeln der
+      oberen Hälfte mit dem Vormittagsdienst (Modus "Oben") koexistiert konfliktfrei neben der
+      Nachmittags-Ferienabsenz in derselben Zelle (kein Backend-Fehler, Ferien-Saldo bleibt
+      korrekt bei 0.5 abgezogenen Tagen).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 1. **Setup-Wizard**: eine neue Praxis registriert sich selbst (Tenant, erster Admin-Account,

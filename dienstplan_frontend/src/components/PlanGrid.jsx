@@ -686,7 +686,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // Funktion, damit applyToolToMarked() sie für JEDE markierte Zelle einzeln
   // aufrufen kann, ausserhalb des JSX-Loops.
   function resolveCellState(employeeId, date, rowNodeId) {
-    const cellAssignments = rowAssignmentsFor(employeeId, date, rowNodeId);
+    // Bugfix: chronologisch nach Beginnzeit sortieren (wie im Render-Loop
+    // unten), sonst könnte "Oben"/"Unten" hier den falschen der beiden
+    // Slots treffen, wenn rowAssignmentsFor sie in anderer Reihenfolge
+    // liefert als sie angezeigt werden (oben=früher/unten=später).
+    const cellAssignments = rowAssignmentsFor(employeeId, date, rowNodeId)
+      .slice()
+      .sort((a, b) => {
+        const ta = templates.find((t) => t.id === a.template);
+        const tb = templates.find((t) => t.id === b.template);
+        return (ta?.start_time ?? "").localeCompare(tb?.start_time ?? "");
+      });
     const regularAssignments = cellAssignments.filter(
       (a) => templates.find((t) => t.id === a.template)?.category !== "special"
     );
@@ -694,6 +704,28 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       (a) => templates.find((t) => t.id === a.template)?.category === "special"
     );
     return { regularAssignments, specialAssignments, absence: findAbsence(employeeId, date) };
+  }
+
+  // JS-Gegenstück zu Absence._half_day_window() im Backend (fester
+  // Mittagsschnitt um 12:00) -- prüft, ob ein Dienst zeitlich in die
+  // Vormittags- oder Nachmittagshälfte eines Tages fällt. Ein über
+  // Mitternacht laufender Dienst (Ende <= Start, z. B. Nachtwache
+  // 20:00–07:00) wird konservativ als beide Hälften überlappend behandelt,
+  // damit er bei einer Halbtags-Absenz sicher geräumt wird statt einen
+  // serverseitigen Konflikt zu provozieren.
+  function shiftOverlapsPortion(templateId, dayPortion) {
+    if (dayPortion === "full") return true;
+    const template = templates.find((t) => t.id === templateId);
+    if (!template?.start_time || !template?.end_time) return true;
+    const toMinutes = (t) => {
+      const [h, m] = t.split(":").map(Number);
+      return h * 60 + m;
+    };
+    const start = toMinutes(template.start_time);
+    const end = toMinutes(template.end_time);
+    if (end <= start) return true; // über Mitternacht
+    const noon = 12 * 60;
+    return dayPortion === "morning" ? start < noon : end > noon;
   }
 
   // Zentrale Stempel-Funktion (Workflow-Redesign 2026-08): wendet `tool`
@@ -713,42 +745,99 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     if (markedCells.size === 0) return;
     const keys = Array.from(markedCells);
 
+    // Nutzer-Feedback (2026-08): "Absenzen sollen genau gleich zuteilbar
+    // sein" wie Dienste -- Oben/Unten/Alles bestimmt jetzt auch bei einer
+    // Absenz, welche Tageshälfte betroffen ist (Absence.day_portion, siehe
+    // scheduling/models.py), statt eine Absenz immer als ganzen Tag
+    // anzulegen. Ein Klick mit dem Absenz-Werkzeug ersetzt weiterhin
+    // GANZ, was an bestehender Absenz auf dem Tag lag (einfaches
+    // Ein-Absenz-pro-Tag-Modell, kein Nebeneinander zweier Absenz-
+    // Datensätze) -- nur ein Dienst-/Radiergummi-Werkzeug in Oben/Unten-
+    // Modus lässt eine bestehende Absenz der JEWEILS ANDEREN Hälfte in Ruhe,
+    // damit ein "Vormittags frei, nachmittags Dienst"-Tag nicht durch das
+    // blosse Beplanen der Dienst-Hälfte wieder verschwindet.
+    const absenceIdsToClear = new Set();
+    for (const key of keys) {
+      const [employeeIdStr, date] = key.split(":");
+      const absence = findAbsence(Number(employeeIdStr), date);
+      if (!absence) continue;
+      if (tool.kind === "absence" || placementMode === "full") {
+        absenceIdsToClear.add(absence.id);
+        continue;
+      }
+      if (placementMode === "pikett") continue; // Pikett betrifft nie Absenzen
+      const existingPortion = absence.day_portion ?? "full";
+      const overlapsThisMode =
+        existingPortion === "full" ||
+        (placementMode === "top" && existingPortion === "morning") ||
+        (placementMode === "bottom" && existingPortion === "afternoon");
+      if (overlapsThisMode) absenceIdsToClear.add(absence.id);
+    }
     // Bugfix ("No Absence matches the given query"): eine Absenz ist EIN
     // Datensatz über einen ganzen Zeitraum (start_date/end_date) -- markiert
     // man mehrere Tage, die zur selben Absenz gehören (z. B. alle drei Tage
     // einer bestehenden Ferienwoche), lösten frühere Versuche pro markierter
     // Zelle einzeln `handleRemoveAbsence(absence.id)` aus: derselbe
     // Datensatz wurde dadurch mehrfach zu löschen versucht, der zweite
-    // Versuch schlug serverseitig fehl (404, da schon gelöscht). Jetzt erst
-    // alle betroffenen Absenz-IDs über alle markierten Zellen hinweg
-    // sammeln (ein Set dedupliziert automatisch) und JEDE genau einmal
-    // löschen, bevor irgendein Werkzeug angewendet wird.
-    const absenceIdsToClear = new Set();
-    for (const key of keys) {
-      const [employeeIdStr, date] = key.split(":");
-      const absence = findAbsence(Number(employeeIdStr), date);
-      if (absence) absenceIdsToClear.add(absence.id);
-    }
+    // Versuch schlug serverseitig fehl (404, da schon gelöscht). Ein Set
+    // dedupliziert automatisch, jede betroffene Absenz wird genau einmal
+    // gelöscht, bevor irgendein Werkzeug angewendet wird.
     for (const absenceId of absenceIdsToClear) {
       await handleRemoveAbsence(absenceId);
     }
 
     if (tool.kind === "absence") {
+      const dayPortion = placementMode === "top" ? "morning" : placementMode === "bottom" ? "afternoon" : "full";
       for (const key of keys) {
         const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
         const employeeId = Number(employeeIdStr);
         const rowNodeId = Number(rowNodeIdStr);
         const { regularAssignments, specialAssignments } = resolveCellState(employeeId, date, rowNodeId);
-        if (regularAssignments[0]) await handleAssign(employeeId, date, null, rowNodeId, regularAssignments[0].id);
-        if (regularAssignments[1]) await handleAssign(employeeId, date, null, rowNodeId, regularAssignments[1].id);
-        for (const special of specialAssignments) await handleRemoveSpecial(special.id);
+        // Bugfix: NICHT blind nach Slot-Index räumen ("Oben"=Index 0) --
+        // "oben" ist nur die Anzeige-Position (chronologisch erster Dienst
+        // des Tages), aber ein einzelner Dienst kann trotzdem nachmittags
+        // liegen, wenn es der einzige Dienst des Tages ist. Stattdessen wie
+        // das Backend (Absence._half_day_window/ShiftAssignment
+        // _check_no_absence_conflict) nach echter Zeitüberlappung mit der
+        // Vormittags-/Nachmittagsgrenze (12:00) räumen -- ein Dienst, der
+        // die neue Halbtags-Absenz gar nicht zeitlich berührt, bleibt so
+        // unangetastet, egal in welchem Slot er gerade angezeigt wird.
+        for (const a of regularAssignments) {
+          if (shiftOverlapsPortion(a.template, dayPortion)) {
+            await handleAssign(employeeId, date, null, rowNodeId, a.id);
+          }
+        }
+        if (dayPortion === "full") {
+          for (const special of specialAssignments) await handleRemoveSpecial(special.id);
+        }
       }
-      const byEmployee = absenceDatesByEmployee(keys);
       const created = [];
-      for (const [employeeId, dateSet] of byEmployee) {
-        for (const [start, end] of groupConsecutiveDates(Array.from(dateSet))) {
+      if (dayPortion === "full") {
+        // Ganztägig weiterhin zu möglichst wenigen zusammenhängenden
+        // Zeiträumen gruppiert (z. B. eine Ferienwoche = ein Datensatz statt
+        // fünf). Ein Tagesanteil ist laut Backend (Absence.clean()) nur für
+        // EINEN einzelnen Tag gültig, deshalb unten je markiertem Tag ein
+        // eigener Datensatz statt einer Gruppierung.
+        const byEmployee = absenceDatesByEmployee(keys);
+        for (const [employeeId, dateSet] of byEmployee) {
+          for (const [start, end] of groupConsecutiveDates(Array.from(dateSet))) {
+            try {
+              created.push(
+                await api.createAbsence({ employee: employeeId, start_date: start, end_date: end, type: tool.id, day_portion: "full" })
+              );
+            } catch (e) {
+              onError(e.message);
+            }
+          }
+        }
+      } else {
+        for (const key of keys) {
+          const [employeeIdStr, date] = key.split(":");
+          const employeeId = Number(employeeIdStr);
           try {
-            created.push(await api.createAbsence({ employee: employeeId, start_date: start, end_date: end, type: tool.id }));
+            created.push(
+              await api.createAbsence({ employee: employeeId, start_date: date, end_date: date, type: tool.id, day_portion: dayPortion })
+            );
           } catch (e) {
             onError(e.message);
           }
@@ -1074,6 +1163,11 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     // Zuweisungen behandelt und als kleiner Eck-Badge dargestellt
                     // (SpecialBadge.jsx, siehe unten), statt Platz in der Zelle
                     // zu beanspruchen.
+                    // Wichtig für Halbtags-Absenzen (siehe slotAbsence/slotAssignment
+                    // unten): dank der zeitbewussten Konfliktprüfung
+                    // (ShiftAssignment._check_no_absence_conflict) enthält
+                    // regularAssignments in diesem Fall höchstens EINEN Eintrag --
+                    // die Absenz belegt ja bereits die andere Tageshälfte.
                     const regularAssignments = cellAssignments.filter(
                       (a) => templates.find((t) => t.id === a.template)?.category !== "special"
                     );
@@ -1091,18 +1185,48 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     const cellKey = `${emp.id}:${date}:${rowNodeId}`;
                     const marked = markedCells.has(cellKey);
                     // Nutzer-Feedback (2026-08): der zweite Slot -- und damit
-                    // der horizontale Split (oben/unten) -- erscheint nur, wenn
-                    // WIRKLICH zwei Dienste an diesem Tag liegen. Der frühere leere
+                    // der horizontale Split (oben/unten) -- erscheint, wenn
+                    // WIRKLICH zwei Dienste an diesem Tag liegen ODER eine
+                    // Halbtags-Absenz (nur vormittags/nachmittags) die andere
+                    // Hälfte für einen Dienst freilässt. Der frühere leere
                     // "+"-Zweitslot für Admin/Planer (auch bei nur einem echten
                     // Dienst) stammte noch aus der Zeit des Klick-auf-Zelle-
                     // Dropdowns, wo ein sichtbares Klickziel nötig war, um
                     // einen zweiten Dienst anzulegen. Die Icon-Toolbar braucht das
-                    // nicht mehr -- Modus "Rechts" wählen, Tag markieren, stempeln
+                    // nicht mehr -- Modus "Unten" wählen, Tag markieren, stempeln
                     // reicht. Zählt nur reguläre Zuweisungen (eine Spezialität
                     // allein soll keinen zweiten Slot erzwingen).
-                    const showSecondSlot = !absence && regularAssignments.length >= 2;
+                    const halfDayAbsence = Boolean(absence) && absence.day_portion !== "full";
+                    const showSecondSlot = halfDayAbsence || (!absence && regularAssignments.length >= 2);
 
-                    function renderSlot(assignment, slotIndex) {
+                    // Nutzer-Feedback (2026-08): "wofür haben wir Alles/Oben/Unten
+                    // gebaut? Absenzen sollen genau gleich zuteilbar sein" -- Oben
+                    // trifft bei einer Absenz jetzt genauso nur die obere
+                    // (vormittags) statt immer den ganzen Tag, Unten entsprechend
+                    // nachmittags. Eine Halbtags-Absenz belegt GENAU einen der
+                    // beiden Slots; der jeweils andere bleibt frei für einen
+                    // regulären Dienst (oder einfach leer). Eine ganztägige
+                    // Absenz belegt weiterhin nur slot0, der dank
+                    // showSecondSlot=false die volle Zellbreite einnimmt
+                    // (unverändertes Verhalten).
+                    function slotAbsence(slotIndex) {
+                      if (!absence) return null;
+                      if (absence.day_portion === "morning") return slotIndex === 0 ? absence : null;
+                      if (absence.day_portion === "afternoon") return slotIndex === 1 ? absence : null;
+                      return slotIndex === 0 ? absence : null;
+                    }
+                    function slotAssignment(slotIndex) {
+                      if (halfDayAbsence) {
+                        const isAbsenceSlot =
+                          (absence.day_portion === "morning" && slotIndex === 0) ||
+                          (absence.day_portion === "afternoon" && slotIndex === 1);
+                        return isAbsenceSlot ? null : regularAssignments[0] ?? null;
+                      }
+                      if (absence) return null;
+                      return regularAssignments[slotIndex] ?? null;
+                    }
+
+                    function renderSlot(assignment, slotIndex, slotAbsenceValue) {
                       const template = templates.find((t) => t.id === assignment?.template);
                       // Block 1.13: Ist-Zeit-Badge nur auf der eigenen, bereits
                       // stattgefundenen Schicht -- unabhängig von canManage, damit
@@ -1124,7 +1248,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           assignmentId={assignment?.id}
                           employeeId={emp.id}
                           date={date}
-                          absence={absence}
+                          absence={slotAbsenceValue}
                           absenceTypes={absenceTypes}
                           colleagues={employees.filter((e) => e.id !== emp.id)}
                           canEdit={canManage}
@@ -1181,18 +1305,21 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                               ob die Zelle leer oder belegt ist. */}
                           <div className={`day-cell-slots${showSecondSlot ? " day-cell-slots--split" : ""}`}>
                             <div className={`cell-wrap${showSecondSlot ? " cell-wrap--top" : " cell-wrap--span"}`}>
-                              {renderSlot(regularAssignments[0], 0)}
+                              {renderSlot(slotAssignment(0), 0, slotAbsence(0))}
                             </div>
                             {showSecondSlot && (
-                              <div className="cell-wrap cell-wrap--bottom">{renderSlot(regularAssignments[1], 1)}</div>
+                              <div className="cell-wrap cell-wrap--bottom">
+                                {renderSlot(slotAssignment(1), 1, slotAbsence(1))}
+                              </div>
                             )}
                           </div>
                           {/* Redesign (2026-08): Spezialitäten (z. B. Pikettdienst)
                               als kleiner Eck-Badge statt eigener Zeile unter den
                               Slots -- siehe SpecialBadge.jsx. Nicht bei einer
-                              Absenz (schliesst Spezialitäten am selben Tag
-                              ohnehin aus). */}
-                          {!absence && (
+                              GANZTÄGIGEN Absenz (schliesst Spezialitäten am selben
+                              Tag ohnehin aus); eine Halbtags-Absenz lässt die
+                              andere Hälfte offen für eine Spezialität. */}
+                          {!(absence && absence.day_portion === "full") && (
                             <SpecialBadge
                               specialAssignments={specialAssignments}
                               templates={templates}
@@ -1205,7 +1332,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                               braucht es die proaktive Warnung nicht (der
                               Konflikt bezieht sich ohnehin auf den ganzen Tag,
                               nicht auf einen einzelnen Slot). */}
-                          {!absence && regularAssignments.length === 0 && (
+                          {!(absence && absence.day_portion === "full") && regularAssignments.length === 0 && (
                             <CrossTeamConflictBadge conflict={otherTeamConflictMap.get(`${emp.id}:${date}`)} />
                           )}
                         </div>

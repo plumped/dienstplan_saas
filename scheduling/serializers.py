@@ -227,8 +227,14 @@ class EmployeeBalanceSerializer(serializers.Serializer):
     is_provisional = serializers.BooleanField()
     vacation_year = serializers.IntegerField()
     vacation_entitlement_days = serializers.IntegerField()
-    vacation_used_days = serializers.IntegerField()
-    vacation_remaining_days = serializers.IntegerField()
+    # Bugfix (2026-08, Nutzer-Feedback: "halbtags Ferien zieht einen ganzen
+    # Tag ab"): used_days/remaining_days können seit den Halbtags-Absenzen
+    # 0.5-Schritte enthalten (Employee.vacation_balance()) -- als
+    # IntegerField wurde das beim Serialisieren stillschweigend zu int()
+    # abgeschnitten (24.5 -> 24), wodurch die API einen vollen statt einen
+    # halben Tag Abzug meldete, obwohl das Modell selbst korrekt rechnete.
+    vacation_used_days = serializers.FloatField()
+    vacation_remaining_days = serializers.FloatField()
 
 
 class WeeklyOvertimeSerializer(serializers.Serializer):

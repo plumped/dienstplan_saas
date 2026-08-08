@@ -2125,6 +2125,32 @@ class EmployeeBalanceTests(APITestCase):
         self.assertEqual(response.data["vacation_used_days"], 5)
         self.assertEqual(response.data["vacation_remaining_days"], 15)
 
+    def test_api_returns_half_day_vacation_balance_as_float(self):
+        # Bugfix (2026-08, Nutzer-Feedback: "halbtags Ferien zieht einen
+        # ganzen Tag ab"): EmployeeBalanceSerializer deklarierte
+        # vacation_used_days/vacation_remaining_days bisher als
+        # IntegerField -- das schnitt 0.5-Werte beim Serialisieren
+        # stillschweigend zu int() ab (24.5 -> 24), obwohl
+        # Employee.vacation_balance() selbst korrekt rechnete (siehe
+        # test_vacation_balance_half_day_deducts_half_a_day oben, die nur
+        # das Modell direkt prüft und diesen Bug deshalb nicht auffing).
+        self.employee.vacation_days_per_year = 25
+        self.employee.save(update_fields=["vacation_days_per_year"])
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=2026-08-03&year=2026")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["vacation_used_days"], 0.5)
+        self.assertEqual(response.data["vacation_remaining_days"], 24.5)
+
     def test_api_rejects_invalid_as_of_param(self):
         self.auth_as(self.planner_user)
         response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=not-a-date")

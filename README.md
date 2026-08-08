@@ -1938,6 +1938,23 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       den Nachmittag-Dienst, der Vormittag-Dienst bleibt unangetastet. Volle Test-Suite (353 Tests)
       grün.
 
+25. ✅ **Bugfix: Halbtags-Absenz zog einen ganzen statt einen halben Ferientag ab (2026-08)**.
+    Nutzer-Feedback: "wenn ich einen halben Tag Ferien eingebe zieht es einen ganzen Tag ab".
+    Ursache: `EmployeeBalanceSerializer` deklarierte `vacation_used_days`/`vacation_remaining_days`
+    als `IntegerField` -- `Employee.vacation_balance()` selbst rechnete korrekt (0.5-Schritte,
+    siehe Block 2 Punkt 22), aber DRF schnitt beim Serialisieren für die API-Antwort
+    stillschweigend auf `int()` ab (24.5 → 24), wodurch die im Frontend angezeigte "Ferientage"-
+    Zahl (`BalanceBadge.jsx`) einen vollen statt einen halben Tag Abzug zeigte. Der bestehende Test
+    `test_vacation_balance_half_day_deducts_half_a_day` prüfte nur das Modell direkt und fing den
+    Bug deshalb nicht ab (die volle Test-Suite war trotz des Fehlers grün).
+    - `scheduling/serializers.py`: beide Felder auf `FloatField` umgestellt.
+      `vacation_entitlement_days` bleibt `IntegerField` (Ferienanspruch ist immer eine ganze Zahl,
+      `PositiveSmallIntegerField` am Modell).
+    - Neuer API-Test `test_api_returns_half_day_vacation_balance_as_float` (prüft die tatsächliche
+      HTTP-Response von `/api/employees/<id>/balance/`, nicht nur das Modell) -- verhindert, dass
+      diese Lücke zwischen Modell- und API-Test erneut unbemerkt bleibt. Volle Test-Suite
+      (354 Tests) grün.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

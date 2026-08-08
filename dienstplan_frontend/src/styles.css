@@ -1895,6 +1895,15 @@ thead .col-employee {
   flex-direction: column;
 }
 
+/* Nutzer-Feedback: bei zwei Diensten (Split) zusätzlich margin: 1px --
+   der Container selbst rückt dadurch nochmals von der Zellkante ab (auf
+   einem position:absolute-Element addiert sich margin ganz normal zum
+   bestehenden inset), damit auch die Split-Zelle rundherum spürbar Platz
+   hat statt knapp anzuliegen. */
+.day-cell-slots.day-cell-slots--split {
+  margin: 1px;
+}
+
 .day-cell-slots .cell-wrap--span {
   position: absolute;
   inset: 0;

@@ -902,7 +902,7 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       Icon die Zwei-Buchstaben-Glyphen sichtbar ineinanderlaufen -- durch einen diagonalen Split
       ersetzt (`.day-cell-slots--diagonal`, `clip-path: polygon(...)`, wie im Jahresplan bei
       `.year-day-fill--shift.is-split`): jedes Dreieck trägt die volle Dienstfarbe, der Glyph sitzt
-      gross in der freien Ecke -- kein blasser Pill-Chip mehr. Ein einzelner Dienst ("Ganz") zeigt
+      gross in der freien Ecke -- kein blasser Pill-Chip mehr. Ein einzelner Dienst ("Alles") zeigt
       keinen Diagonal-Split mehr (nicht nötig bei nur einem Dienst) und spannt stattdessen
       randlos die volle Zelle. Zwei Bugfixes dabei, beide durch Playwright-`getComputedStyle`-
       Inspektion statt nur visueller Screenshots gefunden: (1) mehrere Stellen, an denen die

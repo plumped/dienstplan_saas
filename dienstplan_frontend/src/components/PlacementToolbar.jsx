@@ -1,9 +1,9 @@
 import { chipGlyph } from "../chipGlyph.js";
 
 const MODES = [
-  { value: "ganz", label: "Ganz" },
-  { value: "links", label: "Links" },
-  { value: "rechts", label: "Rechts" },
+  { value: "full", label: "Alles" },
+  { value: "top", label: "Oben" },
+  { value: "bottom", label: "Unten" },
   { value: "pikett", label: "Pikett" },
 ];
 

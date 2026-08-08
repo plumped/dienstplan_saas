@@ -135,7 +135,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // placementMode bestimmt, welche Hälfte einer Zelle ein Stempel trifft
   // (Ganz spannt beide, Links/Rechts je eine feste Hälfte, Pikett fügt
   // additiv eine Spezialität hinzu).
-  const [placementMode, setPlacementMode] = useState("ganz");
+  const [placementMode, setPlacementMode] = useState("full");
   // Ziehen mit gedrückter Maustaste markiert mehrere Zellen am Stück, statt
   // jede einzeln anklicken zu müssen: "mark" oder "unmark", je nachdem, ob
   // die Zelle, auf der die Maustaste gedrückt wurde, schon markiert war;
@@ -552,12 +552,12 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
         await handleAddSpecial(employeeId, date, rowNodeId, tool.id);
         return;
       }
-      if (placementMode === "ganz") {
+      if (placementMode === "full") {
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
         await handleAssign(employeeId, date, tool.id, rowNodeId, slot0?.id);
-      } else if (placementMode === "links") {
+      } else if (placementMode === "top") {
         await handleAssign(employeeId, date, tool.id, rowNodeId, slot0?.id);
-      } else if (placementMode === "rechts") {
+      } else if (placementMode === "bottom") {
         await handleAssign(employeeId, date, tool.id, rowNodeId, slot1?.id);
       }
       return;
@@ -565,12 +565,12 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
 
     if (tool.kind === "empty") {
       if (placementMode === "pikett") return; // Radiergummi in der Toolbar ausgeblendet
-      if (placementMode === "ganz") {
+      if (placementMode === "full") {
         if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
-      } else if (placementMode === "links") {
+      } else if (placementMode === "top") {
         if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
-      } else if (placementMode === "rechts") {
+      } else if (placementMode === "bottom") {
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
       }
     }
@@ -1063,7 +1063,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                               hier nicht mehr am Wrapper gesetzt werden: die Farbe
                               lebt direkt am .shift-chip (ShiftCell.jsx setzt sie
                               dort schon selbst), nicht mehr am .shift-chip-btn
-                              darüber. Nur ein Dienst ("Ganz") spannt weiterhin die
+                              darüber. Nur ein Dienst ("Alles") spannt weiterhin die
                               ganze Zelle.
                               Workflow-Redesign (2026-08, Nachbesserung): is-marked
                               sitzt auf .day-cell (dem äussersten Container), nicht

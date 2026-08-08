@@ -51,48 +51,77 @@ export default function PlacementToolbar({
           specialTemplates.length === 0 ? (
             <span className="placement-hint">Keine Spezialitäten angelegt.</span>
           ) : (
-            specialTemplates.map((t) => (
+            <>
+              {specialTemplates.map((t) => (
+                <button
+                  key={`t-${t.id}`}
+                  type="button"
+                  className="stamp-chip"
+                  style={{ "--chip-color": t.color }}
+                  title={`${t.name} auf allen markierten Tagen an-/ausschalten`}
+                  disabled={disabled}
+                  onClick={() => onApplyTool({ kind: "template", id: t.id })}
+                >
+                  {chipGlyph(t)}
+                </button>
+              ))}
+              {/* Bugfix (Nutzer-Feedback): der Radiergummi fehlte im
+                  Pikett-Modus komplett -- es gab keinen Weg, eine
+                  Spezialität über die Toolbar wieder zu entfernen (nur
+                  einzeln über das Popover in SpecialBadge.jsx). Entfernt
+                  hier ALLE Spezialitäten der markierten Zellen auf einmal. */}
               <button
-                key={`t-${t.id}`}
                 type="button"
-                className="stamp-chip"
-                style={{ "--chip-color": t.color }}
-                title={`${t.name} auf alle markierten Tage anwenden`}
+                className="stamp-chip stamp-chip--empty"
+                title="Radiergummi -- entfernt alle Spezialitäten der markierten Tage"
                 disabled={disabled}
-                onClick={() => onApplyTool({ kind: "template", id: t.id })}
+                onClick={() => onApplyTool({ kind: "empty", id: null })}
               >
-                {chipGlyph(t)}
+                ×
               </button>
-            ))
+            </>
           )
         ) : (
           <>
-            {regularTemplates.map((t) => (
-              <button
-                key={`t-${t.id}`}
-                type="button"
-                className="stamp-chip"
-                style={{ "--chip-color": t.color }}
-                title={`${t.name} auf alle markierten Tage anwenden`}
-                disabled={disabled}
-                onClick={() => onApplyTool({ kind: "template", id: t.id })}
-              >
-                {chipGlyph(t)}
-              </button>
-            ))}
-            {absenceTypes.map((t) => (
-              <button
-                key={`a-${t.id}`}
-                type="button"
-                className="stamp-chip stamp-chip--absence"
-                style={{ "--chip-color": t.color }}
-                title={`${t.name} für alle markierten Tage eintragen`}
-                disabled={disabled}
-                onClick={() => onApplyTool({ kind: "absence", id: t.id })}
-              >
-                {chipGlyph(t)}
-              </button>
-            ))}
+            {/* Nutzer-Feedback (2026-08): "Abwesenheiten klar trennen von
+                normalen Diensten -- die Stempel in der oberen Zeile" -- vorher
+                eine einzige, ununterschiedene Reihe aus Dienst- UND
+                Absenz-Icons. Jetzt zwei sichtbar getrennte Gruppen (eigener
+                Rahmen je Gruppe + vertikaler Trenner dazwischen), damit auf
+                einen Blick klar ist, welche Icons einen Dienst eintragen und
+                welche eine Abwesenheit. */}
+            <span className="placement-palette-group">
+              {regularTemplates.map((t) => (
+                <button
+                  key={`t-${t.id}`}
+                  type="button"
+                  className="stamp-chip"
+                  style={{ "--chip-color": t.color }}
+                  title={`${t.name} auf alle markierten Tage anwenden`}
+                  disabled={disabled}
+                  onClick={() => onApplyTool({ kind: "template", id: t.id })}
+                >
+                  {chipGlyph(t)}
+                </button>
+              ))}
+            </span>
+            <span className="placement-palette-divider" aria-hidden="true" />
+            <span className="placement-palette-group">
+              {absenceTypes.map((t) => (
+                <button
+                  key={`a-${t.id}`}
+                  type="button"
+                  className="stamp-chip stamp-chip--absence"
+                  style={{ "--chip-color": t.color }}
+                  title={`${t.name} für alle markierten Tage eintragen`}
+                  disabled={disabled}
+                  onClick={() => onApplyTool({ kind: "absence", id: t.id })}
+                >
+                  {chipGlyph(t)}
+                </button>
+              ))}
+            </span>
+            <span className="placement-palette-divider" aria-hidden="true" />
             <button
               type="button"
               className="stamp-chip stamp-chip--empty"

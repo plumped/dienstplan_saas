@@ -408,7 +408,7 @@ class AbsenceTypeSerializer(serializers.ModelSerializer):
 class AbsenceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Absence
-        fields = ["id", "employee", "start_date", "end_date", "type", "status", "note"]
+        fields = ["id", "employee", "start_date", "end_date", "day_portion", "type", "status", "note"]
         # status wird nicht direkt gesetzt, sondern über perform_create
         # (Admin/Planer -> sofort APPROVED, sonst PENDING) bzw. die
         # approve/reject-Actions (siehe AbsenceViewSet, Block 2.3).
@@ -416,7 +416,7 @@ class AbsenceSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         instance = self.instance or Absence()
-        for field in ["employee", "start_date", "end_date", "type"]:
+        for field in ["employee", "start_date", "end_date", "day_portion", "type"]:
             if field in attrs:
                 setattr(instance, field, attrs[field])
         if self.instance is None:

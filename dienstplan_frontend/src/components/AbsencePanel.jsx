@@ -8,11 +8,22 @@ const STATUS_LABELS = {
   rejected: "Abgelehnt",
 };
 
+// Nutzer-Feedback (2026-08): "ich kann auch einen Nachmittag frei nehmen" --
+// nur bei einem einzelnen Tag sinnvoll (Backend erzwingt das in
+// Absence.clean(), siehe Kommentar dort), daher gilt DAY_PORTIONS[1]/[2] nur
+// für start_date === end_date; das Select wird sonst deaktiviert.
+const DAY_PORTIONS = [
+  { value: "full", label: "Ganzer Tag" },
+  { value: "morning", label: "Nur vormittags" },
+  { value: "afternoon", label: "Nur nachmittags" },
+];
+
 function emptyForm(defaultEmployeeId, defaultTypeId) {
   return {
     employee: defaultEmployeeId ?? "",
     start_date: "",
     end_date: "",
+    day_portion: "full",
     type: defaultTypeId ?? "",
     note: "",
   };
@@ -111,6 +122,7 @@ export default function AbsencePanel({ employees, me, onError }) {
         employee: Number(form.employee),
         start_date: form.start_date,
         end_date: form.end_date,
+        day_portion: form.start_date === form.end_date ? form.day_portion : "full",
         type: Number(form.type),
         note: form.note,
       });
@@ -220,6 +232,28 @@ export default function AbsencePanel({ employees, me, onError }) {
               />
             </label>
           </div>
+          {/* Nutzer-Feedback (2026-08): Halbtags-Absenzen -- nur bei einem
+              einzelnen Tag wählbar (Backend erzwingt das), sonst deaktiviert
+              und automatisch auf "Ganzer Tag" zurückgesetzt beim Absenden. */}
+          <label>
+            Tagesanteil
+            <select
+              value={form.day_portion}
+              disabled={!form.start_date || form.start_date !== form.end_date}
+              onChange={(e) => setForm((prev) => ({ ...prev, day_portion: e.target.value }))}
+              title={
+                form.start_date && form.start_date !== form.end_date
+                  ? "Nur bei einem einzelnen Tag wählbar (Von = Bis)"
+                  : undefined
+              }
+            >
+              {DAY_PORTIONS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <label>
             Notiz (optional)
             <input
@@ -258,6 +292,12 @@ export default function AbsencePanel({ employees, me, onError }) {
                   </span>
                   <span className="entry-main">
                     <strong>{employeeName(a.employee)}</strong> · {a.start_date} – {a.end_date}
+                    {a.day_portion && a.day_portion !== "full" && (
+                      <span className="entry-day-portion">
+                        {" "}
+                        · {DAY_PORTIONS.find((p) => p.value === a.day_portion)?.label ?? a.day_portion}
+                      </span>
+                    )}
                     {a.note && <span className="entry-note"> · {a.note}</span>}
                   </span>
                   <span className="entry-actions">

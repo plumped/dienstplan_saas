@@ -729,8 +729,17 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                     const color = absence ? absenceTypesById.get(absence.type)?.color ?? "var(--ink-muted)" : template?.color;
                     const secondColor = !absence ? secondTemplate?.color : null;
                     const holidayName = holidays.get(date);
+                    // Nutzer-Feedback (2026-08): Halbtags-Absenzen ("ich kann auch
+                    // einen Nachmittag frei nehmen") sollen auch im Jahresplan
+                    // erkennbar sein, analog zum ½-Suffix in ShiftCell.jsx.
+                    const absencePortionLabel =
+                      absence?.day_portion === "morning"
+                        ? "Nur vormittags"
+                        : absence?.day_portion === "afternoon"
+                          ? "Nur nachmittags"
+                          : null;
                     let title = absence
-                      ? `${date}: ${absenceTypesById.get(absence.type)?.name ?? absence.type} (${STATUS_LABELS[absence.status] ?? absence.status})`
+                      ? `${date}: ${absenceTypesById.get(absence.type)?.name ?? absence.type}${absencePortionLabel ? `, ${absencePortionLabel}` : ""} (${STATUS_LABELS[absence.status] ?? absence.status})`
                       : assignment && template
                         ? `${date}: ${template.name} (${template.start_time.slice(0, 5)}–${template.end_time.slice(0, 5)})` +
                           (secondTemplate
@@ -774,7 +783,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
                         }}
                       >
                         <span
-                          className={`year-day-fill year-day-fill--${kind}${secondColor ? " is-split" : ""}`}
+                          className={`year-day-fill year-day-fill--${kind}${secondColor ? " is-split" : ""}${absencePortionLabel ? " is-half-day" : ""}`}
                           style={
                             secondColor
                               ? { "--chip-color": color, "--chip-color-2": secondColor }

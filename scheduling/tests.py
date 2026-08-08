@@ -795,6 +795,107 @@ class AbsenceModelTests(TestCase):
         )
         absence.clean()  # kein überlappender Tag -- darf nicht werfen
 
+    # --- Halbtags-Absenzen (2026-08, Nutzer-Feedback: "ich kann auch einen
+    # Nachmittag frei nehmen") ---
+
+    def test_half_day_portion_requires_single_day(self):
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 4),
+            day_portion=Absence.DayPortion.AFTERNOON,
+        )
+        with self.assertRaises(ValidationError):
+            absence.clean()
+
+    def test_half_day_portion_allowed_for_single_day(self):
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+        )
+        absence.clean()  # darf nicht werfen
+
+    def test_afternoon_absence_does_not_conflict_with_morning_shift(self):
+        # Vormittagsdienst 08:00-12:00 bleibt an einem "nur nachmittags
+        # frei"-Tag planbar.
+        morning = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Vormittag", start_time=time(8, 0), end_time=time(12, 0)
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=morning
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+            status=Absence.Status.APPROVED,
+        )
+        absence.clean()  # kein Konflikt -- darf nicht werfen
+
+    def test_afternoon_absence_conflicts_with_afternoon_shift(self):
+        afternoon = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachmittag", start_time=time(13, 0), end_time=time(17, 0)
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=afternoon
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+            status=Absence.Status.APPROVED,
+        )
+        with self.assertRaises(ValidationError):
+            absence.clean()
+
+    def test_shift_assignment_blocked_by_matching_half_day_absence(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.MORNING,
+            type=self._make_type(),
+            status=Absence.Status.APPROVED,
+        )
+        morning = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Vormittag2", start_time=time(8, 0), end_time=time(12, 0)
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=morning
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_shift_assignment_not_blocked_by_non_overlapping_half_day_absence(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.MORNING,
+            type=self._make_type(),
+            status=Absence.Status.APPROVED,
+        )
+        afternoon = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachmittag2", start_time=time(13, 0), end_time=time(17, 0)
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=afternoon
+        )
+        assignment.clean()  # kein Konflikt -- darf nicht werfen
+
+    def _make_type(self):
+        return AbsenceType.objects.create(tenant=self.tenant, name="Ferien")
+
 
 class AbsenceTypeTests(TestCase):
     """
@@ -1881,6 +1982,24 @@ class EmployeeBalanceTests(APITestCase):
         summary = self.employee.vacation_balance(2026)
         self.assertEqual(summary["used_days"], 5)
         self.assertEqual(summary["remaining_days"], 15)
+
+    def test_vacation_balance_half_day_deducts_half_a_day(self):
+        # Nutzer-Feedback (2026-08): "Ich arbeite 100%, habe 25 Ferientage.
+        # Nehme ich einen Nachmittag frei, habe ich noch 24.5 Tage."
+        self.employee.vacation_days_per_year = 25
+        self.employee.save(update_fields=["vacation_days_per_year"])
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),  # Montag
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.vacation_balance(2026)
+        self.assertEqual(summary["used_days"], 0.5)
+        self.assertEqual(summary["remaining_days"], 24.5)
 
     def test_vacation_balance_ignores_pending_and_non_vacation_absences(self):
         Absence.objects.create(

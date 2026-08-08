@@ -634,10 +634,23 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // Absenz-Entfernung läuft NICHT mehr hier drin, sondern zentral vorab in
   // applyToolToMarked() (dedupliziert nach Absenz-ID) -- siehe Kommentar
   // dort, Bugfix für "No Absence matches the given query".
-  async function applyToolToCell(tool, employeeId, date, rowNodeId, slot0, slot1) {
+  //
+  // Bugfix (Nutzer-Feedback): im Pikett-Modus liess sich eine Spezialität
+  // bisher NUR hinzufügen -- ein zweiter Klick auf dasselbe Icon legte
+  // versehentlich eine DUPLIZIERTE Zuweisung an (additiv, kein Toggle), und
+  // der Radiergummi war im Pikett-Modus komplett ausgeblendet, es gab also
+  // gar keinen Weg, eine Spezialität über die Toolbar wieder zu entfernen
+  // (nur einzeln über das Popover in SpecialBadge.jsx). Jetzt: ein Klick auf
+  // ein Spezialität-Icon TOGGELT (schon vorhanden -> entfernen, sonst ->
+  // hinzufügen, pro markierter Zelle einzeln geprüft), der Radiergummi
+  // entfernt im Pikett-Modus ALLE Spezialitäten der markierten Zellen auf
+  // einmal (Analogie zu "Ganz" bei Diensten).
+  async function applyToolToCell(tool, employeeId, date, rowNodeId, slot0, slot1, specials = []) {
     if (tool.kind === "template") {
       if (placementMode === "pikett") {
-        await handleAddSpecial(employeeId, date, rowNodeId, tool.id);
+        const existing = specials.find((s) => s.template === tool.id);
+        if (existing) await handleRemoveSpecial(existing.id);
+        else await handleAddSpecial(employeeId, date, rowNodeId, tool.id);
         return;
       }
       if (placementMode === "full") {
@@ -652,7 +665,10 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
 
     if (tool.kind === "empty") {
-      if (placementMode === "pikett") return; // Radiergummi in der Toolbar ausgeblendet
+      if (placementMode === "pikett") {
+        for (const special of specials) await handleRemoveSpecial(special.id);
+        return;
+      }
       if (placementMode === "full") {
         if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
@@ -747,8 +763,8 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       const [employeeIdStr, date, rowNodeIdStr] = key.split(":");
       const employeeId = Number(employeeIdStr);
       const rowNodeId = Number(rowNodeIdStr);
-      const { regularAssignments } = resolveCellState(employeeId, date, rowNodeId);
-      await applyToolToCell(tool, employeeId, date, rowNodeId, regularAssignments[0], regularAssignments[1]);
+      const { regularAssignments, specialAssignments } = resolveCellState(employeeId, date, rowNodeId);
+      await applyToolToCell(tool, employeeId, date, rowNodeId, regularAssignments[0], regularAssignments[1], specialAssignments);
     }
     setMarkedCells(new Set());
   }

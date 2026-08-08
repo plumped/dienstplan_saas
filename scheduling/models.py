@@ -598,8 +598,15 @@ class Employee(TenantScopedModel):
             start_date__lte=year_end,
             end_date__gte=year_start,
         )
+        # Nutzer-Feedback (2026-08, Halbtags-Absenzen): "nur vormittags"/"nur
+        # nachmittags" zieht 0.5 statt 1 Ferientag ab -- day_portion ist per
+        # clean() nur bei einem einzelnen Tag erlaubt (start_date ==
+        # end_date), _count_workdays liefert für so eine Absenz daher immer
+        # 0 (Wochenende) oder 1 (Werktag), multipliziert mit 0.5 also 0/0.5.
         used_days = sum(
-            _count_workdays(max(a.start_date, year_start), min(a.end_date, year_end)) for a in absences
+            _count_workdays(max(a.start_date, year_start), min(a.end_date, year_end))
+            * (0.5 if a.day_portion != Absence.DayPortion.FULL else 1)
+            for a in absences
         )
 
         return {
@@ -820,9 +827,24 @@ class Absence(TenantScopedModel):
         APPROVED = "approved", "Genehmigt"
         REJECTED = "rejected", "Abgelehnt"
 
+    # Nutzer-Feedback (2026-08): "ich kann auch einen Nachmittag frei nehmen"
+    # -- bisher kannte das Modell nur ganze Tage. Ein Tagesanteil ist nur bei
+    # einem EINZELNEN Tag sinnvoll (start_date == end_date, siehe clean()) --
+    # eine "halbtags"-Absenz über mehrere Tage hätte keine eindeutige
+    # Bedeutung (jeden Tag nur vormittags? nur den ersten/letzten Tag?).
+    # Die Grenze zwischen Vormittag/Nachmittag ist bewusst fest bei 12:00
+    # Mittag (nicht pro Tenant konfigurierbar) -- ein einfacher, universell
+    # verständlicher Standard statt einer weiteren Einstellung; siehe
+    # _half_day_window().
+    class DayPortion(models.TextChoices):
+        FULL = "full", "Ganzer Tag"
+        MORNING = "morning", "Nur vormittags"
+        AFTERNOON = "afternoon", "Nur nachmittags"
+
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="absences")
     start_date = models.DateField()
     end_date = models.DateField()
+    day_portion = models.CharField(max_length=20, choices=DayPortion.choices, default=DayPortion.FULL)
     # Nutzer-Feedback (2026-08): war ein hartcodiertes CharField(choices=...)
     # mit genau drei Werten (vacation/sick/other) -- jetzt FK auf den
     # tenant-eigenen AbsenceType-Katalog (analog TimeTemplate). PROTECT statt
@@ -839,17 +861,54 @@ class Absence(TenantScopedModel):
         ordering = ["-start_date"]
 
     def __str__(self):
-        return f"{self.employee} – {self.type.name} ({self.start_date}–{self.end_date})"
+        portion = "" if self.day_portion == Absence.DayPortion.FULL else f", {self.get_day_portion_display()}"
+        return f"{self.employee} – {self.type.name} ({self.start_date}–{self.end_date}{portion})"
+
+    @staticmethod
+    def _half_day_window(day, portion):
+        """
+        (start_dt, end_dt) der Zeitspanne, die diese Absenz an `day` belegt --
+        fest bei 12:00 Mittag geteilt (siehe DayPortion oben). "Ganzer Tag"
+        deckt exklusiv bis Mitternacht des Folgetags ab, damit Nachtschichten
+        (Ende < Start, siehe TimeTemplate) korrekt als überlappend erkannt
+        werden -- gleiches Prinzip wie ShiftAssignment._shift_datetimes().
+        """
+        if portion == Absence.DayPortion.MORNING:
+            return datetime.combine(day, time(0, 0)), datetime.combine(day, time(12, 0))
+        if portion == Absence.DayPortion.AFTERNOON:
+            return datetime.combine(day, time(12, 0)), datetime.combine(day + timedelta(days=1), time(0, 0))
+        return datetime.combine(day, time(0, 0)), datetime.combine(day + timedelta(days=1), time(0, 0))
 
     def clean(self):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValidationError("Enddatum darf nicht vor dem Startdatum liegen.")
-        if self.status == Absence.Status.APPROVED and self.employee_id and self.start_date and self.end_date:
-            conflicts = sorted(
-                ShiftAssignment.all_objects.filter(
-                    employee_id=self.employee_id, date__range=[self.start_date, self.end_date]
-                ).values_list("date", flat=True)
+        if (
+            self.day_portion != Absence.DayPortion.FULL
+            and self.start_date
+            and self.end_date
+            and self.start_date != self.end_date
+        ):
+            raise ValidationError(
+                "Vormittags/Nachmittags gilt nur für einen einzelnen Tag -- Von und Bis müssen "
+                "identisch sein."
             )
+        if self.status == Absence.Status.APPROVED and self.employee_id and self.start_date and self.end_date:
+            candidates = ShiftAssignment.all_objects.filter(
+                employee_id=self.employee_id, date__range=[self.start_date, self.end_date]
+            ).select_related("template")
+            if self.day_portion == Absence.DayPortion.FULL:
+                conflicts = sorted({a.date for a in candidates})
+            else:
+                absence_start, absence_end = self._half_day_window(self.start_date, self.day_portion)
+                conflicts = sorted(
+                    {
+                        a.date
+                        for a in candidates
+                        if (lambda s, e: s < absence_end and absence_start < e)(
+                            *ShiftAssignment._shift_datetimes(a.date, a.template)
+                        )
+                    }
+                )
             if conflicts:
                 raise ValidationError(
                     f"{self.employee} hat im Zeitraum {self.start_date}–{self.end_date} bereits "
@@ -1351,17 +1410,30 @@ class ShiftAssignment(TenantScopedModel):
     def _check_no_absence_conflict(self):
         # Nur genehmigte Absenzen blockieren -- ein offener (PENDING) Antrag
         # soll die Planung nicht schon vor der Freigabe einschränken (Block 2.3).
-        conflict = Absence.all_objects.filter(
+        # Nutzer-Feedback (2026-08, Halbtags-Absenzen): eine "nur vormittags"/
+        # "nur nachmittags"-Absenz blockiert nur Dienste, die zeitlich in
+        # diese Tageshälfte fallen -- ein Nachmittagsdienst bleibt an einem
+        # Vormittag-frei-Tag also weiterhin planbar. Ganztags-Absenzen (der
+        # Normalfall) verhalten sich unverändert wie zuvor.
+        shift_start, shift_end = self._shift_datetimes(self.date, self.template)
+        candidates = Absence.all_objects.filter(
             employee=self.employee,
             status=Absence.Status.APPROVED,
             start_date__lte=self.date,
             end_date__gte=self.date,
-        ).select_related("type").first()
-        if conflict:
-            raise ValidationError(
-                f"{self.employee} hat am {self.date} eine genehmigte Abwesenheit "
-                f"({conflict.type.name}, {conflict.start_date}–{conflict.end_date})."
-            )
+        ).select_related("type")
+        for conflict in candidates:
+            absence_start, absence_end = conflict._half_day_window(self.date, conflict.day_portion)
+            if shift_start < absence_end and absence_start < shift_end:
+                portion = (
+                    ""
+                    if conflict.day_portion == Absence.DayPortion.FULL
+                    else f", {conflict.get_day_portion_display()}"
+                )
+                raise ValidationError(
+                    f"{self.employee} hat am {self.date} eine genehmigte Abwesenheit "
+                    f"({conflict.type.name}, {conflict.start_date}–{conflict.end_date}{portion})."
+                )
 
     @classmethod
     def swap(cls, first_id, second_id):

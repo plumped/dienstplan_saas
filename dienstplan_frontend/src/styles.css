@@ -435,6 +435,24 @@ main {
   gap: 8px;
 }
 
+/* Nutzer-Feedback (2026-08): "Abwesenheiten klar trennen von normalen
+   Diensten -- die Stempel in der oberen Zeile". Dienst- und Absenz-Icons
+   sitzen jetzt in zwei eigenen Gruppen mit sichtbarem vertikalem Trenner
+   dazwischen, statt in einer einzigen, ununterschiedenen Reihe. */
+.placement-palette-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.placement-palette-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 0 2px;
+}
+
 .placement-hint {
   font-size: 12.5px;
   color: var(--ink-muted);
@@ -981,6 +999,15 @@ thead .col-employee {
   color: color-mix(in srgb, var(--chip-color) 70%, black);
 }
 
+/* Nutzer-Feedback (2026-08): Halbtags-Absenzen sollen im Grid erkennbar
+   sein, nicht nur im Abwesenheiten-Tab -- kleines "½" neben dem Glyph. */
+.shift-chip-half-day {
+  font-size: 0.6em;
+  font-weight: 700;
+  margin-left: 1px;
+  vertical-align: super;
+}
+
 /* ---------- Einstellungen (Block 2.10) ---------- */
 
 .settings-panel {
@@ -1289,6 +1316,11 @@ thead .col-employee {
 
 .entry-note {
   color: var(--ink-muted);
+}
+
+.entry-day-portion {
+  color: var(--ink-muted);
+  font-style: italic;
 }
 
 .entry-note--warn {
@@ -1956,13 +1988,26 @@ thead .col-employee {
    Unten-rechts statt oben-rechts: .btn-offer-trade (Diensttausch anbieten)
    sitzt bereits oben-rechts in der Zelle -- unten-rechts vermeidet, dass
    sich beide Badges bei einem Tag mit Dienst UND Spezialität überlappen. */
-.special-day-badge {
+/* Nutzer-Feedback (2026-08): ein Punkt PRO Spezialität statt eines
+   einzelnen Punkts mit Zähler -- auf einen Blick sichtbar, wie viele UND
+   welche (Farbe) Spezialitäten an diesem Tag liegen, ohne das Popover zu
+   öffnen. flex-wrap, falls mal mehr als drei/vier gleichzeitig vorkommen
+   (Randfall, wächst dann in die Zelle hinein statt zu überlaufen). */
+.special-day-badges {
   position: absolute;
   bottom: -3px;
   right: -3px;
   z-index: 1;
-  width: 11px;
-  height: 11px;
+  display: flex;
+  flex-wrap: wrap-reverse;
+  justify-content: flex-end;
+  gap: 1.5px;
+  max-width: 20px;
+}
+
+.special-day-dot {
+  width: 9px;
+  height: 9px;
   border: 1.5px solid var(--surface);
   border-radius: 50%;
   padding: 0;
@@ -1970,7 +2015,7 @@ thead .col-employee {
   cursor: pointer;
 }
 
-.special-day-badge:hover {
+.special-day-dot:hover {
   transform: scale(1.2);
 }
 
@@ -2205,6 +2250,17 @@ thead .col-employee {
   );
   color: color-mix(in srgb, var(--chip-color) 75%, black);
   font-weight: 700;
+}
+
+/* Nutzer-Feedback (2026-08): Halbtags-Absenzen sollen auch im Jahresplan als
+   solche erkennbar sein -- linke Hälfte der Zelle bleibt ungefärbt, damit ein
+   halber Tag optisch von einem ganzen Abwesenheitstag unterscheidbar ist. */
+.year-day-fill--absence.is-half-day {
+  background: linear-gradient(
+    90deg,
+    transparent 50%,
+    color-mix(in srgb, var(--chip-color) 26%, white) 50%
+  );
 }
 
 .year-day-cell.is-marked .year-day-fill {

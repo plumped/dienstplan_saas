@@ -92,8 +92,8 @@ class AbsenceTypeAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
 
 @admin.register(Absence)
 class AbsenceAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
-    list_display = ["employee", "type", "start_date", "end_date", "tenant"]
-    list_filter = ["tenant", "type"]
+    list_display = ["employee", "type", "start_date", "end_date", "day_portion", "tenant"]
+    list_filter = ["tenant", "type", "day_portion"]
     date_hierarchy = "start_date"
 
 

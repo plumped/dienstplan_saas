@@ -240,10 +240,23 @@ export default function ShiftCell({
     // volle mousedown+mouseenter-Ziehmarkierung ohne Rücksicht auf
     // natives HTML5-Drag-and-Drop. Für rein lesende Ansichten (!canEdit)
     // bleibt es bei der reinen Anzeige.
-    const title = `${absenceType?.name ?? absence.type} (${absence.start_date} – ${absence.end_date})`;
+    // Nutzer-Feedback (2026-08): Halbtags-Absenzen ("nur vormittags"/"nur
+    // nachmittags") sollen auch im Grid erkennbar sein, nicht nur im
+    // Abwesenheiten-Tab -- ein kleines "½" neben dem Glyph, sichtbar in
+    // Titel/Tooltip UND direkt in der Zelle. Absenz-Chips spannen (anders
+    // als Dienst-Chips) immer die volle Zellbreite (showSecondSlot ist bei
+    // einer Absenz immer false, siehe PlanGrid.jsx), ein zweites Zeichen
+    // läuft hier also nicht Gefahr, sich mit einem Nachbar-Slot zu
+    // überlagern (siehe chipGlyph.js-Kommentar zum Ein-Zeichen-Limit).
+    const isHalfDay = absence.day_portion && absence.day_portion !== "full";
+    const portionLabel = absence.day_portion === "morning" ? "Nur vormittags" : "Nur nachmittags";
+    const title = `${absenceType?.name ?? absence.type} (${absence.start_date} – ${absence.end_date}${
+      isHalfDay ? `, ${portionLabel}` : ""
+    })`;
     const chip = (
       <span className="shift-chip shift-chip--absence" style={{ "--chip-color": absenceType?.color }}>
         {absenceType ? chipGlyph(absenceType) : absence.type}
+        {isHalfDay && <span className="shift-chip-half-day">½</span>}
       </span>
     );
     if (!canEdit) {

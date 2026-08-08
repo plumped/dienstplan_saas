@@ -1795,6 +1795,60 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       konfiguriert) korrekt ihren jeweiligen Zustand statt zu verschwinden; nach testweisem Setzen
       einer `minimum_staffing` zeigt die Karte korrekt die entstandenen Unterbesetzungen.
 
+22. ✅ **Drei Nutzer-Feedbacks zum Planblatt (2026-08)**: nach dem Icon-Toolbar-Redesign (Block 2
+    Punkt 11) drei konkrete Rückmeldungen behoben.
+    - ✅ **Mehrere Spezialitäten pro Tag waren additiv möglich, aber nicht erkennbar**: der
+      Eck-Badge (`SpecialBadge.jsx`, Block 2 Punkt 11) zeigte bisher nur einen einzelnen,
+      neutral gefärbten Punkt plus Zähler ("+2") -- bei zwei verschiedenen Spezialitäten (z. B.
+      Pikett UND Rufbereitschaft am selben Tag) war weder erkennbar, welche Farben das sind,
+      noch wie viele es genau sind, ohne das Popover zu öffnen. Neu: ein eigener, individuell
+      gefärbter Punkt (`--chip-color` der jeweiligen Spezialität) pro Zuweisung, alle
+      nebeneinander im Eck (`.special-day-badges`/`.special-day-dot`), gemeinsames Popover für
+      Details/Entfernen bleibt.
+    - ✅ **Spezialitäten liessen sich nicht über die Toolbar entfernen**: im Pikett-Modus der
+      `PlacementToolbar.jsx` fehlte der Radiergummi komplett (nur einzeln über das
+      `SpecialBadge`-Popover löschbar) -- ergänzt, entfernt beim Klick alle Spezialitäten der
+      markierten Tage. Ausserdem toggelt ein erneuter Klick auf dasselbe Spezialität-Icon jetzt
+      ab statt einen Duplikat-Eintrag zu erzeugen (`applyToolToCell` in `PlanGrid.jsx` prüft, ob
+      die Zuweisung schon existiert).
+    - ✅ **Dienst- und Absenz-Stempel in der Toolbar waren nicht klar getrennt**: Nutzer-Feedback
+      explizit zu den Icons in der oberen Werkzeugleiste (nicht zur Tageszelle selbst) --
+      `PlacementToolbar.jsx` gruppiert Dienst-Icons und Absenz-Icons jetzt in zwei sichtbar
+      abgetrennte Blöcke (`.placement-palette-group`, `.placement-palette-divider`) statt einer
+      einzigen ununterschiedenen Reihe.
+    - ✅ **Halbtags-Absenzen** ("ich kann auch einen Nachmittag frei nehmen"): `Absence` hat ein
+      neues Feld `day_portion` (`full`/`morning`/`afternoon`, Migration
+      `0021_absence_day_portion`, additiv mit Default `full`), nur bei einem einzelnen Tag
+      wählbar (`start_date == end_date`, in `Absence.clean()` erzwungen -- das Formular
+      deaktiviert das Auswahlfeld sonst automatisch). Fester Mittagsschnitt um 12:00 (kein
+      tenant-konfigurierbares Feld, bewusste Vereinfachung). Konfliktprüfung zwischen Absenz und
+      `ShiftAssignment` ist jetzt zeitbewusst statt den ganzen Tag zu blockieren
+      (`Absence._half_day_window()` liefert das Start/Ende-Zeitfenster, sowohl
+      `ShiftAssignment._check_no_absence_conflict()` als auch die umgekehrte Prüfung in
+      `Absence.clean()` vergleichen echte Zeitüberlappung) -- ein Vormittagsdienst neben einer
+      Nachmittags-Absenz ist damit möglich, ein überlappender Dienst weiterhin blockiert.
+      `Employee.vacation_balance()` zieht bei einer Halbtags-Absenz nur 0.5 Ferientage statt
+      einem ganzen Tag ab (verifiziert exakt gegen das vom Nutzer genannte Beispiel: 100%-Pensum,
+      25 Ferientage Anspruch, ein freier Nachmittag → 24.5 Tage verbleibend). Ferienanspruch
+      selbst bleibt weiterhin eine feste, nicht pensumsskalierte Zahl (unverändertes
+      Bestandsverhalten, vom Nutzer mit der Rückfrage bestätigt). Frontend:
+      `AbsencePanel.jsx` bekommt ein neues "Tagesanteil"-Auswahlfeld (deaktiviert, sobald Von ≠
+      Bis, mit Tooltip-Erklärung), die Liste zeigt den gewählten Tagesanteil an; `ShiftCell.jsx`
+      zeigt im Planblatt-Grid ein hochgestelltes "½" neben dem Absenz-Glyph plus entsprechenden
+      Tooltip-Zusatz; `YearPlan.jsx` zeigt denselben Hinweis im Tooltip sowie einen
+      halbtransparenten Zellhintergrund (`.year-day-fill--absence.is-half-day`) statt der vollen
+      Streifenfüllung. Bewusst unverändert: die Soll/Ist-Stundenkonten
+      (`time_account_summary()`/`_approved_absence_workdays()`) behandeln einen
+      Halbtags-Absenztag weiterhin als voll entschuldigt -- der Nutzer fragte gezielt nach der
+      Ferientage-Zählung, nicht nach stundengenauer Excusal-Logik; das bleibt eine bewusste
+      Vereinfachung für eine spätere Iteration. 8 neue Backend-Tests (`AbsenceModelTests`,
+      `EmployeeBalanceTests`), volle Suite (349 Tests) grün. Mit Playwright gegen echte
+      Testheim-Daten verifiziert: Toolbar-Gruppierung mit zwei getrennten Icon-Blöcken plus
+      Trennlinien im DOM bestätigt; Halbtags-Formular aktiviert/deaktiviert korrekt je nach
+      Von/Bis; erfasste Halbtags-Absenz erscheint in der Liste mit "· Nur nachmittags" und im
+      Planblatt-Grid als "F½"; Ferien-Saldo einer Testperson sank exakt von 25/0/25 auf
+      25/0.5/24.5 nach Anlage einer Nachmittags-Absenz.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 1. **Setup-Wizard**: eine neue Praxis registriert sich selbst (Tenant, erster Admin-Account,

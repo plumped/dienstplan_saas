@@ -18,6 +18,12 @@ export default function PregnancyEditor({ employeeId, onError }) {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
+  // Nutzer-Feedback (2026-08): ein Fehler (z. B. falsches Datumsformat durch
+  // einen Tippfehler in einem der beiden nebeneinanderliegenden Datumsfelder)
+  // landete bisher nur im globalen Fehlerbanner oben auf der Seite -- leicht
+  // zu übersehen, wenn man mittendrin in den Mitarbeiter-Einstellungen ist.
+  // Feldbezogene Anzeige analog EmployeeSettings.jsx (fieldError()).
+  const [fieldErrors, setFieldErrors] = useState({});
 
   useEffect(() => {
     let cancelled = false;
@@ -40,11 +46,26 @@ export default function PregnancyEditor({ employeeId, onError }) {
       actual_birth_date: pregnancy.actual_birth_date ?? "",
       notes: pregnancy.notes ?? "",
     });
+    setFieldErrors({});
   }
 
   function startCreating() {
     setEditingId(null);
     setForm(emptyForm());
+    setFieldErrors({});
+  }
+
+  function updateField(key) {
+    return (e) => {
+      const value = e.target.value;
+      setForm((prev) => ({ ...prev, [key]: value }));
+      setFieldErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
+    };
+  }
+
+  function fieldError(key) {
+    const message = fieldErrors[key]?.[0];
+    return message ? <span className="field-error">{message}</span> : null;
   }
 
   // Bewusst kein <form>/onSubmit -- diese Komponente hängt innerhalb des
@@ -56,7 +77,7 @@ export default function PregnancyEditor({ employeeId, onError }) {
   // gespeichert wurde). Der Button löst stattdessen direkt per onClick aus.
   async function handleSubmit() {
     if (!form.expected_birth_date) {
-      onError("Voraussichtlicher Geburtstermin ist ein Pflichtfeld.");
+      setFieldErrors({ expected_birth_date: ["Pflichtfeld."] });
       return;
     }
     const payload = {
@@ -66,6 +87,7 @@ export default function PregnancyEditor({ employeeId, onError }) {
       notes: form.notes,
     };
     setSaving(true);
+    setFieldErrors({});
     try {
       if (editingId) {
         const updated = await api.updatePregnancy(editingId, payload);
@@ -76,6 +98,7 @@ export default function PregnancyEditor({ employeeId, onError }) {
       }
       startCreating();
     } catch (e) {
+      if (e.fields && typeof e.fields === "object") setFieldErrors(e.fields);
       onError(e.message);
     } finally {
       setSaving(false);
@@ -123,28 +146,18 @@ export default function PregnancyEditor({ employeeId, onError }) {
       <div className="panel-form-row">
         <label>
           Voraussichtlicher Geburtstermin
-          <input
-            type="date"
-            value={form.expected_birth_date}
-            onChange={(e) => setForm((prev) => ({ ...prev, expected_birth_date: e.target.value }))}
-            required
-          />
+          <input type="date" value={form.expected_birth_date} onChange={updateField("expected_birth_date")} />
+          {fieldError("expected_birth_date")}
         </label>
         <label>
           Tatsächliches Geburtsdatum (sobald bekannt)
-          <input
-            type="date"
-            value={form.actual_birth_date}
-            onChange={(e) => setForm((prev) => ({ ...prev, actual_birth_date: e.target.value }))}
-          />
+          <input type="date" value={form.actual_birth_date} onChange={updateField("actual_birth_date")} />
+          {fieldError("actual_birth_date")}
         </label>
         <label>
           Notiz (optional)
-          <input
-            type="text"
-            value={form.notes}
-            onChange={(e) => setForm((prev) => ({ ...prev, notes: e.target.value }))}
-          />
+          <input type="text" value={form.notes} onChange={updateField("notes")} />
+          {fieldError("notes")}
         </label>
         <div className="entry-actions">
           <button type="button" disabled={saving} onClick={handleSubmit}>

@@ -260,14 +260,23 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Santésuisse) pro Klinik/Praxis anpassbar. *Noch offen*: `maximum_weekly_hours` ist aktuell ein
    einzelner Wert **pro Tenant** -- in Spitälern gilt aber je nach Personalkategorie oft
    unterschiedliches (z. B. 42h GAV-Normalarbeitszeit für Pflegepersonal, 50h ArG-Höchstgrenze für
-   andere Gruppen). Inzwischen gelöst, siehe Punkt 12 (Employee-Override-Felder).
+   andere Gruppen). Inzwischen gelöst, siehe Punkt 12 (Employee-Override-Felder). *Noch offen*
+   (Compliance-Audit 2026-08): der Default-Wert 45h unterstellt, dass Pflegepersonal unter
+   "Gesundheits- und Büropersonal" (Art. 9 Abs. 1 lit. a ArG) statt "übrige Betriebe" (50h, lit. b)
+   fällt -- das ist plausibel, aber je nach GAV/SECO-Einordnung nicht einheitlich geklärt. Vor
+   Produktivbetrieb pro Tenant gegen den konkreten Gesamtarbeitsvertrag verifizieren, nicht
+   blind auf dem Default belassen.
 2. ✅ **Pausenregelung** (Art. 15 ArG): > 5.5h Netto-Arbeitszeit → 15 Min., > 7h → 30 Min.,
    > 9h → 1h Pause, automatisch gegen `TimeTemplate.break_minutes` geprüft statt nur erfasst.
 3. ✅ **Tägliche Höchstarbeitszeit inkl. Pausen** (Art. 10 ArG: Tagesspanne max.
    `maximum_daily_span_hours`, Default 14h).
 4. ✅ **Wöchentlicher freier Tag**: mindestens ein ganzer freier Tag pro Kalenderwoche
    (Art. 21 ArG) wird geprüft. *Noch offen*: die zusätzliche Anforderung "im Schnitt einmal
-   monatlich ein Sonntag frei" ist nicht automatisiert.
+   monatlich ein Sonntag frei" ist nicht automatisiert. *Noch offen* (Compliance-Audit 2026-08):
+   geprüft wird nur, dass ein Kalendertag frei von Zuweisungen bleibt -- nicht explizit, dass
+   dieser Tag zusammen mit der angrenzenden Tagesruhezeit einen zusammenhängenden 35h-Block
+   ergibt (Art. 21 Abs. 1 ArG). Im Normalbetrieb (freier Tag + 11h-Ruhezeit davor/danach aus
+   `_check_rest_period`) ist das faktisch praktisch immer erfüllt, aber nicht verifiziert.
 5. ✅ **Nachtarbeit** (23:00–06:00, Art. 16 ff. ArG): wird pro Schicht als `night_hours` erkannt
    und über die API ausgegeben (informativ, blockiert nichts). Zusätzlich
    `Employee.night_work_summary(year)` (API: `GET /api/employees/{id}/night-work/?year=YYYY`):
@@ -280,7 +289,12 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Jahren jährlich) als `medical_exam_due`, ausgehend von `Employee.
    last_night_work_medical_exam_date`. Rein informativ wie `night_hours` selbst -- kein
    automatischer Eingriff ins Planblatt, kein Rechtsrat (die Bewilligungspflicht selbst kann die
-   App nicht prüfen, nur an sie erinnern).
+   App nicht prüfen, nur an sie erinnern). *Noch offen* (Compliance-Audit 2026-08): abgedeckt ist
+   nur die Zeitgutschrift für **regelmässige** Nachtarbeit (Art. 17b Abs. 1 ArG). Wer **nicht**
+   regelmässig Nachtarbeit leistet (unter `night_work_regular_threshold_nights`), hat trotzdem
+   Anspruch auf einen **25% Lohnzuschlag** statt Zeitgutschrift (Art. 17b Abs. 2 ArG) -- dafür
+   gibt es aktuell keine Berechnung, `night_work_summary()` liefert für den unregelmässigen Fall
+   nur `surcharge_hours: 0.0`.
 6. ✅ **Sonntagsarbeit** (Art. 19/27 ArG): wird pro Schicht als `is_sunday` erkannt (Gesundheits-
    betriebe sind von der Bewilligungspflicht ausgenommen). `Employee.weekly_hours_summary()` (API:
    `weekly-overtime`) liefert zusätzlich `sunday_hours`/`sunday_surcharge_hours` (Art. 19 Abs. 3
@@ -291,6 +305,15 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Ersatzruhetags (Art. 20 ArG): sie prüft nur die Anzahl freier Tage, nicht die genaue Vorgabe,
    dass der Ersatzruhetag unmittelbar an eine Tagesruhezeit anschliessen und mit ihr zusammen
    mindestens 35 zusammenhängende Stunden ergeben muss. Beides rein informativ, blockiert nichts.
+   *Noch offen* (Compliance-Audit 2026-08): zwei weitere Lücken. Erstens, `is_sunday` prüft den
+   Kalendertag (`weekday() == 6`), nicht das arbeitsrechtliche Sonntagsfenster Samstag 23:00 bis
+   Sonntag 23:00 (Art. 16 analog) -- bei Schichten, die exakt um Mitternacht Sa/So oder So/Mo
+   kippen, ein Randfall mit potenziell falscher Zu-/Nichtzuordnung. Zweitens, anders als bei
+   Nachtarbeit (`Tenant.night_work_permit_confirmed` + `permit_warning`) gibt es kein eigenes
+   Bestätigungsfeld/Warnhinweis dafür, ob die Sonntagsarbeit-Ausnahme für Dauerbetriebe
+   (Gesundheits-/Pflegeeinrichtungen, ArGV 2 Art. 4) tatsächlich zutrifft -- ein Feld analog zu
+   Punkt 5 (Nachtarbeit-Bewilligung) nachziehen, falls das für andere Branchen als das aktuelle
+   Zielsegment relevant wird.
 7. ✅ **Jugendschutz** (ArGV 5) für unter 18-Jährige: `Employee.birth_date` (optional) +
    `Employee.is_minor_on(date)`. Für Minderjährige gilt eine erhöhte Mindestruhezeit (12h statt
    der Tenant-Vorgabe) sowie ein hartes Verbot von Nacht- und Sonntagsarbeit. Vereinfachte
@@ -385,6 +408,18 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     Speichern einer Zeiterfassung, siehe Block 2.7). *Noch offen*: keine dauerhafte
     Wochenübersicht ausserhalb dieses Feedbacks, keine Jahres-Kumulierung (nur pro Kalenderwoche
     einzeln abrufbar) -- die Monats-Kumulierung liefert inzwischen Block 2.6 (Punkt 13 unten).
+    *Noch offen* (Compliance-Audit 2026-08, Begriffsklärung): `overtime_surcharge_pct` ist
+    beschriftet als "Art. 13 ArG", berechnet aber Mehrarbeit oberhalb `standard_weekly_hours`
+    (Vertragssoll, z. B. 42h) -- das ist begrifflich **Überstunden** nach Art. 321c OR, nicht die
+    gesetzliche **Überzeit** nach Art. 12/13 ArG (die erst oberhalb der Wochenhöchstgrenze
+    `maximum_weekly_hours`, 45h/50h, beginnt). Rechnerisch unproblematisch -- `standard_weekly_hours
+    < maximum_weekly_hours` gilt immer --, aber die Beschriftung im UI/hier sollte präzisiert
+    werden, sonst wird ein OR-Anspruch fälschlich als ArG-Pflicht kommuniziert. Zusätzlich: die
+    echte, gesetzliche Überzeit oberhalb `maximum_weekly_hours` wird durch
+    `_check_maximum_weekly_hours()` faktisch komplett verhindert (harter Block) statt gemäss
+    Art. 12 Abs. 1 ArG bis zu einer Jahresobergrenze (170h bzw. 140h) zuzulassen und zu zählen --
+    für den heutigen Zweck (harte Ablehnung) unproblematisch, aber falls das künftig per
+    Ausnahmebewilligung geöffnet werden soll, fehlt die Jahres-Obergrenzen-Zählung dafür.
 12. ✅ **Wochenstunden-Grenzwerte pro Personalkategorie statt nur pro Tenant**: ein einzelner
     Tenant-Wert reicht nicht, wenn z. B. Ärzteschaft vertraglich 50h und Büropersonal 42h hat.
     `Employee.maximum_weekly_hours`/`standard_weekly_hours` sind jetzt optionale
@@ -404,6 +439,29 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 
 14. **Aufbewahrung**: Ist-Daten (`TimeRecord`) fallen unter dieselbe Aufbewahrungspflicht wie
     Lohnunterlagen (siehe Block 5.3) — beim Löschkonzept mitdenken.
+
+15. **Mutterschutz (Art. 35, 35a, 35b ArG + Verordnung über den Mutterschutz)** — komplett nicht
+    abgedeckt (Compliance-Audit 2026-08). Kein Datenfeld, keine Regel-Engine-Prüfung für
+    Beschäftigungsbeschränkungen bei Schwangerschaft/Stillzeit: u. a. Verbot von Nachtarbeit
+    8 Wochen vor bis 8 Wochen nach der Geburt (Art. 35a Abs. 3 ArG), Anspruch auf gleichwertige
+    Tagesarbeit bei Nachtarbeitsverbot, generelles Beschäftigungsverbot in den ersten 8 Wochen nach
+    der Niederkunft (Art. 35a Abs. 1 ArG), Freistellungsrecht bei Ablehnung eines zumutbaren
+    Ersatzangebots. Bei einer typischerweise frauenreichen Alten-/Pflegeheim-Belegschaft der
+    Bereich mit dem grössten ungedeckten Haftungsrisiko unter allen ArG-Lücken. Ansatz: analog zu
+    `Employee.birth_date`/`is_minor_on()` ein optionales, streng zugriffsbeschränktes Datum
+    (voraussichtlicher/tatsächlicher Geburtstermin) plus harte Blockierung von Nachtschichten in
+    `_check_youth_protection()`-ähnlicher Logik im relevanten Zeitraum — Datenschutz-Sensibilität
+    beachten (Block 5), Zugriff nur für die betroffene Person selbst + Admin, nicht für alle
+    Planer:innen sichtbar.
+
+16. **Lohnfortzahlung bei Krankheit (Art. 324a OR)** — nicht abgedeckt (Compliance-Audit 2026-08).
+    Absenzen vom Typ Krankheit werden korrekt als Soll-neutral erfasst
+    (`Employee._approved_absence_day_weights()`/`time_account_summary()`), aber es gibt keine
+    Verfolgung der Anspruchsdauer nach Dienstjahren (z. B. Basler,
+    Berner oder Zürcher Skala — kantonal/betrieblich unterschiedlich üblich) oder einen Hinweis,
+    wenn der Anspruch für das laufende Dienstjahr erschöpft ist. Ausserhalb des ursprünglichen
+    Scopes „Dienstplanung“, aber Teil des Gesamtbilds „Krankheit korrekt abgebildet“, sobald die
+    App auch für Lohn-/Personalprozesse statt nur für die Planung herangezogen wird.
 
 ### 2. Fehlende Kernfunktionen für den Praxisalltag
 
@@ -522,7 +580,12 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
      jeweiligen Kalenderjahr, gezählt in Mo-Fr-Werktagen (`_count_workdays`, bewusst weiterhin ohne
      Feiertagsabzug -- eine ältere, unveränderte Kennzahl, siehe unten zum neuen Kalender). *Noch
      offen*: kein Übertrag von Resturlaub zwischen Kalenderjahren, siehe Block 5.3 fürs
-     Löschkonzept, sobald ein Übertragsmechanismus feststeht.
+     Löschkonzept, sobald ein Übertragsmechanismus feststeht. *Noch offen* (Compliance-Audit
+     2026-08): Art. 329a Abs. 3 OR verlangt 25 statt 20 Tage (5 statt 4 Wochen) für Mitarbeitende
+     bis zum vollendeten 20. Altersjahr. `Employee.vacation_days_per_year` erlaubt das als Override,
+     aber es gibt keine automatische Erhöhung/Warnung anhand `Employee.birth_date` (das für die
+     Altersberechnung an anderer Stelle, z. B. Jugendschutz, bereits genutzt wird) -- ein Admin
+     kann eine junge Person versehentlich mit nur 20 statt 25 Tagen anlegen, ohne Hinweis.
    - **Feiertagskalender** (`Tenant.canton` + `TenantHolidayOverride` + `Tenant.public_holidays()`):
      über die gepflegte Python-Bibliothek `holidays` (vacanza/holidays) statt eigenem Kalender --
      die Schweiz hat nicht nur pro Kanton, sondern in GR/LU/SZ/SO teils sogar pro Gemeinde

@@ -47,8 +47,14 @@ export default function PregnancyEditor({ employeeId, onError }) {
     setForm(emptyForm());
   }
 
-  async function handleSubmit(event) {
-    event.preventDefault();
+  // Bewusst kein <form>/onSubmit -- diese Komponente hängt innerhalb des
+  // "Mitarbeiter bearbeiten"-Formulars in EmployeeSettings.jsx (verschachtelte
+  // <form>-Elemente sind ungültiges HTML: ein Submit hier würde als Bubbling-
+  // Submit-Event zusätzlich das äussere Formular auslösen, das den Mitarbeiter
+  // neu speichert und dabei editingId zurücksetzt -- die Ansicht springt dann
+  // ungewollt aus dem Bearbeiten-Modus, ohne dass die Schwangerschaft sichtbar
+  // gespeichert wurde). Der Button löst stattdessen direkt per onClick aus.
+  async function handleSubmit() {
     if (!form.expected_birth_date) {
       onError("Voraussichtlicher Geburtstermin ist ein Pflichtfeld.");
       return;
@@ -114,7 +120,7 @@ export default function PregnancyEditor({ employeeId, onError }) {
           ))}
         </ul>
       )}
-      <form className="panel-form-row" onSubmit={handleSubmit}>
+      <div className="panel-form-row">
         <label>
           Voraussichtlicher Geburtstermin
           <input
@@ -141,7 +147,7 @@ export default function PregnancyEditor({ employeeId, onError }) {
           />
         </label>
         <div className="entry-actions">
-          <button type="submit" disabled={saving}>
+          <button type="button" disabled={saving} onClick={handleSubmit}>
             {saving ? "Speichert …" : editingId ? "Speichern" : "Hinzufügen"}
           </button>
           {editingId && (
@@ -150,7 +156,7 @@ export default function PregnancyEditor({ employeeId, onError }) {
             </button>
           )}
         </div>
-      </form>
+      </div>
     </div>
   );
 }

@@ -374,42 +374,50 @@ class Employee(TenantScopedModel):
         weekly = self._effective_weekly_hours() * self.employment_pct / 100
         return weekly / 5
 
-    def _approved_absence_dates(self, start_date, end_date):
+    def _approved_absence_day_weights(self, start_date, end_date):
         """
-        Menge ALLER Kalendertage (auch Wochenenden) in [start_date, end_date],
-        die durch mindestens eine genehmigte Absenz (Ferien/Krankheit/
-        Sonstiges) abgedeckt sind. Basis für _approved_absence_workdays()
-        (Soll-Neutralität) und für den defensiven Ist-Ausschluss in
-        time_account_summary() -- Absence.clean() verhindert seit dem Bugfix
-        2026-08 zwar neue Übrschneidungen mit ShiftAssignment, aber bereits
-        bestehende (z. B. vor dem Fix angelegte) Daten sollen den Saldo
-        trotzdem nicht verfälschen: eine Zuweisung an einem genehmigten
-        Absenztag zählt nicht als geleistete Ist-Zeit.
+        Datum -> Anteil des Tages [0.5, 1.0], der durch mindestens eine
+        genehmigte Absenz (Ferien/Krankheit/Sonstiges, jeder Typ) als
+        arbeitsfrei gilt -- 1.0 für eine ganztägige, 0.5 für eine
+        Halbtags-Absenz (day_portion morning/afternoon). Basis für die
+        Soll-Neutralität UND den Ist-Ausschluss in time_account_summary()/
+        monthly_summary().
+
+        Nutzer-Feedback (2026-08): "wenn ich einen halben Tag Ferien eingebe,
+        stimmt die Stunden-Rechnung dann noch?" -- vorher (_approved_absence_
+        dates(), reine Datumsmenge ohne day_portion) wurde JEDE Absenz, auch
+        eine Halbtags-Absenz, wie ein ganzer freier Tag behandelt: sowohl der
+        komplette Tagessoll als auch die komplette (weiterhin bestehende,
+        siehe Absence._shift_extends_into_other_half()) Dienst-Zuweisung
+        dieses Tages fielen aus der Rechnung -- bei einer Halbtags-Absenz ein
+        um einen halben Tag zu grosser Ausschlag (empirisch: -8.4h statt der
+        erwarteten -4.2h bei einem 8.4h-Tagessoll). Mit Gewichtung 0.5 wird
+        pro Halbtags-Absenz nur noch die Hälfte des Tagessolls excused UND
+        nur die Hälfte der (mangels TimeRecord geschätzten) Dienststunden aus
+        dem Ist ausgeschlossen -- konsistent mit vacation_balance(), die
+        bereits 0.5 statt 1 Ferientag zieht.
+
+        Überschneiden sich zwei Absenzen (sollte laut Absence.clean() nicht
+        vorkommen, aber defensiv), wird der Tag höchstens als 1.0 (ganz
+        excused) gezählt.
         """
         if start_date > end_date:
-            return set()
+            return {}
         absences = Absence.all_objects.filter(
             employee=self,
             status=Absence.Status.APPROVED,
             start_date__lte=end_date,
             end_date__gte=start_date,
         )
-        covered = set()
+        weights = {}
         for absence in absences:
+            day_weight = 1.0 if absence.day_portion == Absence.DayPortion.FULL else 0.5
             cursor = max(absence.start_date, start_date)
             stop = min(absence.end_date, end_date)
             while cursor <= stop:
-                covered.add(cursor)
+                weights[cursor] = min(1.0, weights.get(cursor, 0.0) + day_weight)
                 cursor += timedelta(days=1)
-        return covered
-
-    def _approved_absence_workdays(self, start_date, end_date):
-        """
-        Teilmenge von _approved_absence_dates(), die auf Mo-Fr fällt -- fürs
-        Arbeitszeitmodell (time_account_summary): diese Tage sind
-        Soll-neutral, siehe dort.
-        """
-        return {d for d in self._approved_absence_dates(start_date, end_date) if d.weekday() < 5}
+        return weights
 
     def _public_holiday_workdays(self, start_date, end_date):
         """Menge der Feiertage (Tenant.public_holidays) in [start_date, end_date], die auf Mo-Fr fallen."""
@@ -512,22 +520,31 @@ class Employee(TenantScopedModel):
             }
 
         workdays_elapsed = _count_workdays(period_start, as_of_date)
-        absence_dates = self._approved_absence_dates(period_start, as_of_date)
-        absence_workdays = {d for d in absence_dates if d.weekday() < 5}
-        excused_days = self._public_holiday_workdays(period_start, as_of_date) | absence_workdays
+        holiday_days = self._public_holiday_workdays(period_start, as_of_date)
+        absence_weights = self._approved_absence_day_weights(period_start, as_of_date)
         daily = self._daily_target_hours()
-        soll_kumuliert = (workdays_elapsed - len(excused_days)) * daily
+        # Ein Feiertag zählt voll (1.0), unabhängig von einer ggf. am selben
+        # Tag zusätzlich bestehenden Absenz (Doppelzählung ausgeschlossen).
+        excused_units = len(holiday_days) + sum(
+            weight for d, weight in absence_weights.items() if d.weekday() < 5 and d not in holiday_days
+        )
+        soll_kumuliert = (workdays_elapsed - excused_units) * daily
 
-        # Zuweisungen an genehmigten Absenztagen zählen nicht als Ist-Zeit
-        # (siehe _approved_absence_dates-Docstring) -- ein solcher Tag ist
-        # per Definition arbeitsfrei, unabhängig davon, ob versehentlich
-        # trotzdem eine Zuweisung dafür existiert.
+        # Zuweisungen an einem GANZTÄGIGEN genehmigten Absenztag zählen nicht
+        # als Ist-Zeit (siehe _approved_absence_day_weights-Docstring) -- ein
+        # solcher Tag ist per Definition arbeitsfrei, unabhängig davon, ob
+        # versehentlich trotzdem eine Zuweisung dafür existiert. Eine
+        # Halbtags-Absenz schliesst die (weiterhin bestehende) Zuweisung
+        # NICHT aus, sondern gewichtet ihre geschätzten Stunden weiter unten
+        # nur zur Hälfte -- eine bereits erfasste TimeRecord (tatsächlich
+        # geleistete Zeit) bleibt davon unberührt, die ist schon korrekt.
         # Spezialitäten (TimeTemplate.category == "special", z. B.
         # Pikettdienst) sind rein informativ und zählen nicht zu den
         # Stunden -- siehe ShiftAssignment._check_rest_period.
+        full_absence_dates = {d for d, weight in absence_weights.items() if weight >= 1.0}
         assignments = (
             ShiftAssignment.all_objects.filter(employee=self, date__gte=period_start, date__lte=as_of_date)
-            .exclude(date__in=absence_dates)
+            .exclude(date__in=full_absence_dates)
             .exclude(template__category=TimeTemplate.Category.SPECIAL)
             .select_related("template", "time_record")
         )
@@ -540,7 +557,8 @@ class Employee(TenantScopedModel):
                 if time_record.status != TimeRecord.Status.CONFIRMED:
                     is_provisional = True
             else:
-                ist_kumuliert += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                hours = ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                ist_kumuliert += hours * (1 - absence_weights.get(assignment.date, 0.0))
                 is_provisional = True
 
         saldo = self.overtime_balance_carryover_hours + ist_kumuliert - soll_kumuliert
@@ -548,18 +566,21 @@ class Employee(TenantScopedModel):
         # Bereits eingeplante künftige Zuweisungen bis Jahresende (siehe
         # Docstring plan_saldo_hours oben) -- niemals eine geprüfte
         # Zeiterfassung möglich (liegt in der Zukunft), daher direkt die
-        # geplanten Template-Stunden statt eines TimeRecord-Lookups.
+        # geplanten Template-Stunden statt eines TimeRecord-Lookups (mit
+        # derselben Halbtags-Gewichtung wie oben).
         ist_geplant_zukunft = 0.0
         if as_of_date < year_end:
-            future_absence_dates = self._approved_absence_dates(as_of_date + timedelta(days=1), year_end)
+            future_absence_weights = self._approved_absence_day_weights(as_of_date + timedelta(days=1), year_end)
+            future_full_absence_dates = {d for d, weight in future_absence_weights.items() if weight >= 1.0}
             future_assignments = (
                 ShiftAssignment.all_objects.filter(employee=self, date__gt=as_of_date, date__lte=year_end)
-                .exclude(date__in=future_absence_dates)
+                .exclude(date__in=future_full_absence_dates)
                 .exclude(template__category=TimeTemplate.Category.SPECIAL)
                 .select_related("template")
             )
             for assignment in future_assignments:
-                ist_geplant_zukunft += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                hours = ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                ist_geplant_zukunft += hours * (1 - future_absence_weights.get(assignment.date, 0.0))
                 is_provisional = True
 
         ist_kumuliert_geplant = ist_kumuliert + ist_geplant_zukunft
@@ -665,17 +686,22 @@ class Employee(TenantScopedModel):
             }
 
         workdays = _count_workdays(period_start, month_end)
-        absence_dates = self._approved_absence_dates(period_start, month_end)
-        absence_workdays = {d for d in absence_dates if d.weekday() < 5}
-        excused_days = self._public_holiday_workdays(period_start, month_end) | absence_workdays
+        holiday_days = self._public_holiday_workdays(period_start, month_end)
+        absence_weights = self._approved_absence_day_weights(period_start, month_end)
         daily = self._daily_target_hours()
-        soll_hours = round((workdays - len(excused_days)) * daily, 2)
+        excused_units = len(holiday_days) + sum(
+            weight for d, weight in absence_weights.items() if d.weekday() < 5 and d not in holiday_days
+        )
+        soll_hours = round((workdays - excused_units) * daily, 2)
 
-        # Zuweisungen an genehmigten Absenztagen zählen nicht als Ist-Zeit,
-        # siehe _approved_absence_dates-Docstring/time_account_summary().
+        # Zuweisungen an einem GANZTÄGIGEN genehmigten Absenztag zählen nicht
+        # als Ist-Zeit, eine Halbtags-Absenz gewichtet stattdessen nur die
+        # (mangels TimeRecord geschätzten) Stunden -- siehe
+        # _approved_absence_day_weights-Docstring/time_account_summary().
+        full_absence_dates = {d for d, weight in absence_weights.items() if weight >= 1.0}
         assignments = (
             ShiftAssignment.all_objects.filter(employee=self, date__gte=period_start, date__lte=month_end)
-            .exclude(date__in=absence_dates)
+            .exclude(date__in=full_absence_dates)
             .select_related("template", "time_record")
         )
         ist_hours = 0.0
@@ -689,7 +715,8 @@ class Employee(TenantScopedModel):
                 if time_record.status != TimeRecord.Status.CONFIRMED:
                     is_provisional = True
             else:
-                ist_hours += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                hours = ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                ist_hours += hours * (1 - absence_weights.get(assignment.date, 0.0))
                 is_provisional = True
             # Nacht-/Sonntagszuschlag (Art. 17b/19 ArG) bewusst wie in
             # weekly_hours_summary()/night_work_summary() auf den GEPLANTEN

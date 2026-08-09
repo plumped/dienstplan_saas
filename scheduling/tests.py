@@ -1944,6 +1944,66 @@ class EmployeeBalanceTests(APITestCase):
         # 3 NICHT durch die Absenz abgedeckten Tage -- 3*8h=24h, nicht 5*8h=40h.
         self.assertEqual(summary["saldo_hours"], -18.0)
 
+    def test_saldo_half_day_absence_excuses_only_half_the_day(self):
+        # Nutzer-Feedback (2026-08): "wenn ich einen halben Tag Ferien
+        # eingebe, stimmt die Stundenrechnung dann noch?" -- vorher wurde
+        # eine Halbtags-Absenz wie ein GANZER freier Tag behandelt: der
+        # komplette Tagessoll (8.4h) UND die komplette (weiterhin
+        # bestehende, siehe Absence._shift_extends_into_other_half())
+        # Dienst-Zuweisung dieses Tages fielen aus der Rechnung, statt nur
+        # die Hälfte. Baseline: 5 volle Arbeitstage (Mo-Fr), je 8h Ist
+        # (Tagdienst, 9h Spanne - 1h Pause) gegen 7*8.4h=58.8h Soll ->
+        # saldo=-18.8h (siehe test_saldo_after_full_workweek).
+        for d in (date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7), date(2026, 1, 8), date(2026, 1, 9)):
+            self._assign(self.employee, d)
+        baseline = self.employee.time_account_summary(date(2026, 1, 9))
+        self.assertEqual(baseline["saldo_hours"], -18.8)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 1, 5),
+            end_date=date(2026, 1, 5),
+            type=self.vacation_type,
+            day_portion=Absence.DayPortion.AFTERNOON,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.time_account_summary(date(2026, 1, 9))
+        # Soll steigt um die halbe (statt volle) Tagessoll-Excusierung:
+        # (7 - 0.5 Ferientag) * 8.4h = 54.6h statt 58.8h -> +4.2h. Ist sinkt
+        # um die halbe (statt volle) Schichtdauer des 5.1.: 8h * 0.5 = 4h
+        # weniger (40h -> 36h). Saldo: 36 - 54.6 = -18.6h (nicht -18.0h, wie
+        # es bei einem fälschlich als GANZ behandelten Tag wäre).
+        self.assertEqual(summary["saldo_hours"], -18.6)
+        # Die Zuweisung des 5.1. bleibt bestehen (Dienst wird bei einer
+        # Halbtags-Absenz nicht entfernt) -- nur ihre Stunden werden
+        # anteilig gewichtet, nicht die Zuweisung selbst ausgeschlossen.
+        self.assertTrue(ShiftAssignment.objects.filter(employee=self.employee, date=date(2026, 1, 5)).exists())
+
+    def test_plan_saldo_halves_future_assignment_hours_on_half_day_absence_day(self):
+        # Spiegelt test_saldo_half_day_absence_excuses_only_half_the_day für
+        # den künftigen Zweig (plan_saldo_hours): eine Halbtags-Absenz
+        # halbiert die geplanten Stunden der Zuweisung, statt sie ganz
+        # auszuschliessen (siehe test_plan_saldo_excludes_future_assignment_
+        # on_approved_absence_day für den GANZTAGS-Fall, der weiterhin voll
+        # ausschliesst).
+        self._assign(self.employee, date(2026, 6, 15))  # Mo, künftig, 8h netto
+        with_assignment_only = self.employee.time_account_summary(date(2026, 1, 2))
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 15),
+            end_date=date(2026, 6, 15),
+            type=self.vacation_type,
+            day_portion=Absence.DayPortion.MORNING,
+            status=Absence.Status.APPROVED,
+        )
+        with_half_day_absence = self.employee.time_account_summary(date(2026, 1, 2))
+        # Nur die Hälfte der 8h-Schicht (4h) fällt aus dem geplanten Ist weg,
+        # nicht die vollen 8h.
+        self.assertEqual(
+            with_half_day_absence["plan_saldo_hours"], round(with_assignment_only["plan_saldo_hours"] - 4, 2)
+        )
+
     def test_saldo_pending_absence_does_not_reduce_soll(self):
         # Nur GENEHMIGTE Absenzen sind Soll-neutral -- eine offene Anfrage
         # darf den Saldo nicht schon beeinflussen.

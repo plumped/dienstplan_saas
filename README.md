@@ -2014,6 +2014,39 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       noch die Absenz). Regressionstest mit echtem Split (Therapie Vormittag + Nachmittag): "Oben"
       + × löscht weiterhin nur den Vormittag-Dienst, Nachmittag-Dienst bleibt unangetastet.
 
+28. ✅ **Bugfix: Stundensaldo zog bei einer Halbtags-Absenz den vollen statt den halben Tagessoll ab
+    (2026-08)**. Nutzer-Feedback (anhand eines konkreten Beispiels, David Brunner 42h/Woche, 25
+    Ferientage, Frühdienst 07:00–12:00 & 13:00–16:24 das ganze Jahr eingeplant): "was passiert,
+    wenn ich einen halben Tag Ferien eingebe -- stimmt die Rechnung dann noch?". Antwort: nein.
+    `vacation_balance()` (Ferientage-Zähler) zählt eine Halbtags-Absenz seit Punkt 25 korrekt als
+    0.5 Tage, aber `time_account_summary()`/`monthly_summary()` (Stundensaldo, Basis für
+    `plan_saldo_hours` und den Lohnlauf) nutzten dafür die separate `_approved_absence_dates()` --
+    eine reine Datumsmenge ohne `day_portion`-Bezug. Jede Absenz, auch eine Halbtags-Absenz, machte
+    ein Datum komplett "arbeitsfrei": weder Soll noch die (weiterhin bestehende, siehe Punkt 24)
+    Dienst-Zuweisung dieses Tages zählten, statt nur die Hälfte. Empirisch nachgewiesen: ein halber
+    Ferientag senkte `plan_saldo_hours` um die vollen 8.4h (Tagessoll) statt um 4.2h.
+    - `scheduling/models.py`: `_approved_absence_dates()`/`_approved_absence_workdays()` ersetzt
+      durch `_approved_absence_day_weights()` -- liefert `Datum -> Anteil` (1.0 ganztags, 0.5
+      halbtags) statt einer reinen Datumsmenge. `time_account_summary()` (beide Zweige,
+      vergangen UND geplant/künftig) und `monthly_summary()` nutzen diese Gewichtung jetzt sowohl
+      für die Soll-Excusierung (`excused_units` als gewichtete Summe statt `len(set)`) als auch für
+      den Ist-Ausschluss: eine GANZTÄGIGE Absenz schliesst eine Zuweisung weiterhin komplett aus,
+      eine HALBTAGS-Absenz schliesst nur eine bereits erfasste `TimeRecord` NICHT aus (die ist
+      schon korrekt), sondern gewichtet nur die mangels Zeiterfassung geschätzten Plan-Stunden
+      (`ShiftAssignment._shift_hours()`) zur Hälfte.
+    - Neue Tests `test_saldo_half_day_absence_excuses_only_half_the_day` (historischer Zweig: Soll
+      steigt um 4.2h, Ist sinkt um 4h relativ zu einer Woche ohne Absenz, Saldo -18.6h statt
+      fälschlich -18.0h wie bei einem ganzen Tag) und
+      `test_plan_saldo_halves_future_assignment_hours_on_half_day_absence_day` (künftiger Zweig:
+      `plan_saldo_hours` sinkt um genau die Hälfte der Schichtstunden). Bestehende Tests für den
+      GANZTAGS-Fall (`test_saldo_approved_absence_is_soll_neutral`,
+      `test_plan_saldo_excludes_future_assignment_on_approved_absence_day`) bleiben unverändert
+      grün -- volle Test-Suite (356 Tests) grün.
+    - Empirisch mit den gepushten Praxisdaten (David Brunner) nachverifiziert: ein einzelner
+      halber Ferientag senkt `plan_saldo_hours` jetzt exakt um 4.2h (vorher 8.4h), ein ganzer Tag
+      weiterhin um 8.4h -- nach 25 vollständig eingetragenen Ferientagen (in beliebiger
+      Ganz-/Halbtags-Kombination) konvergiert der Saldo korrekt auf 0.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

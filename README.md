@@ -248,6 +248,24 @@ fachliche Kernanforderung (ohne die ist das Produkt für Gesundheitsbetriebe nic
 einsetzbar), Blöcke 2–5 sind nötig, damit eine Praxis das Produkt tatsächlich selbständig
 nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
 
+**Statusübersicht** (Orientierung vor dem Lesen der Details unten — jeder Block ist
+chronologisch gewachsen, ✅-Einträge und offene Punkte stehen daher an der Stelle, an der sie
+entstanden sind, nicht neu sortiert nach Status):
+
+| Block | Thema | Status | Aktuell offen |
+|---|---|---|---|
+| 1 | Schweizer Arbeitsgesetz (ArG) | 13 von 17 Punkten erledigt | Mutterschutz (15), Lohnfortzahlung Krankheit (16), gelegentliche Nachtarbeit 25 % (17) — **aktueller Fokus**; Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 |
+| 2 | Kernfunktionen Praxisalltag | 26 von 31 Punkten erledigt | Export PDF/Excel (5), Automatisierte Planung (19), Fairness-Punktesystem (20), Lohnart-Mapping (30), CSV-/API-Export (31) |
+| 3 | Onboarding & Self-Signup | Konzept steht, nichts umgesetzt | kompletter Block |
+| 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
+| 5 | Datenschutz (revDSG) & Rechtliches | nichts umgesetzt | kompletter Block (AVV, Löschkonzept, Betroffenenrechte) |
+| 6 | Abrechnung (nur falls kommerziell verkauft) | nichts umgesetzt | Zahlungsanbieter, Trial/Limits |
+| 7 | Zeitmanagement | ✅ vollständig umgesetzt | — |
+
+Reihenfolge aktuell: Block 1 fertigstellen (funktionale Vollständigkeit vor Produktionsreife,
+Nutzerentscheid 2026-08), danach Block 2 Punkt 30/31 (Lohn-Export). Block 4/5 (Produktion) bewusst
+zurückgestellt, bis die Funktionalität steht.
+
 ### 1. Schweizer Arbeitsgesetz (ArG) — Regel-Engine vervollständigen
 
 **Bereits umgesetzt** (`scheduling/models.py: ShiftAssignment`, `core/tests.py`,
@@ -289,12 +307,8 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
    Jahren jährlich) als `medical_exam_due`, ausgehend von `Employee.
    last_night_work_medical_exam_date`. Rein informativ wie `night_hours` selbst -- kein
    automatischer Eingriff ins Planblatt, kein Rechtsrat (die Bewilligungspflicht selbst kann die
-   App nicht prüfen, nur an sie erinnern). *Noch offen* (Compliance-Audit 2026-08): abgedeckt ist
-   nur die Zeitgutschrift für **regelmässige** Nachtarbeit (Art. 17b Abs. 1 ArG). Wer **nicht**
-   regelmässig Nachtarbeit leistet (unter `night_work_regular_threshold_nights`), hat trotzdem
-   Anspruch auf einen **25% Lohnzuschlag** statt Zeitgutschrift (Art. 17b Abs. 2 ArG) -- dafür
-   gibt es aktuell keine Berechnung, `night_work_summary()` liefert für den unregelmässigen Fall
-   nur `surcharge_hours: 0.0`.
+   App nicht prüfen, nur an sie erinnern). *Noch offen*: der 25%-Lohnzuschlag für **gelegentliche**
+   (nicht-regelmässige) Nachtarbeit fehlt noch -- siehe Punkt 17 unten.
 6. ✅ **Sonntagsarbeit** (Art. 19/27 ArG): wird pro Schicht als `is_sunday` erkannt (Gesundheits-
    betriebe sind von der Bewilligungspflicht ausgenommen). `Employee.weekly_hours_summary()` (API:
    `weekly-overtime`) liefert zusätzlich `sunday_hours`/`sunday_surcharge_hours` (Art. 19 Abs. 3
@@ -441,27 +455,72 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
     Lohnunterlagen (siehe Block 5.3) — beim Löschkonzept mitdenken.
 
 15. **Mutterschutz (Art. 35, 35a, 35b ArG + Verordnung über den Mutterschutz)** — komplett nicht
-    abgedeckt (Compliance-Audit 2026-08). Kein Datenfeld, keine Regel-Engine-Prüfung für
-    Beschäftigungsbeschränkungen bei Schwangerschaft/Stillzeit: u. a. Verbot von Nachtarbeit
-    8 Wochen vor bis 8 Wochen nach der Geburt (Art. 35a Abs. 3 ArG), Anspruch auf gleichwertige
-    Tagesarbeit bei Nachtarbeitsverbot, generelles Beschäftigungsverbot in den ersten 8 Wochen nach
-    der Niederkunft (Art. 35a Abs. 1 ArG), Freistellungsrecht bei Ablehnung eines zumutbaren
-    Ersatzangebots. Bei einer typischerweise frauenreichen Alten-/Pflegeheim-Belegschaft der
-    Bereich mit dem grössten ungedeckten Haftungsrisiko unter allen ArG-Lücken. Ansatz: analog zu
-    `Employee.birth_date`/`is_minor_on()` ein optionales, streng zugriffsbeschränktes Datum
-    (voraussichtlicher/tatsächlicher Geburtstermin) plus harte Blockierung von Nachtschichten in
-    `_check_youth_protection()`-ähnlicher Logik im relevanten Zeitraum — Datenschutz-Sensibilität
-    beachten (Block 5), Zugriff nur für die betroffene Person selbst + Admin, nicht für alle
-    Planer:innen sichtbar.
+    abgedeckt (Compliance-Audit 2026-08). Bei einer typischerweise frauenreichen Alten-/
+    Pflegeheim-Belegschaft der Bereich mit dem grössten ungedeckten Haftungsrisiko unter allen
+    ArG-Lücken. Zu regeln: Verbot von Nachtarbeit 8 Wochen vor bis 8 Wochen nach der Geburt
+    (Art. 35a Abs. 3 ArG), Anspruch auf gleichwertige Tagesarbeit statt Nachtschicht, generelles
+    Beschäftigungsverbot in den ersten 8 Wochen nach der Niederkunft (Art. 35a Abs. 1 ArG),
+    Freistellungsrecht bei Ablehnung eines zumutbaren Ersatzangebots.
+
+    **Implementierungsschritte:**
+    - Datenmodell: neues, optionales Feld `Employee.expected_birth_date` (analog `birth_date`).
+    - Berechtigungen zuerst klären: streng zugriffsbeschränkt (nur die betroffene Person selbst +
+      Admin lesen/schreiben, nicht Planer:innen allgemein) — neue Permission-Klasse analog
+      `OwnEmployeeRecordPermission`, bevor das Feld überhaupt in der API auftaucht.
+    - Berechnung: `Employee.is_maternity_protected_on(date)` (analog `is_minor_on()`) liefert den
+      Schutzstatus für ein Datum inkl. welche Einschränkung greift (nur Nachtarbeitsverbot vs.
+      volles Beschäftigungsverbot in den ersten 8 Wochen).
+    - Regel-Engine: neue `_check_maternity_protection()` in `ShiftAssignment.clean()`, hart
+      durchgesetzt analog `_check_youth_protection()`.
+    - Migration, Serializer-Feld (nur für berechtigte Rolle sichtbar), Tests (Modell +
+      Regel-Engine + Permission-Ausschluss für normale Planer:innen).
+    - Frontend: Eingabefeld in `EmployeeSettings.jsx` (rollenbeschränkt), Warnhinweis im Planblatt
+      analog zur Jugendschutz-Fehlermeldung.
 
 16. **Lohnfortzahlung bei Krankheit (Art. 324a OR)** — nicht abgedeckt (Compliance-Audit 2026-08).
     Absenzen vom Typ Krankheit werden korrekt als Soll-neutral erfasst
     (`Employee._approved_absence_day_weights()`/`time_account_summary()`), aber es gibt keine
-    Verfolgung der Anspruchsdauer nach Dienstjahren (z. B. Basler,
-    Berner oder Zürcher Skala — kantonal/betrieblich unterschiedlich üblich) oder einen Hinweis,
-    wenn der Anspruch für das laufende Dienstjahr erschöpft ist. Ausserhalb des ursprünglichen
-    Scopes „Dienstplanung“, aber Teil des Gesamtbilds „Krankheit korrekt abgebildet“, sobald die
-    App auch für Lohn-/Personalprozesse statt nur für die Planung herangezogen wird.
+    Verfolgung der Anspruchsdauer nach Dienstjahren (Basler/Berner/Zürcher Skala, kantonal
+    unterschiedlich zugeordnet) oder einen Hinweis, wenn der Anspruch erschöpft ist.
+
+    **Wichtiger Realitäts-Check vor der Umsetzung** (Diskussion 2026-08): viele Betriebe
+    versichern das über eine Krankentaggeldversicherung (typisch 80 % Lohn ab Tag 2–30
+    Wartefrist, bis 720 Tage) statt sich auf die gesetzliche Skala zu verlassen — dann ersetzt die
+    Police die Skala komplett. Das Modell muss **beide** Varianten abbilden können, sonst passt es
+    nur für einen Teil der Kundschaft.
+
+    **Implementierungsschritte:**
+    - Tenant-Konfiguration: `Tenant.sick_pay_model` (Auswahl `scale` / `daily_allowance_insurance`).
+      Bei `scale`: Skala-Zuordnung über das bereits vorhandene `Tenant.canton` (Zürcher/Berner/
+      Basler-Kantone). Bei `daily_allowance_insurance`: konfigurierbare Wartefrist in Tagen statt
+      Skala-Tabelle.
+    - Skala-Tabellen (Dienstjahr → Anspruchsdauer) als Python-Konstanten je Skala-Typ.
+    - Berechnung: neue Methode `Employee.sick_pay_summary(reference_date)` — Dienstjahr ab
+      `employment_start_date`, bereits bezogene Krankheitstage **im laufenden Dienstjahr**
+      kumuliert (nicht Kalenderjahr — mehrere Absenzen im selben Dienstjahr zählen zusammen),
+      verbleibender Anspruch, Warnung bei Erschöpfung.
+    - Rein informativ (wie die Nachtarbeit-Bewilligungswarnung) — blockiert keine Absenz.
+    - API-Endpoint + Serializer, Tests, Frontend-Warnhinweis im Abwesenheiten-Tab.
+
+17. **Gelegentliche Nachtarbeit — 25 % Lohnzuschlag (Art. 17b Abs. 2 ArG)** — nicht abgedeckt
+    (Compliance-Audit 2026-08). Abgedeckt ist bisher nur die Zeitgutschrift für **regelmässige**
+    Nachtarbeit (Art. 17b Abs. 1, siehe Punkt 5 oben). Wer die Regelmässigkeits-Schwelle
+    (`night_work_regular_threshold_nights`) nicht erreicht, hat trotzdem Anspruch auf einen
+    **25 % Lohnzuschlag** (Geld, keine Zeitgutschrift) auf die geleisteten Nachtstunden.
+
+    **Wichtige Einschränkung:** die App kennt keinen Stundenlohn/kein Gehalt (bewusst, siehe
+    "Grenzziehung Zeitmanagement vs. Lohnbuchhaltung" in Block 2, Punkt 30/31) — sie kann daher
+    keinen CHF-Betrag ausrechnen, nur **Stundenzahl + anzuwendenden Prozentsatz** liefern. Das ist
+    genau der Rohinput für die neue Lohnart-Export-Schnittstelle (Block 2, Punkt 30/31) — eine
+    dritte Zuschlagskategorie neben Nacht-Zeitgutschrift und Sonntagszuschlag.
+
+    **Implementierungsschritte:**
+    - Neues Tenant-Feld `occasional_night_work_surcharge_pct` (Default 25, analog
+      `night_work_surcharge_pct`).
+    - `Employee.night_work_summary()` erweitern: liefert zusätzlich `occasional_night_hours`
+      (>0 nur wenn `not is_regular`) und `occasional_night_surcharge_pct`.
+    - Serializer-Feld, Tests — insbesondere: regelmässig und gelegentlich schliessen sich
+      gegenseitig aus (nie beide gleichzeitig >0 für dieselbe Person/Jahr).
 
 ### 2. Fehlende Kernfunktionen für den Praxisalltag
 
@@ -2134,6 +2193,61 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       zeigt danach wieder nur den Frühdienst). Identisch für "Oben". Regressionstest: Ferien
       "Unten", Radiergummi in "Oben" (trifft die Dienst-Hälfte) -- löscht weiterhin korrekt den
       Dienst (`DELETE /api/shift-assignments/…`), Ferien bleibt bestehen.
+
+**Grenzziehung Zeitmanagement vs. Lohnbuchhaltung** (Diskussion 2026-08, Grundlage für Punkt 30/31
+unten): eine vollständige Schweizer Lohnabrechnung braucht neben den Stunden/Zuschlägen aus Block 1
+noch AHV/IV/EO (5.3 % AN-Anteil), ALV (1.1 % bis CHF 148'200 Jahreslohn), BVG
+(Koordinationsabzug CHF 26'460, altersgestaffelt), Quellensteuer, Familienzulagen — ein eigenes,
+hochreguliertes Feld mit Zertifizierungspflicht (Swissdec/ELM für die Meldung an Behörden/
+Versicherer). Das baut diese App bewusst **nicht** nach. Ihr Job endet dort, wo die
+Sozialabzüge anfangen: sie liefert **Stunden pro Zuschlagskategorie** sauber und exportierbar,
+eine zertifizierte Lohnsoftware (Abacus, Sage, SwissSalary, Bexio …) übernimmt den Rest. Für die
+Übergabe an ein Lohnsystem gibt es keinen einzigen verpflichtenden CH-Standard (anders als ELM für
+die Behörden-Meldung) — üblich sind CSV-/Excel-Importe mit frei vergebenen "Lohnart"-Codes pro
+Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
+
+30. **Lohnart-Mapping** (noch nicht umgesetzt) — konfigurierbare Zuordnung unserer intern
+    berechneten Zuschlagskategorien zu den frei vergebenen Lohnart-Codes des jeweiligen
+    Kunden-Lohnsystems. Ohne diese Zuordnung ist jeder Export für den nächsten Kunden nutzlos, da
+    z. B. "Nachtzulage" bei jedem Lohnsystem eine andere Lohnart-Nummer hat.
+
+    **Kategorien** (ergeben sich aus den bereits vorhandenen bzw. in Punkt 15–17 geplanten
+    Berechnungen): Normalstunden, Überstunden (Art. 321c OR, über Vertragssoll), Nacht-
+    Zeitgutschrift (Art. 17b Abs. 1, regelmässig), Nacht-Lohnzuschlag (Art. 17b Abs. 2,
+    gelegentlich, Punkt 17), Sonntagszuschlag (Art. 19 Abs. 3), Ferientage, Krankheitstage,
+    sonstige Absenztage, Feiertage.
+
+    **Implementierungsschritte:**
+    - Neues Modell `PayrollCategoryMapping` (tenant-gescoped): `category` (feste Auswahl aus der
+      Liste oben), `payroll_code` (Freitext, vom Kunden vergeben), `payroll_label` (Freitext, nur
+      Anzeige), `is_active`. Leer/inaktiv gelassene Kategorien werden beim Export ausgelassen
+      (z. B. falls ein Kunde Sonntagszuschlag bereits anders löst).
+    - API: `PayrollCategoryMappingViewSet`, admin-only (`IsTenantAdmin`, gleiches Muster wie die
+      übrige Tenant-Konfiguration, Block 2 Punkt 14).
+    - Migration, Tests.
+    - Frontend: neues 6. Settings-Modul "Lohnarten" — Tabelle mit fester linker Spalte (unsere
+      Kategorien inkl. Tooltip-Erklärung) und Eingabefeldern rechts (Code + Bezeichnung), damit die
+      Zuordnung ohne Vorwissen über unser Datenmodell intuitiv ausfüllbar ist.
+
+31. **CSV-Export + API-Endpoint für Lohn-Rohdaten** (noch nicht umgesetzt) — baut auf Punkt 30 auf.
+    Liefert pro Mitarbeiter und Abrechnungsperiode die bereits vorhandenen Rohdaten
+    (`monthly_summary()`, `night_work_summary()` inkl. der neuen `occasional_night_hours` aus
+    Punkt 17, `vacation_balance()`-Differenz des Monats), übersetzt über das Mapping aus Punkt 30
+    in (Lohnart-Code, Bezeichnung, Menge, Einheit).
+
+    **Implementierungsschritte:**
+    - Neuer Endpoint `GET /api/payroll-export/?month=YYYY-MM` (tenant-weit, admin-only,
+      `IsTenantManager`) — JSON-Response, pro Mitarbeiter eine Liste von Zeilen
+      `{payroll_code, payroll_label, amount, unit}`.
+    - Kategorien ohne konfiguriertes Mapping (Punkt 30) werden nicht stillschweigend
+      ausgelassen, sondern als separate Warnliste im Response mitgeliefert ("Nachtzulage: kein
+      Lohnart-Code konfiguriert") — sonst fällt eine vergessene Zuordnung nicht auf.
+    - CSV-Variante desselben Endpoints (`?format=csv` oder eigener Pfad
+      `/api/payroll-export/csv/`), `Content-Disposition: attachment`, Spalten: Personalnummer/
+      Name, Lohnart-Code, Bezeichnung, Menge, Einheit, Periode.
+    - Tests (Serializer/View, insbesondere die Warnliste bei fehlendem Mapping).
+    - Frontend: "Export"-Button im neuen "Lohnarten"-Settings-Modul (Punkt 30), löst den
+      CSV-Download aus (erster CSV-Download-Fluss im Frontend, kein bestehendes Muster dafür).
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

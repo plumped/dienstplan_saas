@@ -452,10 +452,22 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
         if (slot0) await assignTemplate(date, null, slot0.id);
         if (slot1) await assignTemplate(date, null, slot1.id);
       } else if (placementMode === "top" || placementMode === "bottom") {
+        // Nutzer-Feedback (2026-08): bei einem echten Split löscht der
+        // Radiergummi gezielt nur den Dienst der Zielhälfte. Ein einzelner,
+        // durchgehender Dienst (kein echter Split) liess sich in Oben/Unten
+        // bisher NICHT löschen (stiller No-Op) -- verwirrend, wenn dort
+        // z. B. neben einer Halbtags-Absenz noch ein durchgehender Dienst
+        // steht. Da sich ein einzelner Dienst nicht halbieren lässt (kein
+        // day_portion wie bei Absence), wird er komplett gelöscht,
+        // unabhängig ob "Oben" oder "Unten" geklickt wurde (beide zielen auf
+        // denselben, einzigen Datensatz).
         const isSplit = Boolean(slot0) && Boolean(slot1);
-        if (!isSplit) return;
-        const target = placementMode === "top" ? slot0 : slot1;
-        await assignTemplate(date, null, target.id);
+        if (isSplit) {
+          const target = placementMode === "top" ? slot0 : slot1;
+          await assignTemplate(date, null, target.id);
+        } else if (slot0) {
+          await assignTemplate(date, null, slot0.id);
+        }
       }
     }
   }

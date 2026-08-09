@@ -710,13 +710,24 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
         if (slot0) await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
         if (slot1) await handleAssign(employeeId, date, null, rowNodeId, slot1.id);
       } else if (placementMode === "top" || placementMode === "bottom") {
-        // Analog oben: der Radiergummi in Oben/Unten-Modus löscht nur einen
-        // Dienst, der Teil eines ECHTEN Splits ist -- ein einzelner,
-        // durchgehender Dienst wird nur von "Alles" gelöscht.
+        // Analog oben: bei einem ECHTEN Split (zwei eigenständige Dienste)
+        // löscht der Radiergummi gezielt nur den Dienst in der Zielhälfte.
+        // Nutzer-Feedback (2026-08): ein einzelner, durchgehender Dienst
+        // liess sich bisher in Oben/Unten NICHT löschen (stiller No-Op,
+        // `if (!isSplit) return`) -- verwirrend, wenn dort z. B. neben einer
+        // Halbtags-Absenz noch ein durchgehender Dienst steht und man genau
+        // diesen per Klick entfernen will. Ein einzelner Dienst lässt sich
+        // aber nicht halbieren (kein day_portion-Feld wie bei Absence) -- er
+        // wird deshalb komplett gelöscht, unabhängig davon ob "Oben" oder
+        // "Unten" geklickt wurde (beide Klicks zielen ja auf denselben,
+        // einzigen Datensatz).
         const isSplit = Boolean(slot0) && Boolean(slot1);
-        if (!isSplit) return;
-        const target = placementMode === "top" ? slot0 : slot1;
-        await handleAssign(employeeId, date, null, rowNodeId, target.id);
+        if (isSplit) {
+          const target = placementMode === "top" ? slot0 : slot1;
+          await handleAssign(employeeId, date, null, rowNodeId, target.id);
+        } else if (slot0) {
+          await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
+        }
       }
     }
   }

@@ -167,6 +167,37 @@ class TimeRecordPermission(BasePermission):
         return obj.status == "submitted"  # TimeRecord.Status.SUBMITTED
 
 
+class PregnancyPermission(BasePermission):
+    """
+    Mutterschutz (Block 1.15): strenger als OwnEmployeeRecordPermission --
+    dort dürfen alle Admin/Planer-Rollen lesen UND schreiben, hier nur Admin
+    (nicht Planer, nicht HR) sowie die betroffene Mitarbeiterin selbst für
+    ihre eigenen Einträge. Sensibelste Kategorie personenbezogener Daten in
+    der App (Schwangerschaft), deshalb bewusst NICHT wie sonst in dieser
+    Datei üblich für alle vier Rollen lesbar (siehe Modul-Docstring oben).
+    Gilt für has_permission UND has_object_permission gleichermassen --
+    anders als bei den übrigen Klassen hier reicht Objekt-Ebene allein nicht,
+    weil auch die Liste anderer Mitarbeiterinnen für Planer/HR unsichtbar
+    bleiben muss (siehe PregnancyViewSet.get_queryset für die
+    Listen-Filterung -- diese Klasse regelt nur den Einzelzugriff).
+    """
+
+    def has_permission(self, request, view):
+        membership = getattr(request, "membership", None)
+        if not membership:
+            return False
+        if membership.role == Membership.Role.ADMIN:
+            return True
+        return bool(getattr(request, "employee_profile", None))
+
+    def has_object_permission(self, request, view, obj):
+        membership = getattr(request, "membership", None)
+        if membership and membership.role == Membership.Role.ADMIN:
+            return True
+        employee_profile = getattr(request, "employee_profile", None)
+        return bool(employee_profile) and obj.employee_id == employee_profile.id
+
+
 class ShiftPreferencePermission(BasePermission):
     """
     Wunschfrei/Wunschdienst (Block 2.13): reine Selbstauskunft ohne

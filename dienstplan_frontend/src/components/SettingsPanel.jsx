@@ -129,7 +129,7 @@ export default function SettingsPanel({ me, onError }) {
 
       {module === "templates" && <TimeTemplateSettings nodes={nodes} skills={skills} onError={onError} />}
       {module === "absenceTypes" && <AbsenceTypeSettings onError={onError} />}
-      {module === "employees" && <EmployeeSettings nodes={nodes} skills={skills} onError={onError} />}
+      {module === "employees" && <EmployeeSettings nodes={nodes} skills={skills} me={me} onError={onError} />}
       {module === "nodes" && (
         <NodeSettings
           nodes={nodes}

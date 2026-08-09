@@ -8,6 +8,7 @@ from .models import (
     Employee,
     Employment,
     Node,
+    Pregnancy,
     ShiftAssignment,
     ShiftPreference,
     ShiftTradeRequest,
@@ -442,6 +443,12 @@ class AbsenceSerializer(serializers.ModelSerializer):
             instance.status = Absence.Status.APPROVED if is_manager else Absence.Status.PENDING
         instance.clean()
         return attrs
+
+
+class PregnancySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Pregnancy
+        fields = ["id", "employee", "expected_birth_date", "actual_birth_date", "notes"]
 
 
 class ShiftPreferenceSerializer(serializers.ModelSerializer):

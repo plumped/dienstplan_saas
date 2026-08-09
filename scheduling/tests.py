@@ -20,6 +20,7 @@ from .models import (
     Employee,
     Employment,
     Node,
+    Pregnancy,
     ShiftAssignment,
     ShiftPreference,
     ShiftTradeRequest,
@@ -5122,3 +5123,238 @@ class UnderstaffedShiftsTenantIsolationTests(TwoTenantFixtureMixin, APITestCase)
         response = self.client.get("/api/understaffed-shifts/")
         self.assertGreater(len(response.data["shortfalls"]), 0)
         self.assertTrue(all(e["node_name"] == "Station A" for e in response.data["shortfalls"]))
+
+
+class PregnancyModelTests(TestCase):
+    """Mutterschutz (Art. 35a ArG, Block 1.15): Pregnancy.protection_status_on()."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Petra", last_name="P", employment_pct=100
+        )
+        self.anchor = date(2026, 10, 1)  # Termin fuer die meisten Tests
+        self.pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant, employee=self.employee, expected_birth_date=self.anchor
+        )
+
+    def test_before_night_ban_window_is_unprotected(self):
+        self.assertIsNone(self.pregnancy.protection_status_on(self.anchor - timedelta(weeks=9)))
+
+    def test_night_ban_window(self):
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor - timedelta(weeks=4)), "night_ban")
+        # Randtag: exakt 8 Wochen vor dem Termin ist bereits im Fenster.
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor - timedelta(weeks=8)), "night_ban")
+
+    def test_full_ban_window(self):
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor), "full_ban")
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor + timedelta(weeks=7)), "full_ban")
+
+    def test_consent_required_window(self):
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor + timedelta(weeks=9)), "consent_required")
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor + timedelta(weeks=15)), "consent_required")
+
+    def test_after_all_windows_is_unprotected(self):
+        self.assertIsNone(self.pregnancy.protection_status_on(self.anchor + timedelta(weeks=16)))
+        self.assertIsNone(self.pregnancy.protection_status_on(self.anchor + timedelta(weeks=20)))
+
+    def test_actual_birth_date_overrides_expected_as_anchor(self):
+        # Termin war der 1.10., tatsaechliche Geburt zwei Wochen frueher --
+        # am urspruenglichen Termin (jetzt in Woche 3 nach der echten Geburt)
+        # gilt bereits das Beschaeftigungsverbot, nicht mehr das Nachtarbeitsverbot.
+        self.pregnancy.actual_birth_date = self.anchor - timedelta(weeks=2)
+        self.pregnancy.save()
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor), "full_ban")
+
+    def test_is_maternity_protected_on_finds_matching_pregnancy_among_several(self):
+        later_anchor = self.anchor + timedelta(days=700)  # zweite, unabhaengige Schwangerschaft
+        Pregnancy.objects.create(tenant=self.tenant, employee=self.employee, expected_birth_date=later_anchor)
+        self.assertEqual(self.employee.is_maternity_protected_on(self.anchor), "full_ban")
+        self.assertEqual(self.employee.is_maternity_protected_on(later_anchor), "full_ban")
+        self.assertIsNone(self.employee.is_maternity_protected_on(self.anchor + timedelta(weeks=20)))
+
+    def test_employee_without_pregnancy_is_unprotected(self):
+        other = Employee.objects.create(tenant=self.tenant, first_name="Nora", last_name="N", employment_pct=100)
+        self.assertIsNone(other.is_maternity_protected_on(self.anchor))
+
+
+class MaternityProtectionRuleEngineTests(TestCase):
+    """ShiftAssignment.clean(): Mutterschutz hart durchgesetzt (Art. 35a ArG, Block 1.15)."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Petra", last_name="P", employment_pct=100
+        )
+        self.day_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+        self.night_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Nachtdienst",
+            start_time=time(20, 0),
+            end_time=time(8, 0),
+            break_minutes=60,
+        )
+        self.anchor = date(2026, 10, 1)
+        self.pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant, employee=self.employee, expected_birth_date=self.anchor
+        )
+
+    def test_full_ban_blocks_any_assignment(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=self.anchor + timedelta(weeks=2),
+            template=self.day_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_consent_required_window_blocks_assignment(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=self.anchor + timedelta(weeks=10),
+            template=self.day_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_night_ban_blocks_night_shift(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=self.anchor - timedelta(weeks=4),
+            template=self.night_template,  # 20:00-08:00 -- ueberlappt das Nachtfenster
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_night_ban_does_not_block_day_shift(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=self.anchor - timedelta(weeks=4),
+            template=self.day_template,  # 08:00-16:00 -- beruehrt 20:00-06:00 nicht
+        )
+        assignment.clean()  # keine Exception
+
+    def test_outside_any_window_is_unaffected(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=self.anchor + timedelta(weeks=20),
+            template=self.night_template,
+        )
+        assignment.clean()  # keine Exception -- ausserhalb aller Mutterschutz-Fenster
+
+
+class PregnancyPermissionAPITests(APITestCase):
+    """
+    Mutterschutz (Block 1.15): PregnancyPermission + PregnancyViewSet.get_queryset() --
+    strenger als sonst in der App ueblich (core.permissions.PregnancyPermission-Docstring):
+    nur Admin und die betroffene Mitarbeiterin selbst duerfen lesen/schreiben, nicht Planer/HR.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+        self.hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
+        Membership.objects.create(user=self.hr_user, tenant=self.tenant, role=Membership.Role.HR)
+
+        self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+        self.bob_user = User.objects.create_user(username="bob", password="pw-not-real-123!")
+        Membership.objects.create(user=self.bob_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.bob = Employee.objects.create(
+            tenant=self.tenant, user=self.bob_user, first_name="Bob", last_name="B", employment_pct=100
+        )
+
+        self.alice_pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant, employee=self.alice, expected_birth_date=date(2026, 10, 1)
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_sees_all_pregnancies(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/pregnancies/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_alice_sees_only_her_own_pregnancy(self):
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/pregnancies/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["results"][0]["employee"], self.alice.id)
+
+    def test_bob_sees_no_pregnancies(self):
+        self.auth_as(self.bob_user)
+        response = self.client.get("/api/pregnancies/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["results"], [])
+
+    def test_planner_without_employee_profile_is_forbidden(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/pregnancies/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_hr_without_employee_profile_is_forbidden(self):
+        self.auth_as(self.hr_user)
+        response = self.client.get("/api/pregnancies/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_alice_can_create_her_own_pregnancy(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/pregnancies/", {"employee": self.alice.id, "expected_birth_date": "2027-01-15"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_alice_cannot_create_pregnancy_for_bob(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/pregnancies/", {"employee": self.bob.id, "expected_birth_date": "2027-01-15"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_create_pregnancy_for_bob(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/pregnancies/", {"employee": self.bob.id, "expected_birth_date": "2027-01-15"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_alice_cannot_access_bobs_pregnancy(self):
+        bob_pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant, employee=self.bob, expected_birth_date=date(2027, 2, 1)
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.patch(f"/api/pregnancies/{bob_pregnancy.id}/", {"notes": "x"})
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)

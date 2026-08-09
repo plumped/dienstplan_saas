@@ -10,6 +10,7 @@ from .models import (
     Employee,
     Employment,
     Node,
+    Pregnancy,
     ShiftAssignment,
     ShiftPreference,
     ShiftTradeRequest,
@@ -95,6 +96,13 @@ class AbsenceAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["employee", "type", "start_date", "end_date", "day_portion", "tenant"]
     list_filter = ["tenant", "type", "day_portion"]
     date_hierarchy = "start_date"
+
+
+@admin.register(Pregnancy)
+class PregnancyAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
+    list_display = ["employee", "expected_birth_date", "actual_birth_date", "tenant"]
+    list_filter = ["tenant"]
+    date_hierarchy = "expected_birth_date"
 
 
 @admin.register(ShiftPreference)

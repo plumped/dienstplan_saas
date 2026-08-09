@@ -5,6 +5,7 @@ from .views import (
     AbsenceViewSet,
     EmployeeViewSet,
     NodeViewSet,
+    PregnancyViewSet,
     ShiftAssignmentViewSet,
     ShiftPreferenceViewSet,
     ShiftTradeRequestViewSet,
@@ -21,6 +22,7 @@ router.register("time-templates", TimeTemplateViewSet, basename="timetemplate")
 router.register("absence-types", AbsenceTypeViewSet, basename="absencetype")
 router.register("shift-assignments", ShiftAssignmentViewSet, basename="shiftassignment")
 router.register("absences", AbsenceViewSet, basename="absence")
+router.register("pregnancies", PregnancyViewSet, basename="pregnancy")
 router.register("shift-preferences", ShiftPreferenceViewSet, basename="shiftpreference")
 router.register("shift-trade-requests", ShiftTradeRequestViewSet, basename="shifttraderequest")
 router.register("time-records", TimeRecordViewSet, basename="timerecord")

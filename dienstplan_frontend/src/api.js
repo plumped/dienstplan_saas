@@ -228,6 +228,17 @@ export const api = {
   rejectAbsence: (id) =>
     request(`/absences/${id}/reject/`, { method: "POST", affectsBalance: true, affectsTasks: true }),
 
+  // Mutterschutz (Block 1.15): eigenes Ereignis-Modell (mehrere
+  // Schwangerschaften pro Mitarbeiterin möglich) -- anders als bei den
+  // übrigen Listen hier ist die Sichtbarkeit schon serverseitig
+  // eingeschränkt (Admin sieht alle, sonst nur die eigenen), das Frontend
+  // muss dafür nichts extra filtern.
+  getPregnancies: (employeeId) =>
+    requestAllPages(employeeId ? `/pregnancies/?employee=${employeeId}` : "/pregnancies/"),
+  createPregnancy: (payload) => request("/pregnancies/", { method: "POST", body: payload }),
+  updatePregnancy: (id, payload) => request(`/pregnancies/${id}/`, { method: "PATCH", body: payload }),
+  deletePregnancy: (id) => request(`/pregnancies/${id}/`, { method: "DELETE" }),
+
   getShiftTradeRequests: () => requestAllPages("/shift-trade-requests/"),
   createShiftTradeRequest: (payload) =>
     request("/shift-trade-requests/", { method: "POST", body: payload, affectsTasks: true }),

@@ -18,6 +18,12 @@ from core.models import TenantScopedModel
 NIGHT_WORK_START = time(23, 0)
 NIGHT_WORK_END = time(6, 0)
 
+# Mutterschutz (Art. 35a Abs. 4 ArG): eigene, WEITER gefasste Nachtdefinition
+# als die allgemeine (20:00-06:00 statt 23:00-06:00) -- gilt nur für die
+# Nachtarbeitsverbot-Prüfung bei Schwangeren, siehe
+# ShiftAssignment._maternity_night_hours()/_check_maternity_protection().
+MATERNITY_NIGHT_BAN_START = time(20, 0)
+
 # Pausenmindestdauer nach Art. 15 ArG, gestaffelt nach Netto-Arbeitszeit
 # (Arbeitszeit *ohne* Pause) an einem Tag. Absteigend sortiert, damit der
 # erste zutreffende Schwellenwert in _required_break_minutes() gewinnt.
@@ -207,6 +213,21 @@ class Employee(TenantScopedModel):
         """True, wenn der Mitarbeiter am reference_date unter 18 Jahre alt ist."""
         age = self._age_on(reference_date)
         return age is not None and age < 18
+
+    def is_maternity_protected_on(self, reference_date):
+        """
+        Mutterschutz-Status (None/"night_ban"/"full_ban"/"consent_required")
+        an reference_date, über alle erfassten Pregnancy-Fälle hinweg (analog
+        is_minor_on(), aber mit differenziertem Rückgabewert statt nur
+        True/False, weil die drei Fristen aus Art. 35a ArG unterschiedlich
+        hart durchgesetzt werden -- siehe Pregnancy.protection_status_on()
+        und ShiftAssignment._check_maternity_protection()).
+        """
+        for pregnancy in self.pregnancies.all():
+            status = pregnancy.protection_status_on(reference_date)
+            if status:
+                return status
+        return None
 
     def weekly_hours_summary(self, reference_date):
         """
@@ -761,6 +782,77 @@ class Employee(TenantScopedModel):
         }
 
 
+class Pregnancy(TenantScopedModel):
+    """
+    Mutterschutz (Art. 35, 35a, 35b ArG + Mutterschutzverordnung, MVP-Fahrplan
+    Block 1.15). Eigenes Ereignis-Modell statt eines einzelnen Feldes an
+    Employee (analog Absence): eine Mitarbeiterin kann über ihre Anstellung
+    hinweg mehrmals schwanger sein, jede Schwangerschaft hat ihr eigenes
+    Schutzfenster (Diskussion 2026-08). `expected_birth_date` wird bei
+    Bekanntgabe erfasst, `actual_birth_date` erst nachträglich -- die ab der
+    Niederkunft gerechneten Fristen (Art. 35a Abs. 3 ArG) rechnen ab dem
+    EFFEKTIVEN Datum, nicht ab dem Termin, deshalb bleibt der ursprüngliche
+    Termin bei einer Korrektur erhalten statt überschrieben zu werden. Siehe
+    Employee.is_maternity_protected_on() für die Auswertung.
+    """
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="pregnancies")
+    expected_birth_date = models.DateField(help_text="Voraussichtlicher Geburtstermin, bei Bekanntgabe erfasst.")
+    actual_birth_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Tatsächliches Geburtsdatum, sobald bekannt -- korrigiert die ab der Niederkunft "
+        "gerechneten Schutzfristen (Art. 35a Abs. 3 ArG). Leer lassen, solange die Geburt noch "
+        "aussteht; expected_birth_date wird bis dahin als Schätzung verwendet.",
+    )
+    notes = models.CharField(max_length=200, blank=True)
+
+    history = HistoricalRecords()
+
+    class Meta:
+        ordering = ["-expected_birth_date"]
+
+    def __str__(self):
+        return f"{self.employee} – Schwangerschaft (Termin {self.expected_birth_date})"
+
+    def _anchor_date(self):
+        """Effektive Niederkunft, falls bekannt, sonst der Termin als Schätzung."""
+        return self.actual_birth_date or self.expected_birth_date
+
+    def protection_status_on(self, reference_date):
+        """
+        Schutzstatus an reference_date, oder None ausserhalb jedes
+        Schutzfensters dieser Schwangerschaft. Rechnet die drei Fristen aus
+        Art. 35a ArG relativ zu _anchor_date() (vor der Geburt der Termin,
+        danach das effektive Datum):
+        - "night_ban" (Abs. 4): 8 Wochen vor der Niederkunft bis zur
+          Niederkunft, Verbot von Arbeit zwischen 20:00-06:00 (eigene, weiter
+          gefasste Definition als das allgemeine Nachtfenster 23:00-06:00 aus
+          Art. 16 ArG, siehe ShiftAssignment._maternity_night_hours()).
+        - "full_ban" (Abs. 3, 1. Halbsatz): 8 Wochen ab der Niederkunft,
+          generelles Beschäftigungsverbot.
+        - "consent_required" (Abs. 3, 2. Halbsatz): 9.-16. Woche nach der
+          Niederkunft, nur mit Einverständnis der Mitarbeiterin -- die App
+          bildet keine Einverständnis-Erfassung ab und blockiert diese Wochen
+          daher vorsorglich hart (analog zur vereinfachten
+          Jugendschutz-Prüfung, siehe ShiftAssignment._check_youth_protection()).
+        """
+        anchor = self._anchor_date()
+        if not anchor:
+            return None
+        night_ban_start = anchor - timedelta(weeks=8)
+        full_ban_end = anchor + timedelta(weeks=8)
+        consent_end = anchor + timedelta(weeks=16)
+
+        if night_ban_start <= reference_date < anchor:
+            return "night_ban"
+        if anchor <= reference_date < full_ban_end:
+            return "full_ban"
+        if full_ban_end <= reference_date < consent_end:
+            return "consent_required"
+        return None
+
+
 class Employment(TenantScopedModel):
     """
     Eine einzelne Anstellung: Person + Team-Node + Pensum + Rolle (README
@@ -1134,6 +1226,25 @@ class ShiftAssignment(TenantScopedModel):
                 total += (overlap_end - overlap_start).total_seconds() / 3600
         return total
 
+    @classmethod
+    def _maternity_night_hours(cls, date, template):
+        """
+        Wie _night_hours(), aber mit der weiter gefassten Nachtdefinition
+        20:00-06:00 aus Art. 35a Abs. 4 ArG (Mutterschutz) statt 23:00-06:00
+        (Art. 16 ArG, allgemeine Nachtarbeit) -- siehe
+        _check_maternity_protection().
+        """
+        start, end = cls._shift_datetimes(date, template)
+        total = 0.0
+        for offset in (-1, 0):
+            night_start = datetime.combine(date + timedelta(days=offset), MATERNITY_NIGHT_BAN_START)
+            night_end = night_start + timedelta(hours=10)  # 20:00 -> 06:00
+            overlap_start = max(start, night_start)
+            overlap_end = min(end, night_end)
+            if overlap_end > overlap_start:
+                total += (overlap_end - overlap_start).total_seconds() / 3600
+        return total
+
     @property
     def night_hours(self):
         """Informativ (Art. 17b ArG: Zeitgutschrift bei regelmässiger Nachtarbeit) -- blockiert nichts."""
@@ -1173,7 +1284,9 @@ class ShiftAssignment(TenantScopedModel):
         sind bewusst nicht Teil dieser Engine, sondern der geplanten
         Monatsauswertung (siehe README, MVP-Fahrplan). Für minderjährige
         Mitarbeitende (`Employee.birth_date`) gelten dagegen die strengeren,
-        hart durchgesetzten Regeln aus `_check_youth_protection()`.
+        hart durchgesetzten Regeln aus `_check_youth_protection()` -- ebenso
+        hart durchgesetzt ist der Mutterschutz (`_check_maternity_protection()`)
+        für Mitarbeiterinnen mit erfassten `Pregnancy`-Fällen.
         """
         if not (self.employee_id and self.template_id and self.date):
             return
@@ -1185,6 +1298,7 @@ class ShiftAssignment(TenantScopedModel):
         self._check_daily_span()
         self._check_weekly_rest_day()
         self._check_youth_protection()
+        self._check_maternity_protection()
         self._check_no_absence_conflict()
         self._check_node_has_no_children()
         self._check_no_overlap()
@@ -1465,6 +1579,37 @@ class ShiftAssignment(TenantScopedModel):
             raise ValidationError(
                 f"{self.employee} ist minderjährig: Sonntagsarbeit ist für unter 18-Jährige "
                 "grundsätzlich untersagt (ArGV 5)."
+            )
+
+    def _check_maternity_protection(self):
+        """
+        Mutterschutz (Art. 35a ArG, MVP-Fahrplan Block 1.15), hart durchgesetzt
+        analog _check_youth_protection() -- Grundlage ist Employee.
+        is_maternity_protected_on(), das über alle erfassten Pregnancy-Fälle
+        iteriert. Spezialitäten (category=SPECIAL) gelten anders als bei den
+        stunden-/zeitbezogenen Checks oben bewusst NICHT als Ausnahme (siehe
+        _check_rest_period()) -- ein Beschäftigungsverbot betrifft auch
+        Pikettdienst o. Ä., nicht nur reguläre Dienste.
+        """
+        status = self.employee.is_maternity_protected_on(self.date)
+        if not status:
+            return
+        if status == "full_ban":
+            raise ValidationError(
+                f"{self.employee} befindet sich im Mutterschutz: generelles Beschäftigungsverbot "
+                "in den ersten 8 Wochen nach der Niederkunft (Art. 35a Abs. 3 ArG)."
+            )
+        if status == "consent_required":
+            raise ValidationError(
+                f"{self.employee} befindet sich im Mutterschutz: Beschäftigung in der 9.–16. "
+                "Woche nach der Niederkunft ist nur mit Einverständnis der Mitarbeiterin zulässig "
+                "(Art. 35a Abs. 3 ArG) -- diese App erfasst kein Einverständnis und blockiert die "
+                "Zuweisung deshalb vorsorglich."
+            )
+        if status == "night_ban" and self._maternity_night_hours(self.date, self.template) > 0:
+            raise ValidationError(
+                f"{self.employee} ist schwanger (ab der 8. Woche vor dem Termin): Beschäftigung "
+                "zwischen 20:00 und 06:00 ist untersagt (Art. 35a Abs. 4 ArG)."
             )
 
     def _check_no_absence_conflict(self):

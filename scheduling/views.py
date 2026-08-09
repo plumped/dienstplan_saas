@@ -24,6 +24,7 @@ from core.permissions import (
     MANAGER_ROLES,
     IsTenantManager,
     OwnEmployeeRecordPermission,
+    PregnancyPermission,
     ShiftPreferencePermission,
     ShiftTradeRequestPermission,
     TimeRecordPermission,
@@ -36,6 +37,7 @@ from .models import (
     AbsenceType,
     Employee,
     Node,
+    Pregnancy,
     ShiftAssignment,
     ShiftPreference,
     ShiftTradeRequest,
@@ -51,6 +53,7 @@ from .serializers import (
     MonthlySummarySerializer,
     NightWorkSummarySerializer,
     NodeSerializer,
+    PregnancySerializer,
     ShiftAssignmentSerializer,
     ShiftPreferenceSerializer,
     ShiftTradeRequestSerializer,
@@ -579,6 +582,44 @@ class AbsenceViewSet(TenantScopedViewSet):
         absence.save(update_fields=["status"])
         notify_absence_decision(absence)
         return Response(self.get_serializer(absence).data)
+
+
+class PregnancyViewSet(TenantScopedViewSet):
+    """
+    Mutterschutz (Block 1.15). Anders als bei Absence/TimeRecord ist hier
+    schon das LESEN eingeschränkt (siehe PregnancyPermission-Docstring):
+    Admin sieht alles im Tenant, alle anderen Rollen nur ihre eigenen
+    Einträge (get_queryset) -- auch Planer/HR sehen also grundsätzlich
+    keine fremden Schwangerschaften, ausser sie sind selbst betroffen.
+    Unterstützt ?employee=<id> nur für Admin (für andere Rollen ist die
+    Liste ohnehin serverseitig auf die eigene Person begrenzt).
+    """
+
+    permission_classes = [permissions.IsAuthenticated, PregnancyPermission]
+    queryset = Pregnancy.all_objects.all()
+    serializer_class = PregnancySerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset().select_related("employee")
+        membership = self.request.membership
+        if membership and membership.role == Membership.Role.ADMIN:
+            employee = self.request.query_params.get("employee")
+            if employee:
+                qs = qs.filter(employee_id=employee)
+            return qs
+        employee_profile = self.request.employee_profile
+        if not employee_profile:
+            return qs.none()
+        return qs.filter(employee_id=employee_profile.id)
+
+    def perform_create(self, serializer):
+        membership = self.request.membership
+        if membership.role != Membership.Role.ADMIN:
+            target_employee = serializer.validated_data.get("employee")
+            employee_profile = self.request.employee_profile
+            if not employee_profile or target_employee.id != employee_profile.id:
+                raise PermissionDenied("Nur Admin darf Schwangerschaften für andere Mitarbeitende anlegen.")
+        serializer.save(tenant=self.request.tenant)
 
 
 class ShiftPreferenceViewSet(TenantScopedViewSet):

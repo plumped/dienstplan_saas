@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { isTenantAdmin } from "../roles.js";
 import BalanceBadge from "./BalanceBadge.jsx";
 import EmploymentEditor from "./EmploymentEditor.jsx";
+import PregnancyEditor from "./PregnancyEditor.jsx";
 
 function emptyForm() {
   return {
@@ -62,7 +64,7 @@ function selectedOptions(select) {
 // Erklärtext analog zum Django-Admin-help_text, Fehler direkt am Feld statt
 // nur im globalen Banner (error.fields aus api.js), Textfilter über der
 // Liste ab realistischer Praxisgrösse (30+ Mitarbeitende).
-export default function EmployeeSettings({ nodes, skills, onError }) {
+export default function EmployeeSettings({ nodes, skills, me, onError }) {
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
@@ -335,6 +337,19 @@ export default function EmployeeSettings({ nodes, skills, onError }) {
             {fieldError("last_night_work_medical_exam_date")}
           </label>
         </fieldset>
+
+        {isTenantAdmin(me) && editingId && (
+          <fieldset className="panel-form-group">
+            <h3>Mutterschutz (Art. 35a ArG, nur Admin sichtbar)</h3>
+            <p className="panel-hint">
+              Mehrere Einträge pro Person möglich (mehrere Schwangerschaften über die Anstellung
+              hinweg). Sensibelste Kategorie personenbezogener Daten in der App -- deshalb
+              unabhängig vom übrigen Formular sofort gespeichert und nur für Admin sowie die
+              betroffene Person selbst sichtbar, nicht für Planer:innen allgemein.
+            </p>
+            <PregnancyEditor employeeId={editingId} onError={onError} />
+          </fieldset>
+        )}
 
         <label className="checkbox-row">
           <input type="checkbox" checked={form.is_active} onChange={updateField("is_active")} />

@@ -254,7 +254,7 @@ entstanden sind, nicht neu sortiert nach Status):
 
 | Block | Thema | Status | Aktuell offen |
 |---|---|---|---|
-| 1 | Schweizer Arbeitsgesetz (ArG) | 13 von 17 Punkten erledigt | Mutterschutz (15), Lohnfortzahlung Krankheit (16), gelegentliche Nachtarbeit 25 % (17) — **aktueller Fokus**; Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 |
+| 1 | Schweizer Arbeitsgesetz (ArG) | 14 von 17 Punkten erledigt | Lohnfortzahlung Krankheit (16), gelegentliche Nachtarbeit 25 % (17) — **aktueller Fokus**; Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 |
 | 2 | Kernfunktionen Praxisalltag | 26 von 31 Punkten erledigt | Export PDF/Excel (5), Automatisierte Planung (19), Fairness-Punktesystem (20), Lohnart-Mapping (30), CSV-/API-Export (31) |
 | 3 | Onboarding & Self-Signup | Konzept steht, nichts umgesetzt | kompletter Block |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
@@ -454,49 +454,26 @@ zurückgestellt, bis die Funktionalität steht.
 14. **Aufbewahrung**: Ist-Daten (`TimeRecord`) fallen unter dieselbe Aufbewahrungspflicht wie
     Lohnunterlagen (siehe Block 5.3) — beim Löschkonzept mitdenken.
 
-15. **Mutterschutz (Art. 35, 35a, 35b ArG + Verordnung über den Mutterschutz)** — komplett nicht
-    abgedeckt (Compliance-Audit 2026-08). Bei einer typischerweise frauenreichen Alten-/
-    Pflegeheim-Belegschaft der Bereich mit dem grössten ungedeckten Haftungsrisiko unter allen
-    ArG-Lücken. Zu regeln: Verbot von Nachtarbeit 8 Wochen vor bis 8 Wochen nach der Geburt
-    (Art. 35a Abs. 3 ArG), Anspruch auf gleichwertige Tagesarbeit statt Nachtschicht, generelles
-    Beschäftigungsverbot in den ersten 8 Wochen nach der Niederkunft (Art. 35a Abs. 1 ArG),
-    Freistellungsrecht bei Ablehnung eines zumutbaren Ersatzangebots.
-
-    **Datenmodell-Überlegung (Diskussion 2026-08):** ein einzelnes Feld `Employee.
-    expected_birth_date` (analog `birth_date`) reicht nicht -- eine Mitarbeiterin kann während
-    ihrer Anstellung mehrmals schwanger sein, jede Schwangerschaft hat ihr eigenes Schutzfenster.
-    Das Modell braucht dieselbe Struktur wie `Absence`: ein eigenes Ereignis-Modell mit FK auf
-    `Employee`, nicht ein Feld direkt am Mitarbeiter. Ausserdem reicht der Termin (Erfassung vor
-    der Geburt) allein nicht für alle Fristen -- Art. 35a Abs. 1/2 ArG (Beschäftigungsverbot
-    8 bzw. bis 16 Wochen danach) rechnen ab der **effektiven** Niederkunft, nicht ab dem Termin.
-    Das tatsächliche Geburtsdatum ist vorher nicht bekannt und muss nachgetragen werden können,
-    ohne den ursprünglichen Termin-Eintrag zu verlieren (Verlaufshistorie/Korrektur, nicht
-    Überschreiben).
-
-    **Implementierungsschritte:**
-    - Neues Modell `Pregnancy` (analog `Absence`: `TenantScopedModel`, FK `employee` mit
-      `related_name="pregnancies"`, beliebig viele Einträge pro Mitarbeiterin über die Zeit
-      möglich). Felder: `expected_birth_date` (Termin, bei Bekanntgabe erfasst),
-      `actual_birth_date` (optional, wird nachgetragen sobald bekannt -- korrigiert die ab
-      Geburt gerechneten Fristen rückwirkend), `notes` (optional), `history = HistoricalRecords()`
-      (gleiches Muster wie `Employee`/`Absence`, deckt Punkt 14 mit ab).
-    - Berechtigungen zuerst klären: strenger als das bestehende `OwnEmployeeRecordPermission`
-      (das lässt alle Planer:innen zu) -- hier nur Admin + die betroffene Person selbst, neue
-      dedizierte Permission-Klasse, bevor das Modell überhaupt in der API auftaucht.
-    - Berechnung: `Employee.is_maternity_protected_on(date)` (analog `is_minor_on()`) iteriert
-      `self.pregnancies.all()` und liefert den Schutzstatus für ein Datum inkl. welche
-      Einschränkung greift (nur Nachtarbeitsverbot vs. volles Beschäftigungsverbot in den ersten
-      8 Wochen vs. Zustimmungspflicht bis Woche 16) -- vor der Geburt auf Basis von
-      `expected_birth_date` geschätzt (für das vorausschauende Nachtarbeitsverbot "8 Wochen vor"),
-      nach Eintrag von `actual_birth_date` exakt.
-    - Regel-Engine: neue `_check_maternity_protection()` in `ShiftAssignment.clean()`, hart
-      durchgesetzt analog `_check_youth_protection()`.
-    - Migration, Serializer, ViewSet + Tests (Modell inkl. mehrerer Schwangerschaften pro
-      Mitarbeiterin + überlappende/aufeinanderfolgende Fälle, Regel-Engine, Permission-Ausschluss
-      für normale Planer:innen).
-    - Frontend: eigener Abschnitt in `EmployeeSettings.jsx` (nicht ein einzelnes Feld, sondern eine
-      Liste "Schwangerschaften" pro Mitarbeiterin mit Add/Edit, rollenbeschränkt), Warnhinweis im
-      Planblatt analog zur Jugendschutz-Fehlermeldung.
+15. ✅ **Mutterschutz (Art. 35a ArG)** (2026-08): eigenes `Pregnancy`-Ereignismodell (analog
+    `Absence`, FK auf `Employee`, beliebig viele Schwangerschaften über die Anstellung hinweg
+    möglich statt eines einzelnen `Employee`-Felds) mit `expected_birth_date` und optionalem,
+    nachtragbarem `actual_birth_date` (korrigiert die ab der Niederkunft gerechneten Fristen
+    rückwirkend, ohne den ursprünglichen Termin zu verlieren -- `history = HistoricalRecords()`).
+    `Pregnancy.protection_status_on()`/`Employee.is_maternity_protected_on()` werten die drei
+    Fristen aus Art. 35a ArG relativ zum Termin bzw. zur effektiven Geburt aus: `night_ban`
+    (8 Wochen vor der Niederkunft, eigene weiter gefasste 20:00–06:00-Nachtdefinition statt
+    23:00–06:00, siehe `ShiftAssignment._maternity_night_hours()`), `full_ban` (8 Wochen ab der
+    Niederkunft, generelles Beschäftigungsverbot) und `consent_required` (9.–16. Woche danach --
+    mangels Einverständnis-Erfassung in der App vorsorglich hart blockiert, analog zur
+    vereinfachten Jugendschutz-Prüfung). Neue `ShiftAssignment._check_maternity_protection()` in
+    `clean()`, hart durchgesetzt wie `_check_youth_protection()`. Eigene, strengere
+    `PregnancyPermission` (`core.permissions`): nur Admin und die betroffene Person selbst dürfen
+    lesen/schreiben, nicht Planer:innen allgemein -- auch die Liste ist serverseitig entsprechend
+    gefiltert (`PregnancyViewSet.get_queryset`), nicht nur der Einzelzugriff. Frontend: neuer,
+    Admin-only sichtbarer Abschnitt "Mutterschutz" in `EmployeeSettings.jsx`
+    (`PregnancyEditor.jsx`), unabhängig vom übrigen Formular sofort gespeichert. Kein separater
+    Warnhinweis im Planblatt nötig -- die Regel-Engine-Fehlermeldung läuft über denselben
+    bestehenden Fehlerbanner wie beim Jugendschutz.
 
 16. **Lohnfortzahlung bei Krankheit (Art. 324a OR)** — nicht abgedeckt (Compliance-Audit 2026-08).
     Absenzen vom Typ Krankheit werden korrekt als Soll-neutral erfasst

@@ -2110,6 +2110,31 @@ nutzen, bezahlen und rechtlich unbedenklich betreiben kann.
       weiterhin um 8.4h -- nach 25 vollständig eingetragenen Ferientagen (in beliebiger
       Ganz-/Halbtags-Kombination) konvergiert der Saldo korrekt auf 0.
 
+29. ✅ **Bugfix: Radiergummi in Oben/Unten löschte auch den Dienst beim Entfernen einer
+    Halbtags-Absenz (2026-08)**. Regression aus Punkt 27: dessen Fix ("ein einzelner,
+    durchgehender Dienst lässt sich in Oben/Unten nicht löschen") hatte einen unbeabsichtigten
+    Nebeneffekt -- Nutzer-Feedback: "Frühdienst eingeplant, Unten halber Tag Ferien, Unten halber
+    Tag Ferien wieder entfernen löscht auch den Dienst" (ebenso mit "Oben"). Ursache: der
+    Radiergummi in Oben/Unten hat zwei Aufgaben zugleich -- eine deckungsgleiche Absenz räumen
+    UND (seit Punkt 27) einen einzelnen, durchgehenden Dienst löschen, falls kein echter Split
+    vorliegt. Trifft der Klick genau die Hälfte, in der eine Absenz sitzt (z. B. "Unten" bei einer
+    nachmittags-Absenz), lief bisher BEIDES: die Absenz wurde korrekt entfernt, aber im selben
+    Zug auch der koexistierende, durchgehende Dienst gelöscht -- obwohl der gar nicht das Ziel des
+    Klicks war (er wird ja per Definition nicht durch eine Halbtags-Absenz ersetzt, siehe Punkt
+    24).
+    - `PlanGrid.jsx`/`YearPlan.jsx` (`applyToolToMarked()`): neues `datesWithHandledAbsence`-Set
+      merkt sich, für welche markierten Tage die Absenz-Vorräumung tatsächlich etwas getan hat
+      (Absenz gelöscht oder reduziert). `applyToolToCell()` bekommt diese Information als neuen
+      Parameter `absenceHandled` und löscht den einzelnen, durchgehenden Dienst nur noch, wenn für
+      den Tag KEINE Absenz-Aktion stattgefunden hat -- trifft der Klick stattdessen die Hälfte, in
+      der der Dienst selbst (nicht die Absenz) sichtbar ist, bleibt Punkt 27 unverändert wirksam
+      und löscht ihn weiterhin.
+    - Playwright-Verifikation (David Brunner, durchgehender Frühdienst): "Unten"+Ferien
+      hinzufügen, dann "Unten"+Radiergummi -- nur `DELETE /api/absences/…`, Dienst bleibt (Titel
+      zeigt danach wieder nur den Frühdienst). Identisch für "Oben". Regressionstest: Ferien
+      "Unten", Radiergummi in "Oben" (trifft die Dienst-Hälfte) -- löscht weiterhin korrekt den
+      Dienst (`DELETE /api/shift-assignments/…`), Ferien bleibt bestehen.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

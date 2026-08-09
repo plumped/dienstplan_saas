@@ -418,7 +418,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
   // Radiergummi-Werkzeug auf EINEN Tag an. slot0/slot1 sind die
   // (chronologisch sortierten) regulären Zuweisungen des Tages, specials die
   // Spezialitäten-Zuweisungen (Pikett-Modus).
-  async function applyToolToCell(tool, date, slot0, slot1, specials = []) {
+  async function applyToolToCell(tool, date, slot0, slot1, specials = [], absenceHandled = false) {
     if (tool.kind === "template") {
       if (placementMode === "pikett") {
         const existing = specials.find((s) => s.template === tool.id);
@@ -461,11 +461,19 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
         // day_portion wie bei Absence), wird er komplett gelöscht,
         // unabhängig ob "Oben" oder "Unten" geklickt wurde (beide zielen auf
         // denselben, einzigen Datensatz).
+        //
+        // Bugfix (Nutzer-Feedback 2026-08): trifft der Klick stattdessen die
+        // Hälfte, in der bereits eine Absenz sitzt (deckungsgleicher
+        // placementMode, `absenceHandled` von applyToolToMarked() gesetzt),
+        // ist die Absenz das eigentliche Ziel -- ein koexistierender,
+        // durchgehender Dienst darf dann NICHT zusätzlich gelöscht werden,
+        // sonst löscht "Unten Ferien entfernen" fälschlich auch den
+        // Frühdienst mit.
         const isSplit = Boolean(slot0) && Boolean(slot1);
         if (isSplit) {
           const target = placementMode === "top" ? slot0 : slot1;
           await assignTemplate(date, null, target.id);
-        } else if (slot0) {
+        } else if (slot0 && !absenceHandled) {
           await assignTemplate(date, null, slot0.id);
         }
       }
@@ -487,11 +495,21 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
 
     const absenceIdsToClear = new Set();
     const absencesToShrink = new Map(); // absenceId -> { absence, keepPortion }
+    // Bugfix (Nutzer-Feedback 2026-08): "Frühdienst eingeplant, Unten
+    // halber Tag Ferien, Unten halber Tag Ferien wieder entfernen löscht
+    // auch den Dienst". Trifft der Radiergummi-Klick genau die Hälfte, in
+    // der bereits eine Absenz sitzt (deckungsgleicher placementMode), ist
+    // die Absenz das eigentliche Ziel -- der koexistierende, durchgehende
+    // Dienst darf dann nicht zusätzlich gelöscht werden (siehe
+    // applyToolToCell). datesWithHandledAbsence merkt sich, für welche Tage
+    // die Absenz-Vorräumung tatsächlich etwas getan hat.
+    const datesWithHandledAbsence = new Set();
     for (const date of dates) {
       const absence = absenceByDate.get(date);
       if (!absence) continue;
       if (tool.kind === "absence" || placementMode === "full") {
         absenceIdsToClear.add(absence.id);
+        datesWithHandledAbsence.add(date);
         continue;
       }
       if (placementMode === "pikett") continue; // Pikett betrifft nie Absenzen
@@ -503,12 +521,16 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
         } else {
           absenceIdsToClear.add(absence.id);
         }
+        datesWithHandledAbsence.add(date);
         continue;
       }
       const overlapsThisMode =
         (placementMode === "top" && existingPortion === "morning") ||
         (placementMode === "bottom" && existingPortion === "afternoon");
-      if (overlapsThisMode) absenceIdsToClear.add(absence.id);
+      if (overlapsThisMode) {
+        absenceIdsToClear.add(absence.id);
+        datesWithHandledAbsence.add(date);
+      }
     }
     for (const absenceId of absenceIdsToClear) {
       await removeAbsence(absenceId);
@@ -564,7 +586,14 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
 
     for (const date of dates) {
       const regularAssignments = regularAssignmentsOf(date);
-      await applyToolToCell(tool, date, regularAssignments[0], regularAssignments[1], specialAssignmentsOf(date));
+      await applyToolToCell(
+        tool,
+        date,
+        regularAssignments[0],
+        regularAssignments[1],
+        specialAssignmentsOf(date),
+        datesWithHandledAbsence.has(date)
+      );
     }
     setMarkedDates(new Set());
   }

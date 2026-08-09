@@ -670,7 +670,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // hinzufügen, pro markierter Zelle einzeln geprüft), der Radiergummi
   // entfernt im Pikett-Modus ALLE Spezialitäten der markierten Zellen auf
   // einmal (Analogie zu "Ganz" bei Diensten).
-  async function applyToolToCell(tool, employeeId, date, rowNodeId, slot0, slot1, specials = []) {
+  async function applyToolToCell(tool, employeeId, date, rowNodeId, slot0, slot1, specials = [], absenceHandled = false) {
     if (tool.kind === "template") {
       if (placementMode === "pikett") {
         const existing = specials.find((s) => s.template === tool.id);
@@ -721,11 +721,19 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
         // wird deshalb komplett gelöscht, unabhängig davon ob "Oben" oder
         // "Unten" geklickt wurde (beide Klicks zielen ja auf denselben,
         // einzigen Datensatz).
+        //
+        // Bugfix (Nutzer-Feedback 2026-08): trifft der Klick stattdessen die
+        // Hälfte, in der bereits eine Absenz sitzt (deckungsgleicher
+        // placementMode, `absenceHandled` von applyToolToMarked() gesetzt),
+        // ist die Absenz das eigentliche Ziel -- ein koexistierender,
+        // durchgehender Dienst (reicht per Definition in die ANDERE Hälfte
+        // hinein) darf dann NICHT zusätzlich gelöscht werden, sonst löscht
+        // "Unten Ferien entfernen" fälschlich auch den Frühdienst mit.
         const isSplit = Boolean(slot0) && Boolean(slot1);
         if (isSplit) {
           const target = placementMode === "top" ? slot0 : slot1;
           await handleAssign(employeeId, date, null, rowNodeId, target.id);
-        } else if (slot0) {
+        } else if (slot0 && !absenceHandled) {
           await handleAssign(employeeId, date, null, rowNodeId, slot0.id);
         }
       }
@@ -833,12 +841,28 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     // Löschen (bestehendes Verhalten).
     const absenceIdsToClear = new Set();
     const absencesToShrink = new Map(); // absenceId -> { absence, keepPortion }
+    // Bugfix (Nutzer-Feedback 2026-08): "Frühdienst eingeplant, Unten
+    // halber Tag Ferien, Unten halber Tag Ferien wieder entfernen löscht
+    // auch den Dienst". Der Radiergummi räumt in Oben/Unten sowohl Absenzen
+    // (oben) als auch -- seit dem Bugfix zum "Dienst lässt sich in
+    // Oben/Unten gar nicht löschen" -- einen einzelnen, durchgehenden
+    // Dienst (siehe applyToolToCell). Trifft der Klick aber genau die
+    // Hälfte, in der bereits eine Absenz sitzt (deckungsgleicher
+    // placementMode), ist die Absenz das eigentliche Ziel -- der
+    // koexistierende, durchgehende Dienst (der ja per Definition NICHT nur
+    // in dieser Hälfte liegt, siehe shiftShouldBeReplacedByAbsencePortion)
+    // darf dann nicht zusätzlich gelöscht werden. datesWithHandledAbsence
+    // merkt sich, für welche Tage die Absenz-Vorräumung oben tatsächlich
+    // etwas getan hat, damit applyToolToCell() weiter unten die
+    // Dienst-Löschung für genau diese Tage überspringt.
+    const datesWithHandledAbsence = new Set();
     for (const key of keys) {
       const [employeeIdStr, date] = key.split(":");
       const absence = findAbsence(Number(employeeIdStr), date);
       if (!absence) continue;
       if (tool.kind === "absence" || placementMode === "full") {
         absenceIdsToClear.add(absence.id);
+        datesWithHandledAbsence.add(date);
         continue;
       }
       if (placementMode === "pikett") continue; // Pikett betrifft nie Absenzen
@@ -850,12 +874,16 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
         } else {
           absenceIdsToClear.add(absence.id);
         }
+        datesWithHandledAbsence.add(date);
         continue;
       }
       const overlapsThisMode =
         (placementMode === "top" && existingPortion === "morning") ||
         (placementMode === "bottom" && existingPortion === "afternoon");
-      if (overlapsThisMode) absenceIdsToClear.add(absence.id);
+      if (overlapsThisMode) {
+        absenceIdsToClear.add(absence.id);
+        datesWithHandledAbsence.add(date);
+      }
     }
     // Bugfix ("No Absence matches the given query"): eine Absenz ist EIN
     // Datensatz über einen ganzen Zeitraum (start_date/end_date) -- markiert
@@ -939,7 +967,16 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
       const employeeId = Number(employeeIdStr);
       const rowNodeId = Number(rowNodeIdStr);
       const { regularAssignments, specialAssignments } = resolveCellState(employeeId, date, rowNodeId);
-      await applyToolToCell(tool, employeeId, date, rowNodeId, regularAssignments[0], regularAssignments[1], specialAssignments);
+      await applyToolToCell(
+        tool,
+        employeeId,
+        date,
+        rowNodeId,
+        regularAssignments[0],
+        regularAssignments[1],
+        specialAssignments,
+        datesWithHandledAbsence.has(date)
+      );
     }
     setMarkedCells(new Set());
   }

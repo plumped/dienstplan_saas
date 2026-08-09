@@ -462,20 +462,41 @@ zurückgestellt, bis die Funktionalität steht.
     Beschäftigungsverbot in den ersten 8 Wochen nach der Niederkunft (Art. 35a Abs. 1 ArG),
     Freistellungsrecht bei Ablehnung eines zumutbaren Ersatzangebots.
 
+    **Datenmodell-Überlegung (Diskussion 2026-08):** ein einzelnes Feld `Employee.
+    expected_birth_date` (analog `birth_date`) reicht nicht -- eine Mitarbeiterin kann während
+    ihrer Anstellung mehrmals schwanger sein, jede Schwangerschaft hat ihr eigenes Schutzfenster.
+    Das Modell braucht dieselbe Struktur wie `Absence`: ein eigenes Ereignis-Modell mit FK auf
+    `Employee`, nicht ein Feld direkt am Mitarbeiter. Ausserdem reicht der Termin (Erfassung vor
+    der Geburt) allein nicht für alle Fristen -- Art. 35a Abs. 1/2 ArG (Beschäftigungsverbot
+    8 bzw. bis 16 Wochen danach) rechnen ab der **effektiven** Niederkunft, nicht ab dem Termin.
+    Das tatsächliche Geburtsdatum ist vorher nicht bekannt und muss nachgetragen werden können,
+    ohne den ursprünglichen Termin-Eintrag zu verlieren (Verlaufshistorie/Korrektur, nicht
+    Überschreiben).
+
     **Implementierungsschritte:**
-    - Datenmodell: neues, optionales Feld `Employee.expected_birth_date` (analog `birth_date`).
-    - Berechtigungen zuerst klären: streng zugriffsbeschränkt (nur die betroffene Person selbst +
-      Admin lesen/schreiben, nicht Planer:innen allgemein) — neue Permission-Klasse analog
-      `OwnEmployeeRecordPermission`, bevor das Feld überhaupt in der API auftaucht.
-    - Berechnung: `Employee.is_maternity_protected_on(date)` (analog `is_minor_on()`) liefert den
-      Schutzstatus für ein Datum inkl. welche Einschränkung greift (nur Nachtarbeitsverbot vs.
-      volles Beschäftigungsverbot in den ersten 8 Wochen).
+    - Neues Modell `Pregnancy` (analog `Absence`: `TenantScopedModel`, FK `employee` mit
+      `related_name="pregnancies"`, beliebig viele Einträge pro Mitarbeiterin über die Zeit
+      möglich). Felder: `expected_birth_date` (Termin, bei Bekanntgabe erfasst),
+      `actual_birth_date` (optional, wird nachgetragen sobald bekannt -- korrigiert die ab
+      Geburt gerechneten Fristen rückwirkend), `notes` (optional), `history = HistoricalRecords()`
+      (gleiches Muster wie `Employee`/`Absence`, deckt Punkt 14 mit ab).
+    - Berechtigungen zuerst klären: strenger als das bestehende `OwnEmployeeRecordPermission`
+      (das lässt alle Planer:innen zu) -- hier nur Admin + die betroffene Person selbst, neue
+      dedizierte Permission-Klasse, bevor das Modell überhaupt in der API auftaucht.
+    - Berechnung: `Employee.is_maternity_protected_on(date)` (analog `is_minor_on()`) iteriert
+      `self.pregnancies.all()` und liefert den Schutzstatus für ein Datum inkl. welche
+      Einschränkung greift (nur Nachtarbeitsverbot vs. volles Beschäftigungsverbot in den ersten
+      8 Wochen vs. Zustimmungspflicht bis Woche 16) -- vor der Geburt auf Basis von
+      `expected_birth_date` geschätzt (für das vorausschauende Nachtarbeitsverbot "8 Wochen vor"),
+      nach Eintrag von `actual_birth_date` exakt.
     - Regel-Engine: neue `_check_maternity_protection()` in `ShiftAssignment.clean()`, hart
       durchgesetzt analog `_check_youth_protection()`.
-    - Migration, Serializer-Feld (nur für berechtigte Rolle sichtbar), Tests (Modell +
-      Regel-Engine + Permission-Ausschluss für normale Planer:innen).
-    - Frontend: Eingabefeld in `EmployeeSettings.jsx` (rollenbeschränkt), Warnhinweis im Planblatt
-      analog zur Jugendschutz-Fehlermeldung.
+    - Migration, Serializer, ViewSet + Tests (Modell inkl. mehrerer Schwangerschaften pro
+      Mitarbeiterin + überlappende/aufeinanderfolgende Fälle, Regel-Engine, Permission-Ausschluss
+      für normale Planer:innen).
+    - Frontend: eigener Abschnitt in `EmployeeSettings.jsx` (nicht ein einzelnes Feld, sondern eine
+      Liste "Schwangerschaften" pro Mitarbeiterin mit Add/Edit, rollenbeschränkt), Warnhinweis im
+      Planblatt analog zur Jugendschutz-Fehlermeldung.
 
 16. **Lohnfortzahlung bei Krankheit (Art. 324a OR)** — nicht abgedeckt (Compliance-Audit 2026-08).
     Absenzen vom Typ Krankheit werden korrekt als Soll-neutral erfasst

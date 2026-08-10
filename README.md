@@ -2258,18 +2258,43 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     unverändert für Planblatt/Absenzen/Diensttausch/Dashboard genutzt). Frontend:
     `EmployeeSettings.jsx` zeigt eine sortierbare, filterbare, paginierte Tabelle (Spaltenköpfe
     klickbar, Stations-/Status-Filter, Freitextsuche mit 300ms-Debounce, "Weiter"/"Zurück" über
-    die DRF-Pagination) links, das Bearbeiten-Formular als sticky Panel rechts (`grid`-Layout in
-    `.employee-settings-layout`, eigene Klasse statt das gemeinsam genutzte `.side-panel`
-    anzufassen) -- Klick auf eine Zeile oder "Bearbeiten" öffnet direkt den Editor, ohne den
-    bisherigen Kontextwechsel "Formular oben, lange Liste darunter". Nach Anlage/Änderung wird die
-    aktuelle Tabellenseite neu geladen statt den lokalen State zu patchen, damit Sortierung/Filter/
-    Seitenzahl auch bei einer Statusänderung (z. B. "Nur aktive"-Filter + gerade deaktiviert)
-    korrekt bleiben. Bekannter, bewusster Kompromiss: die Autovervollständigung für
-    Anstellungs-Rollentitel (`existingTitles`) deckt seit dieser Umstellung nur noch die aktuell
-    geladene Tabellenseite ab, nicht mehr den kompletten Bestand -- ein eigener Endpoint dafür
-    wäre unverhältnismässig. 11 neue Backend-Tests (Suche, Sortierung auf-/absteigend, Stations-/
-    Status-Filter, Kombination, Tenant-Isolation), mit Playwright gegen 80 Testdatensätze
-    (2 Seiten) end-to-end verifiziert.
+    die DRF-Pagination) über die volle Breite; Klick auf eine Zeile oder "Bearbeiten" öffnet das
+    Formular als Modal (`.modal-overlay`/`.modal-dialog`, Escape/Backdrop-Klick/"×" schliessen) --
+    Folge-Feedback "die Zeile rechts ist Mist, ich würde ein sauberes Popup erwarten" ersetzte die
+    ursprüngliche sticky Sidebar. Modal-Breite wuchs in zwei weiteren Feedback-Runden auf
+    `min(1080px, 94vw)`; `.panel-form-row` bekam `align-items: flex-end`, damit Buttons ohne
+    eigenes Label (z. B. "Hinzufügen" im Mutterschutz-Editor) nicht verrutschen, wenn ein
+    Nachbar-Label mehrzeilig umbricht. Nach Anlage/Änderung wird die aktuelle Tabellenseite neu
+    geladen statt den lokalen State zu patchen, damit Sortierung/Filter/Seitenzahl auch bei einer
+    Statusänderung (z. B. "Nur aktive"-Filter + gerade deaktiviert) korrekt bleiben. Bekannter,
+    bewusster Kompromiss: die Autovervollständigung für Anstellungs-Rollentitel
+    (`existingTitles`) deckt seit dieser Umstellung nur noch die aktuell geladene Tabellenseite
+    ab, nicht mehr den kompletten Bestand -- ein eigener Endpoint dafür wäre unverhältnismässig.
+    11 neue Backend-Tests (Suche, Sortierung auf-/absteigend, Stations-/Status-Filter,
+    Kombination, Tenant-Isolation), mit Playwright gegen 80 Testdatensätze (2 Seiten) end-to-end
+    verifiziert. Tabellen-/Modal-CSS-Klassen (`settings-table-*`, `.modal-*`) bewusst generisch
+    benannt statt Employee-spezifisch, um sie mit weiteren Settings-Modulen zu teilen (siehe
+    Punkt 33).
+
+33. ✅ **Stammdatenpflege: gleiches Tabellen-/Modal-Muster für Schichttypen** (2026-08).
+    Nutzer-Feedback nach Punkt 32: "sollten wir die anderen Tabs auch umbauen?" -- Schichttypen
+    identifiziert als Modul mit dem grössten Nutzen (bei vielen Stationen z. B. 15 Stationen x 10
+    Schichttypen = 150 Einträge, bisher alle ungefiltert in einer Dauer-Sidebar-Liste), Absenzarten/
+    Skills bewusst nicht angefasst (kleine, tenant-weite Kataloge mit typischerweise 5-20
+    Einträgen), Stationen bewusst nicht angefasst (Baumstruktur, kein flaches Set -- Tabelle+Modal
+    würde die Eltern-Kind-Beziehung zerstören). `TimeTemplateViewSet` bekam `filter_backends`
+    (`SearchFilter` auf `name`, `OrderingFilter` auf `name`/`start_time`/`end_time`/`category`/
+    `node__name`, Default-Sortierung `node__name`/`start_time`) sowie `?node=`/`?category=`-Filter
+    in `get_queryset()` (zusätzlich zur bestehenden rollenbasierten Stations-Einschränkung über
+    `_employee_scoped_node_ids`). Neue `api.searchTimeTemplates()` ergänzt die bestehende
+    `api.getTimeTemplates()` (kompletter Bestand, weiterhin unverändert für Planblatt/Jahresplan/
+    Stempelleisten genutzt). `TimeTemplateSettings.jsx` komplett auf dasselbe Muster wie
+    `EmployeeSettings.jsx` umgestellt (Suche/Sortierung/Stations-/Kategorie-Filter, Seite,
+    Bearbeiten öffnet Modal inkl. `TimeTemplateSegmentEditor`). Die dafür nötigen CSS-Klassen
+    waren bereits in Punkt 32 generisch benannt (`settings-table-*`) und wurden unverändert
+    wiederverwendet, keine Duplizierung. 7 neue Backend-Tests (Suche, Default-/Namens-Sortierung,
+    Stations-/Kategorie-Filter, Tenant-Isolation), mit Playwright end-to-end verifiziert (Suche,
+    Kategorie-Filter, Sortierung, Modal öffnen/bearbeiten/speichern/neu anlegen).
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

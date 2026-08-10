@@ -5448,3 +5448,75 @@ class EmployeeSearchOrderingAPITests(APITestCase):
         names = [e["last_name"] for e in response.data["results"]]
         self.assertEqual(names, ["Berger"])
         self.assertEqual(len(response.data["results"]), 1)
+
+
+class TimeTemplateSearchOrderingAPITests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): GET /api/time-templates/ mit
+    ?search=/?ordering=/?node=/?category= für die neue Tabellen-Ansicht in
+    TimeTemplateSettings.jsx -- analog EmployeeSearchOrderingAPITests.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.planner_user = User.objects.create_user(username="planner-tt-search", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=self.planner_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        self.early = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_a, name="Frühdienst", start_time="07:00", end_time="15:00"
+        )
+        self.late = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_b, name="Spätdienst", start_time="14:00", end_time="22:00"
+        )
+        self.oncall = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node_a,
+            name="Pikett",
+            start_time="00:00",
+            end_time="23:59",
+            category=TimeTemplate.Category.SPECIAL,
+        )
+
+    def test_search_matches_name(self):
+        response = self.client.get("/api/time-templates/?search=spät")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Spätdienst"])
+
+    def test_search_no_match_returns_empty(self):
+        response = self.client.get("/api/time-templates/?search=nonexistent")
+        self.assertEqual(response.data["results"], [])
+
+    def test_default_ordering_is_node_then_start_time(self):
+        response = self.client.get("/api/time-templates/")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Pikett", "Frühdienst", "Spätdienst"])
+
+    def test_ordering_by_name(self):
+        response = self.client.get("/api/time-templates/?ordering=name")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Frühdienst", "Pikett", "Spätdienst"])
+
+    def test_filter_by_node(self):
+        response = self.client.get(f"/api/time-templates/?node={self.node_b.id}")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Spätdienst"])
+
+    def test_filter_by_category(self):
+        response = self.client.get("/api/time-templates/?category=special")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Pikett"])
+
+    def test_search_is_tenant_scoped(self):
+        other_tenant, other_user = make_tenant_with_planner("klinik-tt-x", "planner-tt-x")
+        other_node = Node.add_root(name="Station X", tenant=other_tenant)
+        TimeTemplate.objects.create(
+            tenant=other_tenant, node=other_node, name="Frühdienst", start_time="07:00", end_time="15:00"
+        )
+        response = self.client.get("/api/time-templates/?search=frühdienst")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Frühdienst"])
+        self.assertEqual(len(response.data["results"]), 1)

@@ -189,6 +189,21 @@ export const api = {
     request(`/employees/${id}/monthly-summary/?year=${year}&month=${month}`),
 
   getTimeTemplates: () => requestAllPages("/time-templates/"),
+  // Stammdatenpflege (Nutzer-Feedback 2026-08): gleiches Muster wie
+  // searchEmployees() oben -- eigene, serverseitig gefilterte/sortierte
+  // Einzelseiten-Variante für die Schichttyp-Tabelle in
+  // TimeTemplateSettings.jsx. Planblatt/Jahresplan/Stempelleisten brauchen
+  // weiterhin den kompletten Bestand und bleiben bei getTimeTemplates().
+  searchTimeTemplates: ({ search, ordering, node, category, page } = {}) => {
+    const params = new URLSearchParams();
+    if (search) params.set("search", search);
+    if (ordering) params.set("ordering", ordering);
+    if (node) params.set("node", node);
+    if (category) params.set("category", category);
+    if (page) params.set("page", page);
+    const qs = params.toString();
+    return request(`/time-templates/${qs ? `?${qs}` : ""}`);
+  },
   createTimeTemplate: (payload) => request("/time-templates/", { method: "POST", body: payload }),
   updateTimeTemplate: (id, payload) =>
     request(`/time-templates/${id}/`, { method: "PATCH", body: payload }),

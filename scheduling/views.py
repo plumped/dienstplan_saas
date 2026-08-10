@@ -375,15 +375,32 @@ class AbsenceTypeViewSet(TenantScopedViewSet):
 
 
 class TimeTemplateViewSet(TenantScopedViewSet):
+    """
+    Nutzer-Feedback (2026-08): analog EmployeeViewSet -- Suche/Sortierung/
+    Stations-Filter server-seitig, damit die Schichttyp-Liste in Organisationen
+    mit vielen Stationen (z. B. 15 Stationen x 10 Schichttypen) nicht mehr
+    unstrukturiert alles auf einmal zeigt.
+    """
+
     permission_classes = [permissions.IsAuthenticated, IsTenantManager]
     queryset = TimeTemplate.all_objects.all()
     serializer_class = TimeTemplateSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["name"]
+    ordering_fields = ["name", "start_time", "end_time", "category", "node__name"]
+    ordering = ["node__name", "start_time"]
 
     def get_queryset(self):
         qs = super().get_queryset()
         node_ids = _employee_scoped_node_ids(self.request)
         if node_ids is not None:
             qs = qs.filter(node_id__in=node_ids)
+        node_id = self.request.query_params.get("node")
+        if node_id:
+            qs = qs.filter(node_id=node_id)
+        category = self.request.query_params.get("category")
+        if category:
+            qs = qs.filter(category=category)
         return qs
 
 

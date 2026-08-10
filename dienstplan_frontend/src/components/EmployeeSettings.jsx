@@ -252,9 +252,9 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
   const totalPages = Math.max(1, Math.ceil(tableData.count / EMPLOYEE_PAGE_SIZE));
 
   return (
-    <div className="employee-settings-layout">
-      <div className="panel-list panel-list--full employee-table-panel">
-        <div className="employee-table-toolbar">
+    <div className="settings-table-layout">
+      <div className="panel-list panel-list--full settings-table-panel">
+        <div className="settings-table-toolbar">
           <input
             type="search"
             className="panel-list-filter"
@@ -290,13 +290,13 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
           </p>
         ) : (
           <>
-            <div className="employee-table-scroll">
-              <table className="employee-table">
+            <div className="settings-table-scroll">
+              <table className="settings-table">
                 <thead>
                   <tr>
                     {SORT_COLUMNS.map((col) => (
                       <th key={col.field}>
-                        <button type="button" className="employee-table-sort" onClick={() => toggleSort(col.field)}>
+                        <button type="button" className="settings-table-sort" onClick={() => toggleSort(col.field)}>
                           {col.label}
                           {ordering === col.field && " ▲"}
                           {ordering === `-${col.field}` && " ▼"}
@@ -311,7 +311,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                   {tableData.results.map((emp) => (
                     <tr
                       key={emp.id}
-                      className={`employee-table-row${formOpen && editingId === emp.id ? " is-editing" : ""}`}
+                      className={`settings-table-row${formOpen && editingId === emp.id ? " is-editing" : ""}`}
                       onClick={() => startEditing(emp)}
                     >
                       <td>{emp.last_name}</td>
@@ -325,7 +325,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                         )}
                       </td>
                       <td>{nodeNames(emp.nodes)}</td>
-                      <td className="employee-table-actions" onClick={(e) => e.stopPropagation()}>
+                      <td className="settings-table-actions" onClick={(e) => e.stopPropagation()}>
                         <BalanceBadge employeeId={emp.id} />
                         <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
                           Bearbeiten
@@ -336,7 +336,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                 </tbody>
               </table>
             </div>
-            <div className="employee-table-pager">
+            <div className="settings-table-pager">
               <span>
                 {tableData.count} Mitarbeitende{totalPages > 1 ? ` · Seite ${page} von ${totalPages}` : ""}
               </span>

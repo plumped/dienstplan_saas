@@ -1295,19 +1295,20 @@ thead .col-employee {
    Tabelle (Suche/Sortierung/Filter serverseitig, siehe EmployeeSettings.jsx)
    nimmt die volle Breite ein, das Bearbeiten-Formular öffnet als Modal
    ("Rechts ist Mist, ich würde ein sauberes Popup erwarten" -- eine
-   Dauer-Sidebar daneben wurde als unruhig empfunden). Eigene Klasse statt
-   .side-panel zu ändern, damit die übrigen, unveränderten
-   Einstellungen-Module (Skills, Stationen, Schichttypen, Absenzarten,
-   Tenant) ihr bisheriges, einspaltiges Layout behalten. */
-.employee-settings-layout {
+   Dauer-Sidebar daneben wurde als unruhig empfunden). Generische Klassen
+   (settings-table-*, geteilt mit TimeTemplateSettings.jsx) statt .side-panel
+   zu ändern, damit die übrigen, unveränderten Einstellungen-Module (Skills,
+   Stationen, Absenzarten, Tenant) ihr bisheriges, einspaltiges Layout
+   behalten. */
+.settings-table-layout {
   display: block;
 }
 
-.employee-table-panel {
+.settings-table-panel {
   max-width: none;
 }
 
-.employee-table-toolbar {
+.settings-table-toolbar {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1315,14 +1316,14 @@ thead .col-employee {
   margin-bottom: 12px;
 }
 
-.employee-table-toolbar .panel-list-filter {
+.settings-table-toolbar .panel-list-filter {
   flex: 1;
   min-width: 160px;
   width: auto;
   margin-bottom: 0;
 }
 
-.employee-table-toolbar select {
+.settings-table-toolbar select {
   font-family: var(--font-body);
   font-size: 13px;
   padding: 7px 10px;
@@ -1332,23 +1333,23 @@ thead .col-employee {
   color: var(--ink);
 }
 
-.employee-table-scroll {
+.settings-table-scroll {
   overflow-x: auto;
 }
 
-.employee-table {
+.settings-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
 }
 
-.employee-table th {
+.settings-table th {
   text-align: left;
   padding: 0;
   border-bottom: 1px solid var(--border);
 }
 
-.employee-table-sort {
+.settings-table-sort {
   width: 100%;
   text-align: left;
   padding: 8px 10px;
@@ -1360,36 +1361,36 @@ thead .col-employee {
   cursor: pointer;
 }
 
-.employee-table-sort:hover {
+.settings-table-sort:hover {
   color: var(--primary);
 }
 
-.employee-table td {
+.settings-table td {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
 
-.employee-table-row {
+.settings-table-row {
   cursor: pointer;
 }
 
-.employee-table-row:hover {
+.settings-table-row:hover {
   background: var(--primary-soft);
 }
 
-.employee-table-row.is-editing {
+.settings-table-row.is-editing {
   background: var(--primary-soft);
   font-weight: 600;
 }
 
-.employee-table-actions {
+.settings-table-actions {
   display: flex;
   align-items: center;
   gap: 8px;
   white-space: nowrap;
 }
 
-.employee-table-pager {
+.settings-table-pager {
   display: flex;
   align-items: center;
   justify-content: space-between;

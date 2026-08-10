@@ -1414,7 +1414,7 @@ thead .col-employee {
   border-radius: var(--radius);
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.3);
   width: 100%;
-  max-width: 640px;
+  max-width: 860px;
   max-height: calc(100vh - 80px);
   display: flex;
   flex-direction: column;

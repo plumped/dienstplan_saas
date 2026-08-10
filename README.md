@@ -2296,6 +2296,11 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Stations-/Kategorie-Filter, Tenant-Isolation), mit Playwright end-to-end verifiziert (Suche,
     Kategorie-Filter, Sortierung, Modal öffnen/bearbeiten/speichern/neu anlegen).
 
+    **UX-Nachschlag (2026-08, Nutzer-Feedback)**: "Neuer Schichttyp" bei aktivem Stations-Filter
+    öffnete das Modal bisher immer mit der ersten Station der Gesamtliste vorausgewählt statt der
+    gerade gefilterten -- `startCreating()` übernimmt jetzt `nodeFilter` als Vorauswahl, sofern
+    einer aktiv ist (Fallback weiterhin `nodes[0]?.id` ohne Filter).
+
 34. ✅ **Stammdatenpflege: Stationen-Baum -- Suche + Drag & Drop verschieben** (2026-08).
     Nutzer-Vorgabe: "Nun Punkt 2. Stationen umsetzen. Es wäre zudem wünschenswert wenn ich die
     Stationen per drag & drop verschieben kann." Anders als Mitarbeitende/Schichttypen (Punkt 32/33)

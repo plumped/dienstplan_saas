@@ -128,7 +128,12 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
 
   function startCreating() {
     setEditingId(null);
-    setForm(emptyForm(nodes[0]?.id));
+    // Nutzer-Feedback (2026-08): "wenn ich nach Küche filtere und dann auf
+    // Neuer Schichttyp klicke, sollte Station/Team im Modal bereits Küche
+    // beinhalten" -- der aktive Stations-Filter der Tabelle ist die
+    // naheliegendste Vorauswahl, sonst landet man immer wieder beim ersten
+    // Knoten der Gesamtliste und muss manuell zurück zur gefilterten Station.
+    setForm(emptyForm(nodeFilter || nodes[0]?.id));
     setFormOpen(true);
   }
 

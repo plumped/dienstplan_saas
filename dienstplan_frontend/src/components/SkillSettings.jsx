@@ -55,6 +55,11 @@ export default function SkillSettings({ skills, onCreated, onUpdated, onDeleted,
         <label>
           Name
           <input type="text" value={name} onChange={(e) => setName(e.target.value)} required />
+          <span className="panel-hint">
+            Qualifikation, die Mitarbeitende mitbringen können (Employee.skills) und die ein
+            Schichttyp optional voraussetzen kann (TimeTemplateSettings.jsx: "Erforderlicher
+            Skill") -- gilt tenant-weit, nicht pro Station.
+          </span>
         </label>
         <button type="submit" disabled={saving || !name.trim()}>
           {saving ? "Speichert …" : "Anlegen"}

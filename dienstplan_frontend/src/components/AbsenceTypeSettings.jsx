@@ -90,16 +90,16 @@ export default function AbsenceTypeSettings({ onError }) {
     <div className="side-panel">
       <form className="panel-form" onSubmit={handleSubmit}>
         <h2>{editingId ? "Absenzart bearbeiten" : "Absenzart anlegen"}</h2>
+        <label>
+          Name
+          <input
+            type="text"
+            value={form.name}
+            onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+            required
+          />
+        </label>
         <div className="panel-form-row">
-          <label>
-            Name
-            <input
-              type="text"
-              value={form.name}
-              onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-              required
-            />
-          </label>
           <label>
             Farbe
             <input
@@ -107,6 +107,7 @@ export default function AbsenceTypeSettings({ onError }) {
               value={form.color}
               onChange={(e) => setForm((prev) => ({ ...prev, color: e.target.value }))}
             />
+            <span className="panel-hint">Chip-Hintergrundfarbe im Planblatt/Jahresplan.</span>
           </label>
           <label>
             Kürzel (optional)
@@ -117,6 +118,10 @@ export default function AbsenceTypeSettings({ onError }) {
               value={form.icon}
               onChange={(e) => setForm((prev) => ({ ...prev, icon: e.target.value }))}
             />
+            <span className="panel-hint">
+              Erscheint als Chip-Glyphe im Planblatt -- leer lassen übernimmt den ersten Buchstaben
+              des Namens.
+            </span>
           </label>
         </div>
         <label className="panel-checkbox-row">

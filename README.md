@@ -2370,6 +2370,26 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     erzwingen -- Hin- und Rückrichtung), volle Suite (404 Tests) grün, mit Playwright end-to-end
     verifiziert.
 
+35. ✅ **Absenzarten & Skills kosmetisch an das Modal-Formular-Styling angeglichen** (2026-08).
+    Nutzer-Vorgabe: "Gleiche Absenzarten & Skills kosmetisch an das neue Modal-Formular-Styling an,
+    damit es sich einheitlich anfühlt." Bewusst nur kosmetisch -- keine Umstellung auf das
+    Tabelle+Modal-Muster von Mitarbeitende/Schichttypen (Punkt 32/33), das für diese beiden
+    kleinen, tenant-weiten Kataloge (typischerweise 5-20 Einträge) explizit ausgeschlossen wurde.
+    `AbsenceTypeSettings.jsx`/`SkillSettings.jsx` bekamen `.panel-hint`-Erklärtexte unter den
+    Eingabefeldern, analog zum bereits etablierten Muster in `EmployeeSettings.jsx`: Skills einen
+    Hinweis, dass der Katalog tenant-weit statt pro Station gilt; Absenzarten Hinweise zu
+    Chip-Farbe und Chip-Glyphe. Dabei zunächst eine Layout-Regression eingebaut und per
+    Playwright-Screenshot entdeckt: die bestehende `.panel-form-row { align-items: flex-end }`
+    (ursprünglich für den Mutterschutz-Editor gedacht, siehe Punkt 32) bodenbündig ausgerichtete
+    drei Spalten Name/Farbe/Kürzel, von denen nur Farbe/Kürzel einen Hinweistext und damit mehr
+    Höhe bekamen -- Name wirkte dadurch verrutscht. Statt die gemeinsame CSS-Regel anzufassen
+    (die an anderer Stelle weiterhin ihren Zweck erfüllt) oder Name einen rein kosmetischen,
+    inhaltsleeren Hinweistext zu verpassen, wurde das Formular umstrukturiert: Name jetzt allein
+    auf einer eigenen Zeile, Farbe und Kürzel (beide nun mit Hinweistext, also gleich hoch)
+    gemeinsam auf einer zweiten Zeile. Mit Playwright verifiziert (Absenzarten-Formular zeigt
+    Name sauber oben, Farbe/Kürzel bündig nebeneinander; Skills-Formular unverändert korrekt, da
+    dort nur ein einzelnes Feld existiert und kein Zeilen-Ausrichtungsrisiko besteht).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

@@ -38,6 +38,19 @@ function formatHoursDeviation(hours) {
   return `${hours > 0 ? "+" : ""}${hours.toFixed(1)} h`;
 }
 
+// Nutzer-Feedback (2026-08): "braucht es eine Funktion um alle zu
+// bestätigen auf einmal?" -- ja, aber "Bestätigen" ist der eigentliche
+// Kontrollschritt (Art. 73 ArGV 1), ein reines "Alle bestätigen" würde den
+// gerade gebauten Ist-Zeit/Abweichungs-Check untergraben. Auffällige
+// Einträge (grosse Stunden-Abweichung oder Pause unter Minimum) werden
+// deshalb von der "Alle auf dieser Seite auswählen"-Checkbox ausgenommen --
+// einzeln lassen sie sich weiterhin bewusst mit auswählen.
+const RISKY_DEVIATION_HOURS = 1;
+
+function isRisky(record) {
+  return Math.abs(record.hours_deviation) > RISKY_DEVIATION_HOURS || record.break_below_minimum;
+}
+
 // Nutzer-Feedback (2026-08): "ich muss die Stationen durchsuchen, bis ich
 // die zu bestätigende Erfassung finde -- Splitten: alle offenen Bewilligungen
 // neben den noch nicht erfassten, tabellarisch wie bei den Einstellungen."
@@ -72,6 +85,9 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
 
   const [modal, setModal] = useState(null); // { kind: "confirm" | "missing", row }
   const [saving, setSaving] = useState(false);
+
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkConfirming, setBulkConfirming] = useState(false);
 
   useEffect(() => {
     api
@@ -135,6 +151,7 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
   useEffect(() => {
     let cancelled = false;
     setConfirmLoading(true);
+    setSelectedIds(new Set());
     api
       .searchTimeRecords({
         status: "submitted",
@@ -200,6 +217,53 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
       loadConfirmPage();
     } catch (e) {
       onError(e.message);
+    }
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  // "Alle auswählen" nimmt bewusst nur die unauffälligen Zeilen der
+  // aktuellen Seite -- auffällige (siehe isRisky()) bleiben aussen vor,
+  // lassen sich aber weiterhin einzeln anhaken. Ist bereits alles
+  // Unauffällige ausgewählt, hebt ein erneuter Klick die Auswahl wieder auf.
+  const selectableRows = confirmData.results.filter((r) => !isRisky(r));
+  const allSelectableSelected =
+    selectableRows.length > 0 && selectableRows.every((r) => selectedIds.has(r.id));
+
+  function toggleSelectAll() {
+    setSelectedIds((prev) => {
+      if (allSelectableSelected) {
+        const next = new Set(prev);
+        selectableRows.forEach((r) => next.delete(r.id));
+        return next;
+      }
+      const next = new Set(prev);
+      selectableRows.forEach((r) => next.add(r.id));
+      return next;
+    });
+  }
+
+  async function handleBulkConfirm() {
+    const ids = [...selectedIds];
+    if (!ids.length) return;
+    setBulkConfirming(true);
+    try {
+      const results = await Promise.allSettled(ids.map((id) => api.confirmTimeRecord(id)));
+      const failed = results.filter((r) => r.status === "rejected");
+      if (failed.length) {
+        onError(`${failed.length} von ${ids.length} Erfassungen konnten nicht bestätigt werden.`);
+      }
+      setSelectedIds(new Set());
+      loadConfirmPage();
+    } finally {
+      setBulkConfirming(false);
     }
   }
 
@@ -284,6 +348,14 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                   </option>
                 ))}
               </select>
+              {selectedIds.size > 0 && (
+                <span className="settings-table-bulk-bar">
+                  <span>{selectedIds.size} ausgewählt</span>
+                  <button type="button" onClick={handleBulkConfirm} disabled={bulkConfirming}>
+                    {bulkConfirming ? "Bestätigt …" : "Ausgewählte bestätigen"}
+                  </button>
+                </span>
+              )}
             </div>
             {confirmLoading ? (
               <p className="loading-state">Wird geladen …</p>
@@ -297,6 +369,15 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                   <table className="settings-table">
                     <thead>
                       <tr>
+                        <th className="settings-table-checkbox-col">
+                          <input
+                            type="checkbox"
+                            checked={allSelectableSelected}
+                            onChange={toggleSelectAll}
+                            disabled={!selectableRows.length}
+                            title="Alle unauffälligen Zeilen dieser Seite auswählen"
+                          />
+                        </th>
                         {CONFIRM_SORT_COLUMNS.map((col) => (
                           <th key={col.field}>
                             <button
@@ -316,32 +397,46 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                       </tr>
                     </thead>
                     <tbody>
-                      {confirmData.results.map((r) => (
-                        <tr key={r.id} className="settings-table-row">
-                          <td>{r.assignment_date}</td>
-                          <td>{r.assignment_employee_name}</td>
-                          <td>{r.assignment_node_name}</td>
-                          <td>{r.assignment_template_name}</td>
-                          <td>
-                            <span className="time-record-ist">
-                              {(effectiveRecordSegments(r) || [])
-                                .map((s) => `${s.actual_start.slice(0, 5)}–${s.actual_end.slice(0, 5)}`)
-                                .join(", ")}
-                            </span>
-                            <span className={`time-deviation-badge ${deviationClass(r.hours_deviation)}`}>
-                              {formatHoursDeviation(r.hours_deviation)}
-                            </span>
-                          </td>
-                          <td className="settings-table-actions">
-                            <button type="button" className="btn-ghost" onClick={() => openCorrect(r)}>
-                              Korrigieren
-                            </button>
-                            <button type="button" onClick={() => handleConfirm(r)}>
-                              Bestätigen
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                      {confirmData.results.map((r) => {
+                        const risky = isRisky(r);
+                        return (
+                          <tr key={r.id} className="settings-table-row">
+                            <td className="settings-table-checkbox-col" onClick={(e) => e.stopPropagation()}>
+                              <input
+                                type="checkbox"
+                                checked={selectedIds.has(r.id)}
+                                onChange={() => toggleSelect(r.id)}
+                              />
+                            </td>
+                            <td>{r.assignment_date}</td>
+                            <td>{r.assignment_employee_name}</td>
+                            <td>{r.assignment_node_name}</td>
+                            <td>{r.assignment_template_name}</td>
+                            <td>
+                              <span className="time-record-ist">
+                                {(effectiveRecordSegments(r) || [])
+                                  .map((s) => `${s.actual_start.slice(0, 5)}–${s.actual_end.slice(0, 5)}`)
+                                  .join(", ")}
+                              </span>
+                              <span
+                                className={`time-deviation-badge ${deviationClass(r.hours_deviation)}`}
+                                title={risky ? "Auffällig -- bitte vor dem Bestätigen prüfen" : undefined}
+                              >
+                                {formatHoursDeviation(r.hours_deviation)}
+                                {risky && " ⚠"}
+                              </span>
+                            </td>
+                            <td className="settings-table-actions">
+                              <button type="button" className="btn-ghost" onClick={() => openCorrect(r)}>
+                                Korrigieren
+                              </button>
+                              <button type="button" onClick={() => handleConfirm(r)}>
+                                Bestätigen
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

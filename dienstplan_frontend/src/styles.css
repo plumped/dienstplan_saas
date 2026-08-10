@@ -1316,6 +1316,27 @@ thead .col-employee {
   margin-bottom: 12px;
 }
 
+/* Nutzer-Feedback (2026-08): "braucht es eine Funktion um alle zu
+   bestätigen auf einmal?" -- Mehrfachauswahl in der "Zu bestätigen"-Tabelle
+   (TimeRecordOverview.jsx), Leiste erscheint nur, sobald etwas ausgewählt
+   ist, damit sie im Normalfall (nichts markiert) nicht stört. */
+.settings-table-checkbox-col {
+  width: 32px;
+  text-align: center;
+}
+
+.settings-table-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  padding: 4px 10px;
+  background: var(--primary-soft);
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
 /* Nutzer-Feedback (2026-08): "Splitten: alle offenen Bewilligungen neben
    den noch nicht erfassten" -- TimeRecordOverview.jsx zeigt beides als zwei
    umschaltbare Tabellen statt einer gemischten Liste. */
@@ -1398,6 +1419,13 @@ thead .col-employee {
 .settings-table td {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
+  /* Nutzer-Feedback (2026-08, Screenshot): die neue zweizeilige "Ist-Zeit"-
+     Zelle (Uhrzeiten + Abweichungs-Badge) machte Zeilen höher als die
+     übrigen einzeiligen Zellen -- ohne vertical-align hängen die dann
+     mittig ("middle", Browser-Default) statt oben, was uneins bündig
+     wirkte. Oben ausgerichtet ist bei einer Datentabelle ohnehin die
+     erwartbare Norm, unabhängig von variabler Zeilenhöhe. */
+  vertical-align: top;
 }
 
 .settings-table-row {

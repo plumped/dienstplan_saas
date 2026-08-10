@@ -2506,6 +2506,28 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Saldo) für `Ist minus Soll`. 3 neue Backend-Tests (positiv/negativ/exakt Plan), volle Suite
     (427 Tests) grün, mit Playwright end-to-end verifiziert.
 
+    **UX-Nachbesserung (2026-08, Nutzer-Feedback: "braucht es eine Funktion um alle zu bestätigen
+    auf einmal?" / "Ja gerne, zudem gibt es im Styling Unschönheiten" plus Screenshot mit
+    rot markierter Verschiebung um die Spalten "Schichttyp"/"Ist-Zeit")**: zwei separate Punkte.
+    Erstens Mehrfachauswahl in der "Zu bestätigen"-Tabelle (`TimeRecordOverview.jsx`) --
+    Kopfzeilen-Checkbox wählt alle Zeilen der aktuellen Seite aus, eine Sammel-Leiste
+    ("N ausgewählt" + "Ausgewählte bestätigen") erscheint nur, sobald etwas markiert ist. Bewusst
+    kein blindes "alles bestätigen": Zeilen mit auffälliger Abweichung (`|hours_deviation| > 1h`
+    oder `break_below_minimum`) werden von "Alle auswählen" automatisch ausgeschlossen und mit
+    einem "⚠"-Hinweis auf dem Abweichungs-Badge markiert (Tooltip "Auffällig -- bitte vor dem
+    Bestätigen prüfen") -- einzeln bleiben sie weiterhin manuell auswählbar, damit nichts
+    verschleiert wird, aber der Sammel-Klick räumt nur die unauffälligen Fälle weg. Bestätigung
+    läuft über `Promise.allSettled` auf den bestehenden `POST /api/time-records/{id}/confirm/`-
+    Endpunkt (kein neuer Bulk-Endpunkt nötig), Fehlschläge einzelner Einträge werden gemeldet statt
+    die übrigen zu blockieren. Zweitens die im Screenshot markierte Zeilenverschiebung: die neue,
+    zweizeilige "Ist-Zeit"-Zelle (Uhrzeiten + Abweichungs-Badge) machte ihre Zeile höher als die
+    übrigen einzeiligen Zellen -- ohne `vertical-align` hängen kürzere Zellen im Browser-Default
+    ("middle") mittig statt oben, was uneins bündig wirkte. Fix: `vertical-align: top` auf
+    `.settings-table td`. Mit Playwright end-to-end verifiziert (Kopfzeilen-Checkbox wählt korrekt
+    nur unauffällige Zeilen aus, Sammel-Leiste zeigt richtige Anzahl, Sammel-Bestätigung bestätigt
+    alle ausgewählten Einträge und aktualisiert die Badge-Zahl live, alle Tabellenzellen sind nach
+    dem Fix konsistent oben ausgerichtet).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

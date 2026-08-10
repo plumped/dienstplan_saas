@@ -153,6 +153,9 @@ export const api = {
   createNode: (payload) => request("/nodes/", { method: "POST", body: payload }),
   updateNode: (id, payload) => request(`/nodes/${id}/`, { method: "PATCH", body: payload }),
   deleteNode: (id) => request(`/nodes/${id}/`, { method: "DELETE" }),
+  // Nutzer-Feedback (2026-08): Stationen per Drag & Drop verschieben --
+  // parent=null verschiebt auf die oberste Ebene (Wurzelknoten).
+  moveNode: (id, parentId) => request(`/nodes/${id}/move/`, { method: "POST", body: { parent: parentId } }),
 
   getSkills: () => requestAllPages("/skills/"),
   createSkill: (payload) => request("/skills/", { method: "POST", body: payload }),

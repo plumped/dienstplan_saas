@@ -2790,6 +2790,11 @@ class RoleBasedPermissionTests(APITestCase):
         response = self.client.post("/api/nodes/", {"name": "Station B"})
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_employee_cannot_move_node(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(f"/api/nodes/{self.node.id}/move/", {"parent": None}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
     def test_planner_can_create_node(self):
         self.auth_as(self.planner_user)
         response = self.client.post("/api/nodes/", {"name": "Station B"})
@@ -5520,3 +5525,62 @@ class TimeTemplateSearchOrderingAPITests(APITestCase):
         names = [t["name"] for t in response.data["results"]]
         self.assertEqual(names, ["Frühdienst"])
         self.assertEqual(len(response.data["results"]), 1)
+
+
+class NodeMoveAPITests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): POST /api/nodes/{id}/move/ für Drag & Drop im
+    Stationen-Baum (NodeSettings.jsx) -- reparentet einen Knoten unter einen
+    anderen (`parent=<id>`) oder auf die oberste Ebene (`parent=null`).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.planner_user = User.objects.create_user(username="planner-move", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=self.planner_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        # Standort A
+        #   └─ Team A1
+        # Standort B
+        self.standort_a = Node.add_root(name="Standort A", tenant=self.tenant)
+        self.team_a1 = self.standort_a.add_child(name="Team A1", tenant=self.tenant)
+        self.standort_b = Node.add_root(name="Standort B", tenant=self.tenant)
+
+    def test_move_reparents_node_under_new_parent(self):
+        response = self.client.post(f"/api/nodes/{self.standort_b.id}/move/", {"parent": self.standort_a.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.standort_b.refresh_from_db()
+        self.assertEqual(self.standort_b.get_parent().pk, self.standort_a.pk)
+        self.assertEqual(self.standort_b.depth, 2)
+
+    def test_move_to_root_removes_parent(self):
+        response = self.client.post(f"/api/nodes/{self.team_a1.id}/move/", {"parent": None}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.team_a1.refresh_from_db()
+        self.assertIsNone(self.team_a1.get_parent())
+        self.assertEqual(self.team_a1.depth, 1)
+
+    def test_move_updates_descendant_depth(self):
+        grandchild = self.team_a1.add_child(name="Schicht-Gruppe", tenant=self.tenant)
+        self.client.post(f"/api/nodes/{self.team_a1.id}/move/", {"parent": None}, format="json")
+        grandchild.refresh_from_db()
+        self.assertEqual(grandchild.depth, 2)
+        self.assertEqual(grandchild.get_parent().pk, self.team_a1.pk)
+
+    def test_move_into_own_descendant_is_rejected(self):
+        response = self.client.post(f"/api/nodes/{self.standort_a.id}/move/", {"parent": self.team_a1.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.standort_a.refresh_from_db()
+        self.assertIsNone(self.standort_a.get_parent())
+
+    def test_move_into_self_is_rejected(self):
+        response = self.client.post(f"/api/nodes/{self.standort_a.id}/move/", {"parent": self.standort_a.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_move_with_foreign_parent_is_rejected(self):
+        other_tenant, other_user = make_tenant_with_planner("klinik-move-x", "planner-move-x")
+        foreign_node = Node.add_root(name="Fremde Station", tenant=other_tenant)
+        response = self.client.post(f"/api/nodes/{self.standort_b.id}/move/", {"parent": foreign_node.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

@@ -2296,6 +2296,31 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Stations-/Kategorie-Filter, Tenant-Isolation), mit Playwright end-to-end verifiziert (Suche,
     Kategorie-Filter, Sortierung, Modal öffnen/bearbeiten/speichern/neu anlegen).
 
+34. ✅ **Stammdatenpflege: Stationen-Baum -- Suche + Drag & Drop verschieben** (2026-08).
+    Nutzer-Vorgabe: "Nun Punkt 2. Stationen umsetzen. Es wäre zudem wünschenswert wenn ich die
+    Stationen per drag & drop verschieben kann." Anders als Mitarbeitende/Schichttypen (Punkt 32/33)
+    bewusst NICHT auf Tabelle+Modal umgestellt -- eine Baumstruktur ist kein flaches Set, das würde
+    die Eltern-Kind-Beziehung zerstören. Backend: `NodeViewSet.move()` (`POST /api/nodes/{id}/move/`,
+    Body `{"parent": <id>|null}`) nutzt `node.move(target, pos="sorted-child")` zum Umhängen unter
+    einen anderen Knoten bzw. `pos="sorted-sibling"` gegen einen bestehenden Wurzelknoten fürs
+    Verschieben auf die oberste Ebene -- `node_order_by = ["name"]` (Node-Modell) erzwingt ohnehin
+    automatische alphabetische Sortierung innerhalb einer Ebene, Drag & Drop reparentet daher nur,
+    sortiert nicht manuell um. Zyklus-Versuche (in sich selbst oder einen eigenen Nachfahren
+    verschieben) fangen sowohl treebeards `InvalidMoveToDescendant` (Server, autoritativ) als auch
+    ein `path`-Präfix-Check im Frontend ab (verhindert das Drop-Target optisch schon vor dem
+    Request). Frontend: `NodeSettings.jsx` bekam natives HTML5-Drag&Drop (Griff-Icon ⠿, ziehbare
+    Zeilen, farblich hervorgehobenes Drop-Ziel, eigene "Auf oberste Ebene verschieben"-Dropzone, die
+    nur während eines aktiven Zugs erscheint) sowie ein Freitext-Suchfeld, das einen Treffer
+    zusammen mit seiner kompletten Eltern-Kette zeigt (sonst hinge ein gefundener Unterknoten ohne
+    Kontext im Baum) -- beides ebenfalls rein clientseitig über den `path`-String gelöst, ohne
+    Server-Roundtrip. Da ein Verschieben potenziell viele Knoten gleichzeitig betrifft (der Knoten
+    selbst plus alle Nachfahren ändern `depth`/`path`), lädt `SettingsPanel.jsx` nach jedem Move
+    den kompletten (kleinen) Baum neu, statt das clientseitig nachzurechnen. 6 neue Backend-Tests
+    (Umhängen, auf oberste Ebene verschieben, Nachfahren-Tiefe nach Verschieben, Zyklus-Schutz
+    gegen sich selbst/eigene Nachfahren, fremder Tenant, Berechtigung), mit Playwright end-to-end
+    verifiziert (natives Drag&Drop über simulierte `DataTransfer`-Objekte, da Playwright kein
+    echtes OS-Drag kann).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

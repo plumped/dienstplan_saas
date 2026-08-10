@@ -87,6 +87,17 @@ export default function SettingsPanel({ me, onError }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Nutzer-Feedback (2026-08): Drag & Drop im Stationen-Baum (NodeSettings.jsx)
+  // verschiebt einen Knoten samt aller Nachfahren -- deren depth/path ändern
+  // sich serverseitig alle auf einmal. Statt das clientseitig nachzurechnen,
+  // einfach den kompletten (kleinen) Baum neu laden.
+  function reloadNodes() {
+    api
+      .getNodes()
+      .then((data) => setNodes(data.results ?? data))
+      .catch((e) => onError(e.message));
+  }
+
   if (loading) return <p className="loading-state">Einstellungen werden geladen …</p>;
 
   if (!module) {
@@ -136,6 +147,7 @@ export default function SettingsPanel({ me, onError }) {
           onCreated={(n) => setNodes((prev) => [...prev, n])}
           onUpdated={(n) => setNodes((prev) => prev.map((x) => (x.id === n.id ? n : x)))}
           onDeleted={(id) => setNodes((prev) => prev.filter((x) => x.id !== id))}
+          onNodesChanged={reloadNodes}
           onError={onError}
         />
       )}

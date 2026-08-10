@@ -9,6 +9,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from treebeard.exceptions import InvalidMoveToDescendant, PathOverflow
 
 from core.context import set_current_tenant
 from core.models import Membership
@@ -192,6 +193,53 @@ class NodeViewSet(TenantScopedViewSet):
             node = Node.add_root(name=name, tenant=tenant)
 
         serializer.instance = node
+
+    @action(detail=True, methods=["post"])
+    def move(self, request, pk=None):
+        """
+        Nutzer-Feedback (2026-08): Stationen per Drag & Drop verschieben statt
+        nur anlegen/umbenennen/löschen zu können. `node_order_by = ["name"]`
+        (siehe Node-Modell) sortiert Geschwisterknoten immer automatisch
+        alphabetisch -- Drag & Drop reparentet daher (verschiebt UNTER einen
+        anderen Knoten oder auf die oberste Ebene), sortiert aber nicht
+        manuell innerhalb derselben Ebene um (treebeard erzwingt ohnehin
+        `pos="sorted-child"`/`"sorted-sibling"`, sobald `node_order_by`
+        gesetzt ist -- ein `pos=None` würde denselben Effekt haben).
+        """
+        node = self.get_object()
+        tenant = request.tenant
+        parent_id = request.data.get("parent")
+
+        if parent_id:
+            target = Node.all_objects.filter(tenant=tenant, pk=parent_id).first()
+            if target is None:
+                raise ValidationError({"parent": "Ungültiger oder fremder Knoten."})
+            if target.pk == node.pk:
+                raise ValidationError({"parent": "Eine Station kann nicht in sich selbst verschoben werden."})
+            try:
+                node.move(target, pos="sorted-child")
+            except InvalidMoveToDescendant:
+                raise ValidationError(
+                    {"parent": "Eine Station kann nicht in eine ihrer eigenen Unterstationen verschoben werden."}
+                )
+            except PathOverflow:
+                raise ValidationError({"parent": "Zu viele Stationen auf dieser Ebene -- Verschieben nicht möglich."})
+        else:
+            # Auf die oberste Ebene verschieben (Wurzelknoten). Wurzelknoten
+            # liegen -- wie schon bei add_root() oben -- in einem
+            # tenant-übergreifend gemeinsamen Pfad-Namensraum (treebeard
+            # partitioniert die Baumstruktur selbst nicht nach dem
+            # `tenant`-Feld), deshalb reicht irgendein bestehender
+            # Wurzelknoten als reine Sortier-Referenz.
+            sibling = Node.get_first_root_node()
+            if sibling is not None and sibling.pk != node.pk:
+                try:
+                    node.move(sibling, pos="sorted-sibling")
+                except InvalidMoveToDescendant:
+                    raise ValidationError({"parent": "Ungültige Verschiebung."})
+
+        node.refresh_from_db()
+        return Response(NodeSerializer(node).data)
 
 
 class SkillViewSet(TenantScopedViewSet):

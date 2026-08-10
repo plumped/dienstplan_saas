@@ -1744,6 +1744,32 @@ thead .col-employee {
   color: var(--ink-muted);
 }
 
+/* Nutzer-Feedback (2026-08): "Sichtbarkeit der IST-Zeit... grün für +, rot
+   für -" -- TimeRecordOverview.jsx zeigt in der "Zu bestätigen"-Tabelle
+   die erfassten Zeiten plus eine farbige Stunden-Abweichung (Ist ./. Soll),
+   damit ein Planer nicht erst das Korrigieren-Modal öffnen muss, um zu
+   sehen, ob mehr oder weniger als geplant gearbeitet wurde. */
+.time-record-ist {
+  display: block;
+  font-variant-numeric: tabular-nums;
+}
+
+.time-deviation-badge {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.time-deviation-badge.is-positive {
+  color: #2e7d32;
+}
+
+.time-deviation-badge.is-negative {
+  color: var(--warn);
+}
+
 .time-record-notes {
   display: flex;
   flex-direction: column;

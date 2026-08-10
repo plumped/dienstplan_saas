@@ -1124,6 +1124,40 @@ class TimeRecordTests(TestCase):
         )
         self.assertEqual(record.actual_hours, 7.5)
 
+    def test_hours_deviation_matches_plan_is_zero(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        self.assertEqual(record.hours_deviation, 0)
+
+    def test_hours_deviation_positive_when_worked_more_than_planned(self):
+        # Plan: 07:00-15:00 minus 30 Min. Pause = 7.5h. Ist: 15:30 statt
+        # 15:00 Ende, gleiche Pause -> 8.0h, also +0.5h.
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 30),
+            actual_break_minutes=30,
+            note="Übergabe verzögert",
+        )
+        self.assertEqual(record.hours_deviation, 0.5)
+
+    def test_hours_deviation_negative_when_worked_less_than_planned(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(14, 30),
+            actual_break_minutes=30,
+            note="Früher gegangen",
+        )
+        self.assertEqual(record.hours_deviation, -0.5)
+
     def test_break_below_minimum_is_flagged(self):
         record = TimeRecord(
             tenant=self.tenant,

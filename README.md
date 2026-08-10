@@ -2493,6 +2493,19 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Modal markiert alle drei Unterstationen von "Station A" korrekt als eingeschlossen+deaktiviert
     mit Begründungstext).
 
+    **UX-Nachbesserung (2026-08, Nutzer-Feedback: "Bei der Zeiterfassung fehlt noch die
+    Sichtbarkeit der IST-Zeit um schnell zu prüfen. Eventuell sogar farblich grün für + und rot
+    für -")**: die "Zu bestätigen"-Tabelle zeigte bisher nur Datum/Mitarbeiter/Station/Schichttyp
+    -- um zu sehen, ob eine Erfassung plausibel ist, musste ein Planer immer erst das
+    Korrigieren-Modal öffnen. Neue Spalte "Ist-Zeit" zeigt jetzt direkt die erfassten
+    Uhrzeiten sowie eine farbige Stunden-Abweichung Ist ./. Soll darunter (grün bei mehr, rot bei
+    weniger als geplant gearbeitet). Neues `TimeRecord.hours_deviation`-Property (Backend) --
+    bewusst nicht `deviation_minutes`/`end_deviation_minutes` wiederverwendet (die messen nur die
+    Abweichung von Start-/Endzeitpunkt, nicht die tatsächliche Netto-Stunden-Differenz) --
+    wiederverwendet stattdessen `ShiftAssignment._shift_hours()` (dieselbe Soll-Berechnung wie im
+    Saldo) für `Ist minus Soll`. 3 neue Backend-Tests (positiv/negativ/exakt Plan), volle Suite
+    (427 Tests) grün, mit Playwright end-to-end verifiziert.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

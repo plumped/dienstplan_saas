@@ -503,6 +503,11 @@ class TimeRecordSerializer(serializers.ModelSerializer):
     deviation_minutes = serializers.IntegerField(read_only=True)
     end_deviation_minutes = serializers.IntegerField(read_only=True)
     actual_hours = serializers.FloatField(read_only=True)
+    # Nutzer-Feedback (2026-08): "Sichtbarkeit der IST-Zeit... grün für +,
+    # rot für -" -- Netto-Stunden-Differenz Ist ggü. Soll (siehe
+    # TimeRecord.hours_deviation-Docstring), für die farbliche Kennzeichnung
+    # in TimeRecordOverview.jsx.
+    hours_deviation = serializers.FloatField(read_only=True)
     break_minutes_total = serializers.IntegerField(read_only=True)
     break_below_minimum = serializers.BooleanField(read_only=True)
     # Block 1.12: bei Templates mit Segmenten (siehe TimeTemplate.segments)
@@ -546,6 +551,7 @@ class TimeRecordSerializer(serializers.ModelSerializer):
             "deviation_minutes",
             "end_deviation_minutes",
             "actual_hours",
+            "hours_deviation",
             "break_minutes_total",
             "break_below_minimum",
             "segments",

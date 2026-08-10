@@ -22,6 +22,22 @@ const MISSING_SORT_COLUMNS = [
 
 const emptyPage = { count: 0, next: null, previous: null, results: [] };
 
+// Nutzer-Feedback (2026-08): "Sichtbarkeit der IST-Zeit... grün für +, rot
+// für -" -- hours_deviation (Ist minus Soll in Stunden, siehe
+// TimeRecord.hours_deviation im Backend) macht auf einen Blick sichtbar, ob
+// mehr (grün) oder weniger (rot) als geplant gearbeitet wurde, ohne dass ein
+// Planer dafür erst das Korrigieren-Modal öffnen muss.
+function deviationClass(hours) {
+  if (hours > 0) return "is-positive";
+  if (hours < 0) return "is-negative";
+  return "";
+}
+
+function formatHoursDeviation(hours) {
+  if (!hours) return "±0 h";
+  return `${hours > 0 ? "+" : ""}${hours.toFixed(1)} h`;
+}
+
 // Nutzer-Feedback (2026-08): "ich muss die Stationen durchsuchen, bis ich
 // die zu bestätigende Erfassung finde -- Splitten: alle offenen Bewilligungen
 // neben den noch nicht erfassten, tabellarisch wie bei den Einstellungen."
@@ -295,6 +311,7 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                           </th>
                         ))}
                         <th>Schichttyp</th>
+                        <th>Ist-Zeit</th>
                         <th />
                       </tr>
                     </thead>
@@ -305,6 +322,16 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                           <td>{r.assignment_employee_name}</td>
                           <td>{r.assignment_node_name}</td>
                           <td>{r.assignment_template_name}</td>
+                          <td>
+                            <span className="time-record-ist">
+                              {(effectiveRecordSegments(r) || [])
+                                .map((s) => `${s.actual_start.slice(0, 5)}–${s.actual_end.slice(0, 5)}`)
+                                .join(", ")}
+                            </span>
+                            <span className={`time-deviation-badge ${deviationClass(r.hours_deviation)}`}>
+                              {formatHoursDeviation(r.hours_deviation)}
+                            </span>
+                          </td>
                           <td className="settings-table-actions">
                             <button type="button" className="btn-ghost" onClick={() => openCorrect(r)}>
                               Korrigieren

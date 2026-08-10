@@ -2021,6 +2021,18 @@ class TimeRecord(TenantScopedModel):
         return round((segments[0][0] - planned[0][0]).total_seconds() / 60)
 
     @property
+    def hours_deviation(self):
+        """
+        Nutzer-Feedback (2026-08): "Sichtbarkeit der IST-Zeit... grün für +,
+        rot für -" -- anders als deviation_minutes (nur Start-Zeitpunkt) hier
+        die Netto-Stunden-Differenz Ist ggü. Soll, damit ein Planer beim
+        Bestätigen auf einen Blick sieht, ob insgesamt mehr oder weniger als
+        geplant gearbeitet wurde. Wiederverwendet ShiftAssignment._shift_hours
+        (dieselbe Soll-Berechnung wie im Saldo) statt einer eigenen.
+        """
+        return round(self.actual_hours - ShiftAssignment._shift_hours(self.assignment.date, self.assignment.template), 2)
+
+    @property
     def end_deviation_minutes(self):
         """Abweichung des tatsächlichen vom geplanten Arbeitsende (letztes Segment), in Minuten (positiv = später)."""
         segments = self._actual_datetimes_list()

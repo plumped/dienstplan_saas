@@ -4,6 +4,7 @@ from .views import (
     AbsenceTypeViewSet,
     AbsenceViewSet,
     EmployeeViewSet,
+    MissingTimeRecordViewSet,
     NodeViewSet,
     PregnancyViewSet,
     ShiftAssignmentViewSet,
@@ -26,5 +27,6 @@ router.register("pregnancies", PregnancyViewSet, basename="pregnancy")
 router.register("shift-preferences", ShiftPreferenceViewSet, basename="shiftpreference")
 router.register("shift-trade-requests", ShiftTradeRequestViewSet, basename="shifttraderequest")
 router.register("time-records", TimeRecordViewSet, basename="timerecord")
+router.register("missing-time-records", MissingTimeRecordViewSet, basename="missingtimerecord")
 
 urlpatterns = router.urls

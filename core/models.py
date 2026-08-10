@@ -238,6 +238,24 @@ class Membership(models.Model):
     )
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="memberships")
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.EMPLOYEE)
+    # Nutzer-Feedback (2026-08): "Natürlich gibt es in einer Klinik Planer mit
+    # unterschiedlichen Zuständigkeiten! Nur Admin darf immer alles sehen."
+    # Nur für PLANNER/HR ausgewertet (siehe scheduling.views.
+    # _employee_scoped_node_ids) -- ADMIN bleibt davon unabhängig immer
+    # uneingeschränkt, EMPLOYEE nutzt weiterhin Employee.nodes/Employment.
+    # Leer = keine Einschränkung (bisheriges Verhalten, migrationssicher für
+    # alle heute schon bestehenden Planer/HR-Mitgliedschaften) -- erst eine
+    # explizite Zuweisung schränkt ein. String-Referenz "scheduling.Node"
+    # statt Import, damit core (die "unterste" App) kein Modul-Level-
+    # Abhängigkeit zu scheduling bekommt (siehe core.views.MeView-Docstring
+    # für dasselbe Prinzip).
+    scoped_nodes = models.ManyToManyField(
+        "scheduling.Node",
+        related_name="scoped_memberships",
+        blank=True,
+        help_text="Nur für Planer/HR: schränkt die Sichtbarkeit auf diese Stationen (inkl. Unterstationen) "
+        "ein. Leer = keine Einschränkung.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

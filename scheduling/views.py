@@ -24,6 +24,7 @@ from core.notifications import (
 from core.permissions import (
     MANAGER_ROLES,
     IsTenantManager,
+    IsTenantManagerOrHR,
     OwnEmployeeRecordPermission,
     PregnancyPermission,
     ShiftPreferencePermission,
@@ -122,41 +123,59 @@ class TenantScopedViewSet(viewsets.ModelViewSet):
         serializer.save(tenant=self.request.tenant)
 
 
-def _employee_scoped_node_ids(request):
+def _employee_scoped_node_ids(membership, employee_profile):
     """
-    Ein Mitarbeiter darf nur seine eigene(n) Station(en) sehen -- anders als
-    beim übrigen Planblatt (siehe ShiftAssignmentViewSet: "Mitarbeitende
-    sehen den ganzen Plan (Transparenz)") gilt diese Transparenz nur
-    INNERHALB der eigenen Station(en), nicht tenant-weit über alle Stationen
-    hinweg. Gibt None zurück, wenn keine Einschränkung gilt (Admin/Planer/HR
-    sehen weiterhin alle Stationen des Tenants), sonst die Liste der
-    Node-IDs, auf die die Mitarbeiter-Rolle beschränkt ist (leere Liste, falls
-    kein Employee-Profil existiert). Von NodeViewSet, TimeTemplateViewSet und
-    ShiftAssignmentViewSet gleich ausgewertet, damit alle drei
-    node-bezogenen Ressourcen konsistent eingeschränkt sind.
+    Wer welche Stationen sieht, hängt von der Rolle ab. Gibt None zurück,
+    wenn keine Einschränkung gilt (unveränderte Sicht auf den ganzen
+    Tenant), sonst die Liste der Node-IDs, auf die die Sicht beschränkt ist.
+    Von NodeViewSet, TimeTemplateViewSet, ShiftAssignmentViewSet,
+    TimeRecordViewSet und MissingTimeRecordViewSet gleich ausgewertet, damit
+    alle node-bezogenen Ressourcen konsistent eingeschränkt sind.
 
-    README Punkt 17: employee_profile.nodes enthält bei Team-Anstellungen
-    Team- statt Stations-Ids. Damit TimeTemplates (die bewusst stationsweit
-    bleiben, siehe ShiftAssignmentViewSet-Docstring) und die Station selbst
-    im NodeViewSet weiterhin sichtbar sind, wird hier zusätzlich der direkte
-    Elternknoten jedes eigenen Knotens aufgenommen (eine Ebene, konsistent
-    mit der "genau ein Team-Level"-Entscheidung). Für jede heutige, flache
-    Station ohne Eltern-Knoten ist das ein No-Op -- identisches Verhalten zu
-    vorher.
+    - ADMIN: immer None -- uneingeschränkt, unabhängig von allem anderen
+      (Nutzer-Vorgabe 2026-08: "Nur Admin darf immer alles sehen").
+    - EMPLOYEE: beschränkt auf employee_profile.nodes (leere Liste, falls
+      kein Employee-Profil existiert). README Punkt 17: employee_profile.
+      nodes enthält bei Team-Anstellungen Team- statt Stations-Ids. Damit
+      TimeTemplates (die bewusst stationsweit bleiben, siehe
+      ShiftAssignmentViewSet-Docstring) und die Station selbst im
+      NodeViewSet weiterhin sichtbar sind, wird hier zusätzlich der direkte
+      Elternknoten jedes eigenen Knotens aufgenommen (eine Ebene, konsistent
+      mit der "genau ein Team-Level"-Entscheidung). Für jede heutige, flache
+      Station ohne Eltern-Knoten ist das ein No-Op.
+    - PLANNER/HR (Nutzer-Feedback 2026-08: "Natürlich gibt es in einer
+      Klinik Planer mit unterschiedlichen Zuständigkeiten! Gleiches gilt
+      auch für HR."): beschränkt auf Membership.scoped_nodes samt aller
+      Unterstationen (get_descendants() -- ein "Bereich" wie "Pflege" soll
+      automatisch auch dessen Teams/Unterstationen einschliessen, anders als
+      bei EMPLOYEE reicht hier eine Ebene nicht). Leere scoped_nodes = keine
+      Einschränkung konfiguriert -> None, damit jede heute schon bestehende
+      Planer-/HR-Mitgliedschaft ohne Zutun weiterhin alles sieht
+      (migrationssicher) -- erst eine explizite Zuweisung (siehe
+      MembershipViewSet) schränkt tatsächlich ein.
     """
-    membership = request.membership
-    if not membership or membership.role != Membership.Role.EMPLOYEE:
+    if not membership or membership.role == Membership.Role.ADMIN:
         return None
-    employee_profile = request.employee_profile
-    if not employee_profile:
-        return []
-    own_nodes = list(employee_profile.nodes.all())
-    node_ids = {n.id for n in own_nodes}
-    for n in own_nodes:
-        parent = n.get_parent()
-        if parent is not None:
-            node_ids.add(parent.id)
-    return list(node_ids)
+    if membership.role == Membership.Role.EMPLOYEE:
+        if not employee_profile:
+            return []
+        own_nodes = list(employee_profile.nodes.all())
+        node_ids = {n.id for n in own_nodes}
+        for n in own_nodes:
+            parent = n.get_parent()
+            if parent is not None:
+                node_ids.add(parent.id)
+        return list(node_ids)
+    if membership.role in (Membership.Role.PLANNER, Membership.Role.HR):
+        scoped = list(membership.scoped_nodes.all())
+        if not scoped:
+            return None
+        node_ids = set()
+        for n in scoped:
+            node_ids.add(n.id)
+            node_ids.update(d.id for d in n.get_descendants())
+        return list(node_ids)
+    return None
 
 
 class NodeViewSet(TenantScopedViewSet):
@@ -174,7 +193,7 @@ class NodeViewSet(TenantScopedViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        node_ids = _employee_scoped_node_ids(self.request)
+        node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
         if node_ids is not None:
             qs = qs.filter(id__in=node_ids)
         return qs
@@ -474,7 +493,7 @@ class TimeTemplateViewSet(TenantScopedViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        node_ids = _employee_scoped_node_ids(self.request)
+        node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
         if node_ids is not None:
             qs = qs.filter(node_id__in=node_ids)
         node_id = self.request.query_params.get("node")
@@ -504,7 +523,7 @@ class ShiftAssignmentViewSet(TenantScopedViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset().select_related("employee", "template", "node")
-        node_ids = _employee_scoped_node_ids(self.request)
+        node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
         if node_ids is not None:
             qs = qs.filter(node_id__in=node_ids)
         node = self.request.query_params.get("node")
@@ -888,20 +907,41 @@ class TimeRecordViewSet(TenantScopedViewSet):
     Schicht schreiben (geprüft in perform_create, das Objekt existiert bei
     create noch nicht) und ihren Eintrag bearbeiten/löschen, solange er
     noch nicht bestätigt ist (TimeRecordPermission).
+
+    Nutzer-Feedback (2026-08): "ich muss die Stationen durchsuchen, bis ich
+    die zu bestätigende Erfassung finde" -- ?status= sowie ?node=/Scoping und
+    Suche/Sortierung (analog EmployeeViewSet/TimeTemplateViewSet) erlauben
+    jetzt eine stationsübergreifende "Zu bestätigen"-Tabelle statt Station
+    für Station manuell nachzuschauen (siehe TimeRecordOverview.jsx).
     """
 
     permission_classes = [permissions.IsAuthenticated, TimeRecordPermission]
     queryset = TimeRecord.all_objects.all()
     serializer_class = TimeRecordSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["assignment__employee__first_name", "assignment__employee__last_name", "assignment__node__name"]
+    ordering_fields = ["assignment__date", "assignment__employee__last_name", "assignment__node__name", "status"]
+    ordering = ["-assignment__date"]
 
     def get_queryset(self):
-        qs = super().get_queryset().select_related("assignment", "assignment__employee", "assignment__template")
+        qs = super().get_queryset().select_related(
+            "assignment", "assignment__employee", "assignment__node", "assignment__template"
+        )
+        node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
+        if node_ids is not None:
+            qs = qs.filter(assignment__node_id__in=node_ids)
+        node = self.request.query_params.get("node")
+        if node:
+            qs = qs.filter(assignment__node_id=node)
         assignment = self.request.query_params.get("assignment")
         if assignment:
             qs = qs.filter(assignment_id=assignment)
         employee = self.request.query_params.get("employee")
         if employee:
             qs = qs.filter(assignment__employee_id=employee)
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            qs = qs.filter(status=status_param)
         date_from = self.request.query_params.get("date_from")
         if date_from:
             qs = qs.filter(assignment__date__gte=date_from)
@@ -926,6 +966,50 @@ class TimeRecordViewSet(TenantScopedViewSet):
         except DjangoValidationError as e:
             raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
         return Response(self.get_serializer(time_record).data)
+
+
+class MissingTimeRecordViewSet(TenantScopedViewSet):
+    """
+    Nutzer-Feedback (2026-08): Planer/HR sollen vergangene Schichten ohne
+    Ist-Erfassung stationsübergreifend als eigene, durchsuchbare/sortierbare
+    Tabelle sehen ("Noch nicht erfasst" in TimeRecordOverview.jsx) statt
+    Station für Station manuell zu suchen. Rein lesend -- die eigentliche
+    Erfassung läuft weiterhin über TimeRecordViewSet.create(); dieses
+    ViewSet listet nur, was dafür noch fehlt.
+    """
+
+    http_method_names = ["get", "head", "options"]
+    permission_classes = [permissions.IsAuthenticated, IsTenantManagerOrHR]
+    queryset = ShiftAssignment.all_objects.all()
+    serializer_class = ShiftAssignmentSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["employee__first_name", "employee__last_name", "node__name"]
+    ordering_fields = ["date", "employee__last_name", "node__name"]
+    ordering = ["date"]
+
+    def get_queryset(self):
+        qs = (
+            super()
+            .get_queryset()
+            .select_related("employee", "node", "template")
+            .filter(date__lte=timezone.localdate(), time_record__isnull=True)
+        )
+        node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
+        if node_ids is not None:
+            qs = qs.filter(node_id__in=node_ids)
+        node = self.request.query_params.get("node")
+        if node:
+            qs = qs.filter(node_id=node)
+        employee = self.request.query_params.get("employee")
+        if employee:
+            qs = qs.filter(employee_id=employee)
+        date_from = self.request.query_params.get("date_from")
+        if date_from:
+            qs = qs.filter(date__gte=date_from)
+        date_to = self.request.query_params.get("date_to")
+        if date_to:
+            qs = qs.filter(date__lte=date_to)
+        return qs
 
 
 class UnderstaffedShiftsView(TenantScopedAPIMixin, APIView):

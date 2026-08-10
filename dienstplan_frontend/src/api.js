@@ -311,6 +311,23 @@ export const api = {
     requestAllPages(
       dateFrom && dateTo ? `/time-records/?date_from=${dateFrom}&date_to=${dateTo}` : "/time-records/"
     ),
+  // Nutzer-Feedback (2026-08): "ich muss die Stationen durchsuchen, bis ich
+  // die zu bestätigende Erfassung finde" -- gleiches Muster wie
+  // searchEmployees()/searchTimeTemplates() oben: eine gefilterte/sortierte
+  // Einzelseite (DRF-Envelope), stationsübergreifend (Scoping passiert
+  // serverseitig über TimeRecordViewSet), für TimeRecordOverview.jsx.
+  searchTimeRecords: ({ status, node, search, ordering, page, dateFrom, dateTo } = {}) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (node) params.set("node", node);
+    if (search) params.set("search", search);
+    if (ordering) params.set("ordering", ordering);
+    if (page) params.set("page", page);
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
+    const qs = params.toString();
+    return request(`/time-records/${qs ? `?${qs}` : ""}`);
+  },
   createTimeRecord: (payload) =>
     request("/time-records/", { method: "POST", body: payload, affectsBalance: true, affectsTasks: true }),
   updateTimeRecord: (id, payload) =>
@@ -324,4 +341,27 @@ export const api = {
     request(`/time-records/${id}/`, { method: "DELETE", affectsBalance: true, affectsTasks: true }),
   confirmTimeRecord: (id) =>
     request(`/time-records/${id}/confirm/`, { method: "POST", affectsBalance: true, affectsTasks: true }),
+
+  // Nutzer-Feedback (2026-08): "Noch nicht erfasst" -- Gegenstück zu
+  // searchTimeRecords() oben, aber für vergangene ShiftAssignments OHNE
+  // TimeRecord (siehe scheduling.views.MissingTimeRecordViewSet). Rein
+  // lesend, deshalb kein create/update/delete hier.
+  getMissingTimeRecords: ({ node, search, ordering, page, dateFrom, dateTo } = {}) => {
+    const params = new URLSearchParams();
+    if (node) params.set("node", node);
+    if (search) params.set("search", search);
+    if (ordering) params.set("ordering", ordering);
+    if (page) params.set("page", page);
+    if (dateFrom) params.set("date_from", dateFrom);
+    if (dateTo) params.set("date_to", dateTo);
+    const qs = params.toString();
+    return request(`/missing-time-records/${qs ? `?${qs}` : ""}`);
+  },
+
+  // Nutzer-Feedback (2026-08): "kann man [Planer] Stationen zuweisen?" --
+  // Admin-only Verwaltung von Membership.scoped_nodes, siehe
+  // MembershipViewSet/MembershipAccessSettings.jsx.
+  getMemberships: () => requestAllPages("/memberships/"),
+  updateMembershipScopedNodes: (id, nodeIds) =>
+    request(`/memberships/${id}/`, { method: "PATCH", body: { scoped_nodes: nodeIds } }),
 };

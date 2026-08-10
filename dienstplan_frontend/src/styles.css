@@ -1316,6 +1316,36 @@ thead .col-employee {
   margin-bottom: 12px;
 }
 
+/* Nutzer-Feedback (2026-08): "Splitten: alle offenen Bewilligungen neben
+   den noch nicht erfassten" -- TimeRecordOverview.jsx zeigt beides als zwei
+   umschaltbare Tabellen statt einer gemischten Liste. */
+.segmented-control {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px;
+  margin-bottom: 16px;
+}
+
+.segmented-control-btn {
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 6px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.segmented-control-btn.is-active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
 .settings-table-toolbar .panel-list-filter {
   flex: 1;
   min-width: 160px;
@@ -1567,6 +1597,47 @@ thead .col-employee {
 
 .entry-note--warn {
   color: var(--warn);
+}
+
+/* Nutzer-Feedback (2026-08): "kann man [Planer] Stationen zuweisen?" --
+   MembershipAccessSettings.jsx zeigt gescopte Stationen als kleine Pills
+   statt als reinen Fliesstext, damit mehrere Stationen auf einen Blick
+   zählbar bleiben. */
+.entry-note--chip {
+  display: inline-block;
+  background: var(--primary-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 9px;
+  margin: 2px 6px 0 0;
+  font-size: 12.5px;
+}
+
+.node-checkbox-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.node-checkbox-list li {
+  border-bottom: 1px solid var(--border);
+}
+
+.node-checkbox-list li:last-child {
+  border-bottom: none;
+}
+
+.node-checkbox-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  font-weight: 400;
+  cursor: pointer;
 }
 
 /* README (2026-08, UX-Bugfix): der Zeiterfassung-Tab (TimeRecordPanel.jsx)

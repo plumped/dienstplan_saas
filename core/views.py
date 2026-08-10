@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 
 from core.models import Membership, TenantHolidayOverride
 from core.permissions import IsTenantAdmin
-from core.serializers import TenantHolidayOverrideSerializer, TenantSerializer
+from core.serializers import MembershipSerializer, TenantHolidayOverrideSerializer, TenantSerializer
 from core.tenancy import resolve_membership_for_user
 
 _EMPTY_TASK_COUNTS = {"absences": 0, "trades": 0, "time_records": 0}
@@ -51,10 +51,29 @@ def _task_counts(membership, employee):
     Zeiterfassung genehmigen sie ohnehin nicht, dort bleibt der Zähler 0.
     Import von scheduling.models hier aus demselben Grund wie in MeView.get()
     (core bleibt die "unterste" App).
+
+    Nutzer-Feedback (2026-08): "ich muss die Stationen durchsuchen, bis ich
+    die zu bestätigende Erfassung finde" -- der time_records-Zähler zählte
+    bisher tenant-weit, unabhängig davon, ob ein Planer inzwischen (siehe
+    Membership.scoped_nodes) auf einzelne Stationen eingeschränkt ist. Jetzt
+    stationsübergreifend über GENAU die Stationen gezählt, die der Planer in
+    der neuen "Zu bestätigen"-Übersicht auch tatsächlich sieht (dieselbe
+    Scoping-Logik wie TimeRecordViewSet, siehe _employee_scoped_node_ids) --
+    sonst würde die Badge-Zahl wieder nicht zu dem passen, was ein Klick
+    darauf zeigt. absences/trades bleiben bewusst tenant-weit (kein direkter
+    Stationsbezug ohne zusätzlichen Join über Employee -- ausserhalb des
+    Rahmens dieser Änderung, siehe README).
     """
     from scheduling.models import Absence, ShiftTradeRequest, TimeRecord
+    from scheduling.views import _employee_scoped_node_ids
 
     if membership.role in (Membership.Role.ADMIN, Membership.Role.PLANNER):
+        time_records_qs = TimeRecord.all_objects.filter(
+            tenant=membership.tenant, status=TimeRecord.Status.SUBMITTED
+        )
+        node_ids = _employee_scoped_node_ids(membership, None)
+        if node_ids is not None:
+            time_records_qs = time_records_qs.filter(assignment__node_id__in=node_ids)
         return {
             "absences": Absence.all_objects.filter(
                 tenant=membership.tenant, status=Absence.Status.PENDING
@@ -66,9 +85,7 @@ def _task_counts(membership, employee):
             "trades": ShiftTradeRequest.all_objects.filter(
                 tenant=membership.tenant, status=ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
             ).count(),
-            "time_records": TimeRecord.all_objects.filter(
-                tenant=membership.tenant, status=TimeRecord.Status.SUBMITTED
-            ).count(),
+            "time_records": time_records_qs.count(),
         }
     if membership.role == Membership.Role.EMPLOYEE and employee:
         return {
@@ -173,6 +190,41 @@ class TenantHolidayOverrideViewSet(TenantScopedAPIMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(tenant=self.request.tenant)
+
+
+class MembershipViewSet(TenantScopedAPIMixin, viewsets.ModelViewSet):
+    """
+    Nutzer-Feedback (2026-08): "Kann man [Planer] Stationen zuweisen?" --
+    Admin-only Verwaltung von Membership.scoped_nodes (siehe
+    scheduling.views._employee_scoped_node_ids und MembershipSerializer).
+    Bewusst kein create/destroy über diesen Endpoint: es geht nur um die
+    Stations-Einschränkung EINER bereits bestehenden Mitgliedschaft, nicht um
+    Einladung/Rollenvergabe (bleibt wie bisher Django-Admin-only, siehe
+    EmployeeSettings.jsx-Kommentar) -- ein "falscher" Endpoint dafür wäre
+    mehr Verwirrung als Nutzen.
+    """
+
+    http_method_names = ["get", "head", "options", "patch"]
+    serializer_class = MembershipSerializer
+    permission_classes = [IsAuthenticated, IsTenantAdmin]
+
+    def get_queryset(self):
+        if not self.request.tenant:
+            return Membership.objects.none()
+        return Membership.objects.filter(tenant=self.request.tenant).select_related("user").order_by(
+            "role", "user__username"
+        )
+
+    def perform_update(self, serializer):
+        # ADMIN ist in _employee_scoped_node_ids() unbedingt uneingeschränkt
+        # (Nutzer-Vorgabe: "Nur Admin darf immer alles sehen") -- scoped_nodes
+        # auf einer Admin-Mitgliedschaft zu speichern hätte also nie einen
+        # Effekt. Klarer Fehler statt eines stillen No-Ops.
+        if serializer.instance.role == Membership.Role.ADMIN:
+            raise ValidationError(
+                {"scoped_nodes": "Admin sieht immer alle Stationen -- keine Einschränkung möglich."}
+            )
+        serializer.save()
 
 
 class TenantHolidaysView(TenantScopedAPIMixin, APIView):

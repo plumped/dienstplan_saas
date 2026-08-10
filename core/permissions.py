@@ -18,6 +18,12 @@ from rest_framework.permissions import SAFE_METHODS, BasePermission
 from core.models import Membership
 
 MANAGER_ROLES = {Membership.Role.ADMIN, Membership.Role.PLANNER}
+# Nutzer-Feedback (2026-08): die neue stationsübergreifende
+# Zeiterfassungs-Übersicht (README, Zeiterfassung-Notiz) ist auch für HR
+# relevant ("nur Reporting", aber genau dafür ist ein Überblick über offene
+# Erfassungen gedacht) -- anders als MANAGER_ROLES, das nur die
+# SCHREIB-Berechtigung (IsTenantManager) beschreibt.
+MANAGER_AND_HR_ROLES = MANAGER_ROLES | {Membership.Role.HR}
 
 
 class IsTenantManager(BasePermission):
@@ -221,3 +227,18 @@ class ShiftPreferencePermission(BasePermission):
             return True
         employee_profile = getattr(request, "employee_profile", None)
         return bool(employee_profile) and obj.employee_id == employee_profile.id
+
+
+class IsTenantManagerOrHR(BasePermission):
+    """
+    Rein lesend, ausschliesslich für Admin/Planer/HR (Nutzer-Feedback
+    2026-08, Zeiterfassungs-Übersicht): Mitarbeitende haben bereits ihre
+    eigene, stationsgebundene Sicht (TimeRecordPanel) und brauchen die
+    stationsübergreifende Triage-Tabelle nicht -- anders als
+    IsTenantManager (das SAFE_METHODS für ALLE vier Rollen offen lässt)
+    blendet diese Klasse Mitarbeitende auch beim Lesen aus.
+    """
+
+    def has_permission(self, request, view):
+        membership = getattr(request, "membership", None)
+        return bool(membership and membership.role in MANAGER_AND_HR_ROLES)

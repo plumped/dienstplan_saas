@@ -2390,6 +2390,90 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Name sauber oben, Farbe/Kürzel bündig nebeneinander; Skills-Formular unverändert korrekt, da
     dort nur ein einzelnes Feld existiert und kein Zeilen-Ausrichtungsrisiko besteht).
 
+36. ✅ **Zeiterfassung: Planer-/HR-Stationsscoping + stationsübergreifende "Zu bestätigen"/
+    "Noch nicht erfasst"-Übersicht** (2026-08).
+    Nutzer-Vorgabe, zwei Fragen in einer Nachricht: "1. Welche Abteilungen sieht der Planer? Kann
+    man diese zuweisen? -- Natürlich gibt es in einer Klinik Planer mit unterschiedlichen
+    Zuständigkeiten! Gleiches gilt auch für HR. Nur Admin darf immer alles sehen. 2. [...] ich
+    muss die Stationen durchsuchen, bis ich die zu bestätigende Erfassung finde [...] macht es
+    Sinn tabellarisch zu arbeiten wie bei den Einstellungen? Eine alle noch offenen meines
+    Bereichs und eine die zu bestätigen listet?" Vorausgegangen war eine reine Analyse-Notiz (als
+    Artifact geliefert), die den Ist-Zustand dokumentierte: Admin/Planer/HR sahen bislang
+    ausnahmslos alle Stationen des Tenants, `TimeRecordViewSet` kannte weder Status- noch
+    Stations-Filter, und der Badge-Zähler in `GET /api/me/` war ein reiner tenant-weiter Zähler
+    ohne Sprungziel.
+
+    **Backend, Teil 1 -- Scoping**: `Membership.scoped_nodes` (neues `ManyToManyField` auf `Node`,
+    lazy `"scheduling.Node"`-Referenz, damit `core` weiterhin kein Modul-Level-Abhängigkeit zu
+    `scheduling` bekommt). `_employee_scoped_node_ids()` (`scheduling/views.py`, bisher nur für
+    `EMPLOYEE` ausgewertet) umgebaut: Signatur jetzt `(membership, employee_profile)` statt
+    `request` (Wiederverwendbarkeit aus `core.views._task_counts`), ADMIN immer `None`
+    (uneingeschränkt), PLANNER/HR neu über `Membership.scoped_nodes` -- inklusive aller
+    Unterstationen (`get_descendants()`, anders als bei EMPLOYEE reicht hier eine Ebene nicht: ein
+    "Bereich" wie "Pflege" soll automatisch seine Teams mit einschliessen). Leere `scoped_nodes` =
+    `None` (keine Einschränkung) -- migrationssicher, jede heute schon bestehende Planer-/
+    HR-Mitgliedschaft sieht ohne Zutun weiterhin alles, erst eine explizite Zuweisung schränkt
+    ein. Automatisch wirksam für alle bestehenden Aufrufer derselben Funktion (`NodeViewSet`,
+    `TimeTemplateViewSet`, `ShiftAssignmentViewSet`) sowie neu für `TimeRecordViewSet`/
+    `MissingTimeRecordViewSet`. Bewusst NICHT angefasst (Scope-Grenze, siehe unten):
+    `EmployeeViewSet`/`AbsenceViewSet`/Dashboard-Endpunkte -- deren `GET /api/employees/` wird an
+    mehreren Stellen ohne Filter für den KOMPLETTEN Bestand gebraucht (siehe
+    `EmployeeViewSet`-Docstring), unconditional Scoping dort hätte unklare Nebenwirkungen auf
+    Diensttausch/Dashboard gehabt.
+
+    **Backend, Teil 2 -- Zugriffsverwaltung**: `MembershipViewSet` (neu, `core` App,
+    `GET/PATCH /api/memberships/`) -- Lesen für alle vier Rollen offen (Organigramm-artige Info,
+    analog zur Mitarbeitenden-Liste), `scoped_nodes` ändern ist `IsTenantAdmin`-only; bewusst kein
+    `create`/`destroy` (`http_method_names`), Rollenvergabe/Einladung bleibt weiterhin
+    Django-Admin-only (unverändert). `MembershipSerializer.validate_scoped_nodes()` prüft
+    `node.tenant_id` explizit -- ohne gesetzte Tenant-ContextVar wäre das von `ModelSerializer`
+    automatisch erzeugte Feld sonst tenant-übergreifend ungefiltert. `perform_update()` lehnt
+    `scoped_nodes` auf einer ADMIN-Mitgliedschaft mit klarem Fehler ab (hätte wegen des
+    ADMIN-Sonderfalls in `_employee_scoped_node_ids()` ohnehin nie einen Effekt).
+
+    **Backend, Teil 3 -- Zeiterfassung**: `TimeRecordViewSet` bekam `?status=`/`?node=` sowie
+    `SearchFilter`/`OrderingFilter` (analog `EmployeeViewSet`/`TimeTemplateViewSet`) und wertet
+    jetzt ebenfalls `_employee_scoped_node_ids()` aus (`assignment__node_id__in=...`) -- bisher
+    unstationsgebunden, eine Lücke, die für die neue Übersicht mitbehoben wurde.
+    `TimeRecordSerializer` um `assignment_date`/`assignment_employee_name`/`assignment_node_id`/
+    `assignment_node_name`/`assignment_template_id`/`assignment_template_name` (alle read-only)
+    erweitert, damit eine Tabellenzeile ohne Zusatz-Request Station/Mitarbeiter/Datum zeigen kann.
+    Neues `MissingTimeRecordViewSet` (`GET /api/missing-time-records/`, read-only,
+    `IsTenantManagerOrHR` -- neue Permission-Klasse, blendet anders als `IsTenantManager` auch
+    Mitarbeitende beim Lesen aus, die ihre eigene Sicht bereits über `TimeRecordPanel` haben):
+    vergangene `ShiftAssignment`s ohne `TimeRecord`, gleiches Scoping/Suche/Sortierung/Filter
+    (inkl. `?date_from=`/`?date_to=`). `core.views._task_counts`: der `time_records`-Zähler für
+    PLANNER wird jetzt ebenfalls über `_employee_scoped_node_ids()` gescoped, statt tenant-weit zu
+    zählen -- sonst hätte die Badge-Zahl wieder nicht zu dem gepasst, was ein Klick darauf zeigt.
+
+    **Frontend**: Neues Settings-Modul "Planer-/HR-Zugriff" (`MembershipAccessSettings.jsx`,
+    admin-only wie "Regel-Engine & Zuschläge") -- Liste aller Mitgliedschaften, "Bearbeiten" öffnet
+    ein Modal mit einer eingerückten Checkbox-Liste aller Stationen (gleiche Einrückung wie das
+    Stations-Dropdown in `TimeTemplateSettings.jsx`). Neue `TimeRecordOverview.jsx` ersetzt für
+    Admin/Planer/HR (`canViewScheduleReports()`, neu in `roles.js` -- deckt sich mit
+    `MANAGER_AND_HR_ROLES`) den bisherigen, auf eine Station begrenzten Zeiterfassung-Tab: zwei
+    per Segmented-Control umschaltbare Tabellen ("Zu bestätigen"/"Noch nicht erfasst") im
+    `settings-table`-Muster von `TimeTemplateSettings.jsx` (Suche, Stations-Filter, Sortierung,
+    Pagination), stationsübergreifend über den gesamten sichtbaren Bereich. Zeilenaktionen öffnen
+    ein Modal mit dem bestehenden `TimeRecordSegmentEditor` (Korrigieren+Bestätigen bzw. Erfassen)
+    -- kein neuer Editor nötig. Bewusst ein eigener `api.getEmployees()`-Abruf statt der
+    `employees`-Prop von `App.jsx`: die ist auf die aktuell im Kopfbereich gewählte Station
+    gefiltert (`relevantNodeIds`), diese Übersicht ist aber stationsübergreifend. Mitarbeitende
+    (Self-Service) behalten unverändert die stationsgebundene `TimeRecordPanel.jsx`, da deren
+    eigene Sicht bereits korrekt eingeschränkt ist und keine Umbau-Notwendigkeit bestand. Ein
+    Klick auf den Zeiterfassung-Tab (der Badge sitzt im selben Button, kein eigenes Klickziel)
+    erzwingt per `key`-Remount immer die "Zu bestätigen"-Ansicht, auch wenn zuvor auf "Noch nicht
+    erfasst" umgeschaltet war.
+
+    18 neue Backend-Tests (Scoping inkl. Unterstationen-Einschluss, ADMIN-Sonderfall,
+    `MembershipViewSet`-Berechtigungen inkl. Tenant-Fremdstations-Ablehnung,
+    `TimeRecordViewSet`-Status-Filter, `MissingTimeRecordViewSet` inkl. Zukunfts-Ausschluss/
+    Read-only, `task_counts`-Scoping), volle Suite (424 Tests) grün, mit Playwright end-to-end
+    verifiziert (gescopter Planer sieht in "Zu bestätigen" nur den Datensatz der eigenen Station,
+    Badge-Zahl deckt sich mit der Zeilenzahl, Stations-Dropdown im Kopfbereich zeigt nur die
+    zugewiesene Station samt Unterstationen, Zugriffsverwaltung im Modal zeigt/speichert die
+    Stations-Checkboxen korrekt).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

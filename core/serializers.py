@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from core.models import Tenant, TenantHolidayOverride
+from core.models import Membership, Tenant, TenantHolidayOverride
 
 
 class TenantSerializer(serializers.ModelSerializer):
@@ -43,3 +43,45 @@ class TenantHolidayOverrideSerializer(serializers.ModelSerializer):
     class Meta:
         model = TenantHolidayOverride
         fields = ["id", "date", "name", "kind"]
+
+
+class MembershipSerializer(serializers.ModelSerializer):
+    """
+    Nutzer-Feedback (2026-08): "kann man [Planer/HR] Stationen zuweisen?"
+    -- Admin-only Verwaltung von Membership.scoped_nodes (siehe
+    scheduling.views._employee_scoped_node_ids). Rollenvergabe selbst bleibt
+    bewusst ausserhalb dieses Endpoints (weiterhin nur Django-Admin, siehe
+    EmployeeSettings.jsx-Kommentar) -- hier geht es nur um die
+    Stations-Einschränkung einer bereits bestehenden Mitgliedschaft.
+
+    `scoped_nodes` wird von ModelSerializer automatisch als
+    PrimaryKeyRelatedField(queryset=Node._default_manager.all()) erzeugt --
+    ohne gesetzte Tenant-ContextVar (core.views.TenantScopedAPIMixin setzt
+    sie bewusst nicht, siehe deren Docstring) wäre das serverseitig
+    ungefiltert über ALLE Tenants. validate_scoped_nodes() ist deshalb keine
+    Kür, sondern die einzige echte Tenant-Grenze für dieses Feld.
+    """
+
+    username = serializers.CharField(source="user.username", read_only=True)
+    email = serializers.CharField(source="user.email", read_only=True)
+    employee_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Membership
+        fields = ["id", "username", "email", "employee_name", "role", "scoped_nodes"]
+        read_only_fields = ["id", "username", "email", "employee_name", "role"]
+
+    def get_employee_name(self, obj):
+        # Lokaler Import statt Modul-Level (core.views.MeView-Docstring):
+        # core bleibt die "unterste" App, auf die scheduling aufbaut.
+        from scheduling.models import Employee
+
+        employee = Employee.all_objects.filter(tenant=obj.tenant, user=obj.user).first()
+        return f"{employee.first_name} {employee.last_name}" if employee else None
+
+    def validate_scoped_nodes(self, value):
+        tenant = self.context["request"].tenant
+        for node in value:
+            if node.tenant_id != tenant.id:
+                raise serializers.ValidationError("Ungültige oder fremde Station.")
+        return value

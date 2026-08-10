@@ -8,10 +8,11 @@ import MonthNav from "./components/MonthNav.jsx";
 import NodeSelector from "./components/NodeSelector.jsx";
 import PlanGrid from "./components/PlanGrid.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
+import TimeRecordOverview from "./components/TimeRecordOverview.jsx";
 import TimeRecordPanel from "./components/TimeRecordPanel.jsx";
 import TradeRequestPanel from "./components/TradeRequestPanel.jsx";
 import YearPlan from "./components/YearPlan.jsx";
-import { canManageSchedule, ROLE_LABELS } from "./roles.js";
+import { canManageSchedule, canViewScheduleReports, ROLE_LABELS } from "./roles.js";
 
 // Block 2.4: taskCountKey verweist auf GET /api/me/: task_counts (siehe
 // core.views._task_counts) -- Grundlage für die Zähler-Badges neben den
@@ -61,6 +62,13 @@ export default function App() {
   const [period, setPeriod] = useState(currentPeriod());
   const [tab, setTab] = useState("grid");
   const [error, setError] = useState("");
+  // Nutzer-Feedback (2026-08): "Badge-Klick soll direkt in 'Zu bestätigen'
+  // springen, nicht nur den Tab wechseln" -- der Badge sitzt im selben
+  // Tab-Button (kein eigenes Klickziel), daher: jeder Klick auf den
+  // Zeiterfassung-Tab erzwingt per key-Remount die "Zu bestätigen"-Ansicht
+  // in TimeRecordOverview (deren initialView-Default), auch wenn zuvor auf
+  // "Noch nicht erfasst" umgeschaltet war.
+  const [timeRecordTabNonce, setTimeRecordTabNonce] = useState(0);
 
   useEffect(() => {
     if (!loggedIn) {
@@ -149,7 +157,10 @@ export default function App() {
                 key={t.id}
                 type="button"
                 className={`tab-btn${tab === t.id ? " is-active" : ""}`}
-                onClick={() => setTab(t.id)}
+                onClick={() => {
+                  setTab(t.id);
+                  if (t.id === "timerecords") setTimeRecordTabNonce((n) => n + 1);
+                }}
               >
                 {t.label}
                 {!!count && (
@@ -207,6 +218,16 @@ export default function App() {
           // stationsübergreifend (siehe Dashboard.jsx), hängt an keiner
           // einzeln gewählten Station.
           <Dashboard me={me} onNavigate={handleNavigate} onError={setError} />
+        ) : tab === "timerecords" && canViewScheduleReports(me) ? (
+          // Nutzer-Feedback (2026-08): "ich muss die Stationen durchsuchen,
+          // bis ich die zu bestätigende Erfassung finde" -- für Admin/
+          // Planer/HR ersetzt die stationsübergreifende Übersicht die
+          // bisherige, auf eine Station begrenzte Ansicht; ebenfalls
+          // ausserhalb der !nodeId-Sperre, weil sie explizit NICHT an eine
+          // einzeln gewählte Station gebunden ist. Mitarbeitende (Self-
+          // Service) behalten unverändert die stationsgebundene
+          // TimeRecordPanel weiter unten.
+          <TimeRecordOverview key={timeRecordTabNonce} nodes={nodes} onError={setError} />
         ) : !nodeId ? (
           <p className="empty-state">
             {canManageSchedule(me)

@@ -3137,6 +3137,12 @@ class RoleBasedPermissionTests(APITestCase):
             actual_end=time(16, 0),
             actual_break_minutes=30,
         )
+        # TimeRecordViewSet ist inzwischen node-gescoped wie ShiftAssignment/
+        # TimeTemplate (siehe _employee_scoped_node_ids) -- ohne eigene
+        # Stationszuordnung wäre der Datensatz für alice bereits im
+        # get_queryset() unsichtbar (404 statt 403), das ist hier nicht der
+        # Punkt des Tests.
+        self.alice.nodes.add(self.node)
         self.auth_as(self.alice_user)
         response = self.client.post(f"/api/time-records/{record.id}/confirm/")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
@@ -3163,6 +3169,8 @@ class RoleBasedPermissionTests(APITestCase):
             actual_break_minutes=30,
             status=TimeRecord.Status.CONFIRMED,
         )
+        # Siehe Kommentar in test_employee_cannot_confirm_own_time_record.
+        self.alice.nodes.add(self.node)
         self.auth_as(self.alice_user)
         response = self.client.delete(f"/api/time-records/{record.id}/")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
@@ -5616,3 +5624,214 @@ class NodeMoveAPITests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         child_x.refresh_from_db()
         self.assertEqual(child_x.get_parent().pk, root_x.pk)
+
+
+class PlannerHRStationScopingTests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "Natürlich gibt es in einer Klinik Planer mit
+    unterschiedlichen Zuständigkeiten! Gleiches gilt auch für HR. Nur Admin
+    darf immer alles sehen." -- Membership.scoped_nodes +
+    _employee_scoped_node_ids-Erweiterung.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-scoping")
+        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node_a_team = self.node_a.add_child(name="Team A1", tenant=self.tenant)
+        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        self.admin_membership = Membership.objects.create(
+            user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        self.planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        self.hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
+        self.hr_membership = Membership.objects.create(
+            user=self.hr_user, tenant=self.tenant, role=Membership.Role.HR
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_planner_without_scoped_nodes_sees_all_stations(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/nodes/")
+        ids = {n["id"] for n in response.data["results"]}
+        self.assertEqual(ids, {self.node_a.id, self.node_a_team.id, self.node_b.id})
+
+    def test_planner_with_scoped_nodes_sees_only_those_plus_descendants(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/nodes/")
+        ids = {n["id"] for n in response.data["results"]}
+        # node_a UND sein Kind (Team A1) sichtbar, node_b nicht -- anders als
+        # bei EMPLOYEE (nur eine Elternebene) reicht hier eine Ebene NICHT:
+        # ein "Bereich" soll seine komplette Unterstruktur einschliessen.
+        self.assertEqual(ids, {self.node_a.id, self.node_a_team.id})
+
+    def test_hr_with_scoped_nodes_is_limited_too(self):
+        self.hr_membership.scoped_nodes.add(self.node_b)
+        self.auth_as(self.hr_user)
+        response = self.client.get("/api/nodes/")
+        ids = {n["id"] for n in response.data["results"]}
+        self.assertEqual(ids, {self.node_b.id})
+
+    def test_admin_always_sees_all_stations_even_if_scoped_nodes_set(self):
+        # Direkt über die ORM gesetzt (nicht über den Endpoint -- der lehnt
+        # das für ADMIN-Mitgliedschaften mit einem Validierungsfehler ab,
+        # siehe MembershipViewSetTests) -- selbst dann darf es keinen Effekt
+        # haben: "Nur Admin darf immer alles sehen."
+        self.admin_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/nodes/")
+        ids = {n["id"] for n in response.data["results"]}
+        self.assertEqual(ids, {self.node_a.id, self.node_a_team.id, self.node_b.id})
+
+
+class TimeRecordOverviewAPITests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "ich muss die Stationen durchsuchen, bis ich
+    die zu bestätigende Erfassung finde" -- ?status=/?node=-Filter auf
+    TimeRecordViewSet, Stations-Scoping, sowie das neue
+    MissingTimeRecordViewSet ("Noch nicht erfasst").
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-timerecord-overview")
+        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.template_a = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_a, name="Tagdienst A",
+            start_time=time(8, 0), end_time=time(16, 0), break_minutes=30,
+        )
+        self.template_b = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_b, name="Tagdienst B",
+            start_time=time(8, 0), end_time=time(16, 0), break_minutes=30,
+        )
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        self.planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        self.employee_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, first_name="Alice", last_name="A", employment_pct=100
+        )
+        self.carla = Employee.objects.create(
+            tenant=self.tenant, first_name="Carla", last_name="C", employment_pct=100
+        )
+        past_date = date(2026, 7, 20)
+        self.assignment_a = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node_a, date=past_date, template=self.template_a
+        )
+        self.assignment_b = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.carla, node=self.node_b, date=past_date, template=self.template_b
+        )
+        # Nur Station B hat bereits eine (noch nicht bestätigte) Erfassung --
+        # Station A bleibt komplett unerfasst, für die "Noch nicht
+        # erfasst"-Tests unten.
+        self.record_b = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.assignment_b,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_status_filter_returns_only_submitted(self):
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.assignment_a,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+            status=TimeRecord.Status.CONFIRMED,
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/time-records/?status=submitted")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.record_b.id})
+
+    def test_time_record_serializer_includes_station_and_employee_name(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/time-records/{self.record_b.id}/")
+        self.assertEqual(response.data["assignment_node_id"], self.node_b.id)
+        self.assertEqual(response.data["assignment_node_name"], "Station B")
+        self.assertEqual(response.data["assignment_employee_name"], "Carla C")
+        self.assertEqual(response.data["assignment_date"], "2026-07-20")
+
+    def test_planner_with_scoped_nodes_only_sees_own_station_time_records(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/time-records/")
+        ids = {r["id"] for r in response.data["results"]}
+        # record_b liegt auf Station B, ausserhalb des gescopten Bereichs.
+        self.assertEqual(ids, set())
+
+    def test_missing_time_records_lists_station_a_but_not_station_b(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/missing-time-records/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.assignment_a.id})
+
+    def test_missing_time_records_excludes_future_assignments(self):
+        future_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_a, name="Spätdienst",
+            start_time=time(14, 0), end_time=time(22, 0), break_minutes=30,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node_a,
+            date=date(2099, 1, 1),
+            template=future_template,
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/missing-time-records/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.assignment_a.id})
+
+    def test_missing_time_records_scoped_for_planner(self):
+        self.planner_membership.scoped_nodes.add(self.node_b)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/missing-time-records/")
+        # Station A (mit der fehlenden Erfassung) liegt ausserhalb des
+        # gescopten Bereichs -- Station B hat bereits eine Erfassung, ist
+        # also ohnehin leer, aber sichtbar.
+        self.assertEqual(response.data["results"], [])
+
+    def test_missing_time_records_forbidden_for_plain_employee(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get("/api/missing-time-records/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_missing_time_records_is_read_only(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post("/api/missing-time-records/", {})
+        self.assertEqual(response.status_code, 405)
+
+    def test_task_counts_time_records_scoped_to_planner_stations(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        # record_b (SUBMITTED) liegt auf Station B, ausserhalb des Scopes --
+        # der Badge-Zähler darf ihn nicht mehr mitzählen, sonst zeigt die
+        # Zahl wieder auf eine Erfassung, die der Planer gar nicht sieht.
+        self.assertEqual(response.data["task_counts"]["time_records"], 0)
+
+    def test_task_counts_time_records_unscoped_for_planner_without_scoped_nodes(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.data["task_counts"]["time_records"], 1)

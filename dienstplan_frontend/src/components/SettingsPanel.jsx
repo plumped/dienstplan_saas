@@ -3,6 +3,7 @@ import { api } from "../api.js";
 import { canManageSchedule, isTenantAdmin } from "../roles.js";
 import AbsenceTypeSettings from "./AbsenceTypeSettings.jsx";
 import EmployeeSettings from "./EmployeeSettings.jsx";
+import MembershipAccessSettings from "./MembershipAccessSettings.jsx";
 import MonthlySummaryPanel from "./MonthlySummaryPanel.jsx";
 import NodeSettings from "./NodeSettings.jsx";
 import SkillSettings from "./SkillSettings.jsx";
@@ -48,6 +49,15 @@ const MODULES = [
     id: "tenant",
     label: "Regel-Engine & Zuschläge",
     description: "Ruhezeit, Höchstarbeitszeit, Überzeit-/Nacht-/Sonntagszuschläge, Ferienanspruch (nur Admin).",
+    adminOnly: true,
+  },
+  // Nutzer-Feedback (2026-08): "kann man [Planer] Stationen zuweisen?" --
+  // Admin-only, analog "tenant" oben: steuert, wer welche Stationen sieht
+  // (Membership.scoped_nodes), keine Tagesgeschäft-Aufgabe für Planer.
+  {
+    id: "access",
+    label: "Planer-/HR-Zugriff",
+    description: "Welche Stationen ein Planer oder HR sieht -- leer bedeutet weiterhin uneingeschränkt.",
     adminOnly: true,
   },
 ];
@@ -162,6 +172,7 @@ export default function SettingsPanel({ me, onError }) {
       )}
       {module === "payroll" && canManageSchedule(me) && <MonthlySummaryPanel onError={onError} />}
       {module === "tenant" && isTenantAdmin(me) && <TenantSettings onError={onError} />}
+      {module === "access" && isTenantAdmin(me) && <MembershipAccessSettings nodes={nodes} onError={onError} />}
     </div>
   );
 }

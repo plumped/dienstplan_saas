@@ -534,3 +534,87 @@ class AdminTenantScopingTests(TestCase):
         self._set_active_tenant(self.tenant_a)
         self.client.post("/admin/tenant-switch/", {"tenant": "", "next": "/admin/"})
         self.assertNotIn(ADMIN_TENANT_SESSION_KEY, self.client.session)
+
+
+class MembershipViewSetTests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "kann man [Planer] Stationen zuweisen?" --
+    Admin-only Verwaltung von Membership.scoped_nodes (siehe
+    scheduling.views._employee_scoped_node_ids).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-membership")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-membership")
+        self.foreign_node = Node.add_root(name="Fremde Station", tenant=other_tenant)
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        self.admin_membership = Membership.objects.create(
+            user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        self.planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        self.employee_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_can_list_memberships(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/memberships/")
+        self.assertEqual(response.status_code, 200)
+        usernames = {m["username"] for m in response.data["results"]}
+        self.assertEqual(usernames, {"admin", "planner", "alice"})
+
+    def test_non_admin_can_read_but_not_write_memberships(self):
+        # Wie überall in core.permissions (IsTenantAdmin: "Lesen bleibt für
+        # alle vier Rollen offen, nur das Schreiben ist eingeschränkter")
+        # -- Listen ist kein Geheimnis (Organigramm-artige Info, analog zur
+        # Mitarbeitenden-Liste), nur scoped_nodes ändern ist Admin-only.
+        for user in (self.planner_user, self.employee_user):
+            self.auth_as(user)
+            read_response = self.client.get("/api/memberships/")
+            self.assertEqual(read_response.status_code, 200)
+            write_response = self.client.patch(
+                f"/api/memberships/{self.planner_membership.id}/", {"scoped_nodes": [self.node.id]}, format="json"
+            )
+            self.assertEqual(write_response.status_code, 403)
+
+    def test_admin_can_set_scoped_nodes_for_planner(self):
+        self.auth_as(self.admin_user)
+        response = self.client.patch(
+            f"/api/memberships/{self.planner_membership.id}/", {"scoped_nodes": [self.node.id]}, format="json"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.planner_membership.refresh_from_db()
+        self.assertEqual(list(self.planner_membership.scoped_nodes.values_list("id", flat=True)), [self.node.id])
+
+    def test_admin_cannot_set_scoped_nodes_for_admin_membership(self):
+        self.auth_as(self.admin_user)
+        response = self.client.patch(
+            f"/api/memberships/{self.admin_membership.id}/", {"scoped_nodes": [self.node.id]}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_scoped_nodes_rejects_foreign_tenant_node(self):
+        self.auth_as(self.admin_user)
+        response = self.client.patch(
+            f"/api/memberships/{self.planner_membership.id}/",
+            {"scoped_nodes": [self.foreign_node.id]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_cannot_create_or_delete_membership_via_endpoint(self):
+        self.auth_as(self.admin_user)
+        create_response = self.client.post(
+            "/api/memberships/", {"role": "planner", "scoped_nodes": []}, format="json"
+        )
+        self.assertEqual(create_response.status_code, 405)
+        delete_response = self.client.delete(f"/api/memberships/{self.planner_membership.id}/")
+        self.assertEqual(delete_response.status_code, 405)

@@ -511,12 +511,31 @@ class TimeRecordSerializer(serializers.ModelSerializer):
     # bleiben). Anzahl/Reihenfolge sind vom Template vorgegeben -- geprüft in
     # TimeRecord.clean(), nicht hier im Serializer.
     segments = TimeRecordSegmentSerializer(many=True, required=False)
+    # Nutzer-Feedback (2026-08): die stationsübergreifende
+    # "Zu bestätigen"-Tabelle (TimeRecordOverview.jsx) zeigt Station/
+    # Mitarbeiter/Datum direkt in der Zeile -- ohne diese Felder bräuchte das
+    # Frontend pro Zeile einen zusätzlichen Request auf die zugehörige
+    # ShiftAssignment, nur um denselben Wert zu lesen.
+    assignment_date = serializers.DateField(source="assignment.date", read_only=True)
+    assignment_employee_id = serializers.IntegerField(source="assignment.employee_id", read_only=True)
+    assignment_employee_name = serializers.SerializerMethodField()
+    assignment_node_id = serializers.IntegerField(source="assignment.node_id", read_only=True)
+    assignment_node_name = serializers.CharField(source="assignment.node.name", read_only=True)
+    assignment_template_id = serializers.IntegerField(source="assignment.template_id", read_only=True)
+    assignment_template_name = serializers.CharField(source="assignment.template.name", read_only=True)
 
     class Meta:
         model = TimeRecord
         fields = [
             "id",
             "assignment",
+            "assignment_date",
+            "assignment_employee_id",
+            "assignment_employee_name",
+            "assignment_node_id",
+            "assignment_node_name",
+            "assignment_template_id",
+            "assignment_template_name",
             "actual_start",
             "actual_end",
             "actual_break_minutes",
@@ -539,6 +558,10 @@ class TimeRecordSerializer(serializers.ModelSerializer):
             "actual_start": {"required": False},
             "actual_end": {"required": False},
         }
+
+    def get_assignment_employee_name(self, obj):
+        employee = obj.assignment.employee
+        return f"{employee.first_name} {employee.last_name}"
 
     def validate(self, attrs):
         # segments wird separat behandelt (nested write, siehe create/update)

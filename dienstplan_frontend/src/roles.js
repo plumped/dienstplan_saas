@@ -18,3 +18,11 @@ export function canManageSchedule(me) {
 export function isTenantAdmin(me) {
   return me?.role === "admin";
 }
+
+// Deckt sich mit core.permissions.MANAGER_AND_HR_ROLES -- weiter als
+// canManageSchedule (schliesst HR ein, "nur Reporting", aber genau dafür
+// ist die stationsübergreifende Zeiterfassungs-Übersicht gedacht, siehe
+// TimeRecordOverview.jsx).
+export function canViewScheduleReports(me) {
+  return me?.role === "admin" || me?.role === "planner" || me?.role === "hr";
+}

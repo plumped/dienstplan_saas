@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api.js";
 
 function emptyForm() {
@@ -14,14 +14,43 @@ function emptyForm() {
 // sortiert Geschwisterknoten immer automatisch alphabetisch -- Drag & Drop
 // reparentet daher nur (verschiebt UNTER einen anderen Knoten oder auf die
 // oberste Ebene), sortiert aber nicht manuell innerhalb derselben Ebene um.
+//
+// Bugfix (2026-08): "Verschieben funktioniert nicht richtig" -- die erste
+// Version nutzte natives HTML5-Drag&Drop (draggable/dragstart/dragover/drop).
+// Das ist notorisch zerbrechlich (Firefox verlangt dataTransfer.setData mit
+// striktem MIME-Typ, ein Mousedown auf Text priorisiert oft Textauswahl statt
+// der Element-Drag-Geste, Chrome verlangt preventDefault auf JEDEM dragover)
+// und liess sich selbst mit einer realistischen Maus-Simulation nicht
+// zuverlässig auslösen. Jetzt dasselbe robuste, bereits etablierte Muster wie
+// PlanGrid.jsx/YearPlan.jsx für Ziehen-mit-gedrückter-Maustaste (Mousedown
+// startet, Mouseenter setzt das Ziel, ein globaler window-mouseup-Listener
+// schliesst ab -- funktioniert unabhängig von Browser-eigenen Drag-Quirks).
 export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, onNodesChanged, onError }) {
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState("");
   const [search, setSearch] = useState("");
-  const [dragId, setDragId] = useState(null);
-  const [overId, setOverId] = useState(null);
+  // dragSourceId: die gerade gezogene Station. hoverTargetId: aktuelles
+  // Ziel unter dem Mauszeiger (Node-ID oder "root" für die oberste Ebene).
+  const [dragSourceId, setDragSourceId] = useState(null);
+  const [hoverTargetId, setHoverTargetId] = useState(null);
+
+  // Schliesst den Ziehvorgang ab, sobald irgendwo im Fenster losgelassen
+  // wird -- nicht nur exakt über einem gültigen Ziel (sonst bliebe ein
+  // Ziehvorgang "hängen", wenn die Maustaste knapp daneben losgelassen wird).
+  useEffect(() => {
+    if (dragSourceId == null) return;
+    function handleWindowMouseUp() {
+      setDragSourceId(null);
+      setHoverTargetId(null);
+      if (hoverTargetId == null) return;
+      moveNode(dragSourceId, hoverTargetId === "root" ? null : hoverTargetId);
+    }
+    window.addEventListener("mouseup", handleWindowMouseUp);
+    return () => window.removeEventListener("mouseup", handleWindowMouseUp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragSourceId, hoverTargetId]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -77,28 +106,36 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
   }
 
   function canDropOn(targetId) {
-    return dragId != null && targetId !== dragId && !isSelfOrDescendant(dragId, targetId);
+    return dragSourceId != null && targetId !== dragSourceId && !isSelfOrDescendant(dragSourceId, targetId);
   }
 
-  function handleDragStart(event, node) {
-    setDragId(node.id);
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", String(node.id));
+  function handleRowMouseDown(event, node) {
+    // Nur linke Maustaste, nicht während des Umbenennens, und nicht wenn der
+    // Klick eigentlich einem Button/Input galt (Umbenennen/Löschen/das
+    // Umbenennen-Feld) -- sonst würde jeder Klick darauf einen Ziehvorgang
+    // anstossen.
+    if (event.button !== 0 || editingId === node.id) return;
+    if (event.target.closest("button, input")) return;
+    setDragSourceId(node.id);
+    setHoverTargetId(null);
   }
 
-  function handleDragEnd() {
-    setDragId(null);
-    setOverId(null);
+  function handleRowMouseEnter(node) {
+    if (dragSourceId == null) return;
+    setHoverTargetId(canDropOn(node.id) ? node.id : null);
   }
 
-  function handleDragOver(event, node) {
-    if (!canDropOn(node.id)) return;
-    event.preventDefault();
-    setOverId(node.id);
+  function handleRowMouseLeave(node) {
+    setHoverTargetId((prev) => (prev === node.id ? null : prev));
   }
 
-  function handleDragLeave(node) {
-    setOverId((prev) => (prev === node.id ? null : prev));
+  function handleRootMouseEnter() {
+    if (dragSourceId == null) return;
+    setHoverTargetId("root");
+  }
+
+  function handleRootMouseLeave() {
+    setHoverTargetId((prev) => (prev === "root" ? null : prev));
   }
 
   async function moveNode(id, parentId) {
@@ -108,34 +145,6 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
     } catch (e) {
       onError(e.message);
     }
-  }
-
-  async function handleDrop(event, node) {
-    event.preventDefault();
-    const draggedId = dragId;
-    setDragId(null);
-    setOverId(null);
-    if (draggedId == null || !canDropOn(node.id)) return;
-    await moveNode(draggedId, node.id);
-  }
-
-  function handleRootDragOver(event) {
-    if (dragId == null) return;
-    event.preventDefault();
-    setOverId("root");
-  }
-
-  function handleRootDragLeave() {
-    setOverId((prev) => (prev === "root" ? null : prev));
-  }
-
-  async function handleRootDrop(event) {
-    event.preventDefault();
-    const draggedId = dragId;
-    setDragId(null);
-    setOverId(null);
-    if (draggedId == null) return;
-    await moveNode(draggedId, null);
   }
 
   const query = search.trim().toLowerCase();
@@ -194,17 +203,17 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
               onChange={(e) => setSearch(e.target.value)}
             />
             <p className="panel-hint">
-              Station auf eine andere ziehen, um sie dort unterzuordnen -- innerhalb derselben Ebene
-              wird immer alphabetisch sortiert, eine manuelle Reihenfolge ist nicht möglich.
+              Station mit gedrückter Maustaste auf eine andere ziehen, um sie dort unterzuordnen --
+              innerhalb derselben Ebene wird immer alphabetisch sortiert, eine manuelle Reihenfolge
+              ist nicht möglich.
             </p>
           </>
         )}
-        {dragId != null && (
+        {dragSourceId != null && (
           <div
-            className={`node-tree-root-drop${overId === "root" ? " is-drop-target" : ""}`}
-            onDragOver={handleRootDragOver}
-            onDragLeave={handleRootDragLeave}
-            onDrop={handleRootDrop}
+            className={`node-tree-root-drop${hoverTargetId === "root" ? " is-drop-target" : ""}`}
+            onMouseEnter={handleRootMouseEnter}
+            onMouseLeave={handleRootMouseLeave}
           >
             ⬆ Auf oberste Ebene verschieben
           </div>
@@ -218,18 +227,15 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
             {visibleNodes.map((n) => (
               <li
                 key={n.id}
-                draggable={editingId !== n.id}
-                onDragStart={(e) => handleDragStart(e, n)}
-                onDragEnd={handleDragEnd}
-                onDragOver={(e) => handleDragOver(e, n)}
-                onDragLeave={() => handleDragLeave(n)}
-                onDrop={(e) => handleDrop(e, n)}
-                className={`entry-list-item node-tree-row${overId === n.id ? " is-drop-target" : ""}${
-                  dragId === n.id ? " is-dragging" : ""
+                onMouseDown={(e) => handleRowMouseDown(e, n)}
+                onMouseEnter={() => handleRowMouseEnter(n)}
+                onMouseLeave={() => handleRowMouseLeave(n)}
+                className={`entry-list-item node-tree-row${hoverTargetId === n.id ? " is-drop-target" : ""}${
+                  dragSourceId === n.id ? " is-dragging" : ""
                 }`}
               >
                 <span className="entry-main" style={{ paddingLeft: `${Math.max(0, n.depth - 1) * 16}px` }}>
-                  <span className="drag-handle" title="Ziehen zum Verschieben">
+                  <span className="drag-handle" title="Mit gedrückter Maustaste ziehen zum Verschieben">
                     ⠿
                   </span>
                   {editingId === n.id ? (

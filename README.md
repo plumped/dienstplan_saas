@@ -2308,14 +2308,25 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     sortiert nicht manuell um. Zyklus-Versuche (in sich selbst oder einen eigenen Nachfahren
     verschieben) fangen sowohl treebeards `InvalidMoveToDescendant` (Server, autoritativ) als auch
     ein `path`-Präfix-Check im Frontend ab (verhindert das Drop-Target optisch schon vor dem
-    Request). Frontend: `NodeSettings.jsx` bekam natives HTML5-Drag&Drop (Griff-Icon ⠿, ziehbare
-    Zeilen, farblich hervorgehobenes Drop-Ziel, eigene "Auf oberste Ebene verschieben"-Dropzone, die
-    nur während eines aktiven Zugs erscheint) sowie ein Freitext-Suchfeld, das einen Treffer
-    zusammen mit seiner kompletten Eltern-Kette zeigt (sonst hinge ein gefundener Unterknoten ohne
-    Kontext im Baum) -- beides ebenfalls rein clientseitig über den `path`-String gelöst, ohne
-    Server-Roundtrip. Da ein Verschieben potenziell viele Knoten gleichzeitig betrifft (der Knoten
-    selbst plus alle Nachfahren ändern `depth`/`path`), lädt `SettingsPanel.jsx` nach jedem Move
-    den kompletten (kleinen) Baum neu, statt das clientseitig nachzurechnen. 6 neue Backend-Tests
+    Request). Frontend: `NodeSettings.jsx` bekam Griff-Icon ⠿, ziehbare Zeilen, farblich
+    hervorgehobenes Drop-Ziel, eigene "Auf oberste Ebene verschieben"-Dropzone (nur während eines
+    aktiven Zugs sichtbar) sowie ein Freitext-Suchfeld, das einen Treffer zusammen mit seiner
+    kompletten Eltern-Kette zeigt (sonst hinge ein gefundener Unterknoten ohne Kontext im Baum) --
+    beides ebenfalls rein clientseitig über den `path`-String gelöst, ohne Server-Roundtrip. Da ein
+    Verschieben potenziell viele Knoten gleichzeitig betrifft (der Knoten selbst plus alle
+    Nachfahren ändern `depth`/`path`), lädt `SettingsPanel.jsx` nach jedem Move den kompletten
+    (kleinen) Baum neu, statt das clientseitig nachzurechnen.
+
+    **Bugfix (2026-08, Nutzer-Feedback: "das verschieben der stationen funktioniert nicht
+    richtig")**: die erste Version nutzte natives HTML5 `draggable`/`dragstart`/`dragover`/`drop`.
+    Das erwies sich als zu zerbrechlich, um zuverlässig auszulösen -- u. a. weil ein Mousedown auf
+    dem Stationsnamen-Text die native Textauswahl-Geste statt der Element-Drag-Geste startete.
+    Ersetzt durch dasselbe robuste, bereits etablierte Muster wie PlanGrid.jsx/YearPlan.jsx
+    ("Ziehen mit gedrückter Maustaste": Mousedown startet, Mouseenter setzt das aktuelle Ziel, ein
+    globaler `window`-`mouseup`-Listener schliesst ab) plus `user-select: none` auf der Zeile,
+    damit ein Zug nicht mehr als Textauswahl interpretiert wird.
+
+    6 neue Backend-Tests
     (Umhängen, auf oberste Ebene verschieben, Nachfahren-Tiefe nach Verschieben, Zyklus-Schutz
     gegen sich selbst/eigene Nachfahren, fremder Tenant, Berechtigung), mit Playwright end-to-end
     verifiziert (natives Drag&Drop über simulierte `DataTransfer`-Objekte, da Playwright kein

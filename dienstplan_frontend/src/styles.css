@@ -1501,14 +1501,24 @@ thead .col-employee {
 /* Nutzer-Feedback (2026-08): Stationen per Drag & Drop verschieben
    (NodeSettings.jsx) -- Griff-Icon signalisiert Ziehbarkeit, die gezogene
    Zeile wird abgeblendet, ein gültiges Drop-Ziel bekommt einen farbigen
-   Rahmen zur Bestätigung, bevor losgelassen wird. */
+   Rahmen zur Bestätigung, bevor losgelassen wird.
+   Bugfix (2026-08): "Verschieben funktioniert nicht richtig" -- die erste
+   Version nutzte natives HTML5 draggable/dragstart/dragover/drop, das sich
+   in der Praxis nicht zuverlässig auslösen liess (u. a. weil ein Mousedown
+   auf dem Stationsnamen-Text die native Textauswahl-Geste statt der
+   Element-Drag-Geste startete). Jetzt Mousedown/Mouseenter/Mouseup
+   (identisches Muster wie PlanGrid.jsx/YearPlan.jsx) -- user-select: none
+   bleibt trotzdem nötig, sonst würde ein Ziehen weiterhin als Textauswahl
+   markieren statt die Zeile zu "greifen". */
 .node-tree-row {
   cursor: grab;
+  user-select: none;
   transition: background-color 0.1s ease, border-color 0.1s ease;
 }
 
 .node-tree-row.is-dragging {
   opacity: 0.4;
+  cursor: grabbing;
 }
 
 .node-tree-row.is-drop-target {

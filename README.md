@@ -2329,8 +2329,20 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     6 neue Backend-Tests
     (Umhängen, auf oberste Ebene verschieben, Nachfahren-Tiefe nach Verschieben, Zyklus-Schutz
     gegen sich selbst/eigene Nachfahren, fremder Tenant, Berechtigung), mit Playwright end-to-end
-    verifiziert (natives Drag&Drop über simulierte `DataTransfer`-Objekte, da Playwright kein
-    echtes OS-Drag kann).
+    verifiziert (realistische Maus-Simulation über `page.mouse`, kein natives Drag&Drop mehr).
+
+    **Bugfix 2 (2026-08, Nutzer-Feedback: "ein Kind Knoten direkt einem Hauptknoten zuzuweisen
+    funktioniert nicht -- ich muss zuerst auf oberste Ebene verschieben und erst dann als Kind auf
+    eine Hauptstation ziehen")**: kein Auto-Scroll während des Zugs. `main` (App.jsx) deklariert
+    zwar `overflow: auto`, wächst aber tatsächlich frei mit dem Inhalt statt selbst zu scrollen --
+    die Seite scrollt über das Dokument. Ohne Auto-Scroll war ein Ziel ausserhalb des sichtbaren
+    Bereichs während EINES durchgehenden Zugs schlicht unerreichbar; der Umweg über die oberste
+    Ebene funktionierte nur zufällig, weil deren Dropzone immer ganz oben und damit garantiert
+    sichtbar liegt. Jetzt scrollt `document.scrollingElement` automatisch (Geschwindigkeit
+    proportional zur Nähe), sobald der Mauszeiger während eines Zugs in die obere/untere 60px-Zone
+    des Viewports kommt -- mit Playwright verifiziert (21-Stationen-Baum, Viewport kleiner als die
+    Liste, direkter Zug von einem sichtbaren Kind-Knoten auf einen erst nach Auto-Scroll
+    sichtbaren, weit entfernten Hauptknoten).
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

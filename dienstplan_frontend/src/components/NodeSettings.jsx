@@ -52,6 +52,52 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dragSourceId, hoverTargetId]);
 
+  // Bugfix (2026-08, Nutzer-Feedback: "ein Kind Knoten direkt einem
+  // Hauptknoten zuzuweisen funktioniert nicht -- ich muss zuerst auf oberste
+  // Ebene verschieben und erst dann als Kind auf eine Hauptstation ziehen"):
+  // ohne Auto-Scroll ist ein Ziel ausserhalb des sichtbaren Bereichs während
+  // EINES durchgehenden Zugs schlicht unerreichbar (die Maus bewegt sich,
+  // aber nichts scrollt mit). Der Umweg über die oberste Ebene funktionierte
+  // nur zufällig, weil die Dropzone dafür immer ganz oben, also garantiert
+  // sichtbar, liegt. Die Seite scrollt trotz `main { overflow: auto }`
+  // tatsächlich über das Dokument (main wächst frei mit dem Inhalt, statt
+  // selbst intern zu scrollen -- deshalb document.scrollingElement statt
+  // main als Scroll-Ziel). Jetzt scrollt die Seite automatisch, wenn der
+  // Mauszeiger während eines Zugs nahe an den oberen/unteren Viewport-Rand
+  // kommt -- Geschwindigkeit steigt, je näher am Rand.
+  useEffect(() => {
+    if (dragSourceId == null) return;
+    const edgeZone = 60;
+    const maxSpeed = 16;
+    let latestY = null;
+    let rafId = null;
+
+    function handleMouseMove(event) {
+      latestY = event.clientY;
+    }
+
+    function tick() {
+      if (latestY != null) {
+        const scrollEl = document.scrollingElement || document.documentElement;
+        if (latestY < edgeZone) {
+          const intensity = Math.min(1, (edgeZone - latestY) / edgeZone);
+          scrollEl.scrollTop -= maxSpeed * intensity;
+        } else if (latestY > window.innerHeight - edgeZone) {
+          const intensity = Math.min(1, (latestY - (window.innerHeight - edgeZone)) / edgeZone);
+          scrollEl.scrollTop += maxSpeed * intensity;
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    }
+
+    window.addEventListener("mousemove", handleMouseMove);
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      cancelAnimationFrame(rafId);
+    };
+  }, [dragSourceId]);
+
   async function handleSubmit(event) {
     event.preventDefault();
     if (!form.name.trim()) return;

@@ -1613,31 +1613,79 @@ thead .col-employee {
   font-size: 12.5px;
 }
 
-.node-checkbox-list {
+/* Nutzer-Feedback (2026-08): "das Bearbeiten-Modal sieht beschissen aus,
+   muss viel intuitiver laufen" -- MembershipAccessSettings.jsx zeigt die
+   Stationsauswahl jetzt als schmaleres, eigenständig gestaltetes Modal
+   (statt das breite 1080px-Tabellen-Modal für eine reine Checkbox-Liste zu
+   verwenden) mit klarer visueller Eltern/Kind-Beziehung: eine markierte
+   Hauptstation checkt ihre Unterstationen sichtbar (ausgegraut, mit
+   Begründung) automatisch mit an, statt dass beide unabhängig wirken. */
+.node-scope-modal {
+  max-width: min(560px, 92vw);
+}
+
+.node-tree-select {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 320px;
+  max-height: 360px;
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  background: var(--surface);
 }
 
-.node-checkbox-list li {
+.node-tree-select li {
   border-bottom: 1px solid var(--border);
 }
 
-.node-checkbox-list li:last-child {
+.node-tree-select li:last-child {
   border-bottom: none;
 }
 
-.node-checkbox-list label {
+.node-tree-select label {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
   font-weight: 400;
+  font-size: 13.5px;
   cursor: pointer;
+  transition: background-color 0.1s ease;
+}
+
+.node-tree-select label:hover {
+  background: var(--bg);
+}
+
+.node-tree-select input[type="checkbox"] {
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.node-tree-select-name {
+  color: var(--ink);
+}
+
+.node-tree-select label.is-implied {
+  cursor: default;
+}
+
+.node-tree-select label.is-implied:hover {
+  background: transparent;
+}
+
+.node-tree-select label.is-implied .node-tree-select-name {
+  color: var(--ink-muted);
+}
+
+.node-tree-select-hint {
+  color: var(--ink-muted);
+  font-size: 11.5px;
+  font-style: italic;
 }
 
 /* README (2026-08, UX-Bugfix): der Zeiterfassung-Tab (TimeRecordPanel.jsx)

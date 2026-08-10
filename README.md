@@ -2474,6 +2474,25 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     zugewiesene Station samt Unterstationen, Zugriffsverwaltung im Modal zeigt/speichert die
     Stations-Checkboxen korrekt).
 
+    **UX-Nachbesserung (2026-08, Nutzer-Feedback: "Warum sehe ich Peter Meier (Mitarbeiter) unter
+    Planer-/HR-Zugriff? Und das Bearbeiten-Modal sieht beschissen aus, muss viel intuitiver
+    laufen. Wähle ich einen Hauptknoten sind auch die Unterknoten markiert, wähle ich nur einen
+    Kindknoten ist nur dieser markiert")**: die Liste zeigte bisher ungefiltert ALLE
+    Mitgliedschaften inkl. Admin ("immer alles", nichts zu konfigurieren) und Mitarbeitende (die
+    einen eigenen, hier irrelevanten Mechanismus über Employee.nodes/Employment haben) --
+    `MembershipAccessSettings.jsx` filtert jetzt auf `role === "planner" || role === "hr"`. Das
+    Bearbeiten-Modal war eine flache Checkbox-Liste ohne erkennbare Eltern/Kind-Beziehung, obwohl
+    die Einschränkung serverseitig bereits Unterstationen automatisch mit einschliesst
+    (`get_descendants()`) -- das war für die Nutzerin unsichtbar und wirkte wie unabhängige
+    Checkboxen. Jetzt: eine markierte Hauptstation checkt ihre Unterstationen sichtbar mit an
+    (ausgegraut, mit Begründung "inkl. über &lt;Station&gt;", nicht mehr einzeln abwählbar,
+    solange die Hauptstation ausgewählt bleibt) -- click auf einen Kindknoten allein markiert
+    weiterhin nur diesen. Zusätzlich ein schmaleres, eigenständiges Modal (560px statt der breiten
+    1080px-Tabellen-Modal-Klasse, die für eine reine Checkbox-Liste unpassend war) mit klarerer
+    Typografie/Zeilenabständen. Mit Playwright verifiziert (Liste zeigt nur noch Planer/HR-Zeilen,
+    Modal markiert alle drei Unterstationen von "Station A" korrekt als eingeschlossen+deaktiviert
+    mit Begründungstext).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

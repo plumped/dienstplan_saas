@@ -87,6 +87,22 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
+  // Nutzer-Feedback (2026-08): das Formular sass zuvor als Dauer-Sidebar
+  // neben der Tabelle -- "Rechts ist Mist, ich würde ein sauberes Popup
+  // erwarten". Jetzt ein Modal, das nur beim expliziten "+ Neuer
+  // Mitarbeiter"/"Bearbeiten" erscheint und die Tabelle wieder freigibt.
+  const [formOpen, setFormOpen] = useState(false);
+
+  // Modal per Escape schliessen -- Standard-Erwartung an einen Dialog.
+  useEffect(() => {
+    if (!formOpen) return;
+    function handleKeyDown(e) {
+      if (e.key === "Escape") closeForm();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formOpen]);
 
   // Tabellen-Zustand: Freitext-Suche (mit Eingabe-Debounce), Sortierung,
   // Stations-/Status-Filter, Seite -- alles zusammen bestimmt die eine
@@ -152,12 +168,18 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
     setEditingId(employee.id);
     setForm(toFormValues(employee));
     setFieldErrors({});
+    setFormOpen(true);
   }
 
   function startCreating() {
     setEditingId(null);
     setForm(emptyForm());
     setFieldErrors({});
+    setFormOpen(true);
+  }
+
+  function closeForm() {
+    setFormOpen(false);
   }
 
   function updateField(key) {
@@ -198,7 +220,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
         await api.createEmployee(payload);
       }
       reloadCurrentPage();
-      startCreating();
+      closeForm();
     } catch (e) {
       if (e.fields && typeof e.fields === "object") setFieldErrors(e.fields);
       onError(e.message);
@@ -289,7 +311,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                   {tableData.results.map((emp) => (
                     <tr
                       key={emp.id}
-                      className={`employee-table-row${editingId === emp.id ? " is-editing" : ""}`}
+                      className={`employee-table-row${formOpen && editingId === emp.id ? " is-editing" : ""}`}
                       onClick={() => startEditing(emp)}
                     >
                       <td>{emp.last_name}</td>
@@ -341,11 +363,22 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
         )}
       </div>
 
-      <form className="panel-form employee-form-panel" onSubmit={handleSubmit}>
-        <h2>{editingId ? "Mitarbeiter bearbeiten" : "Mitarbeiter anlegen"}</h2>
-
-        <fieldset className="panel-form-group">
-          <h3>Stammdaten</h3>
+      {formOpen && (
+        <div className="modal-overlay" onClick={closeForm}>
+          <form
+            className="panel-form modal-dialog employee-modal"
+            onSubmit={handleSubmit}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h2>{editingId ? "Mitarbeiter bearbeiten" : "Mitarbeiter anlegen"}</h2>
+              <button type="button" className="modal-close" onClick={closeForm} aria-label="Schliessen">
+                ×
+              </button>
+            </div>
+            <div className="modal-body">
+              <fieldset className="panel-form-group">
+                <h3>Stammdaten</h3>
           <div className="panel-form-row">
             <label>
               Vorname
@@ -524,21 +557,22 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
           </fieldset>
         )}
 
-        <label className="checkbox-row">
-          <input type="checkbox" checked={form.is_active} onChange={updateField("is_active")} />
-          Aktiv (deaktivierte Mitarbeitende erscheinen nicht mehr im Planblatt)
-        </label>
-        <div className="entry-actions">
-          <button type="submit" disabled={saving}>
-            {saving ? "Speichert …" : editingId ? "Speichern" : "Anlegen"}
-          </button>
-          {editingId && (
-            <button type="button" className="btn-ghost" onClick={startCreating}>
-              Abbrechen
-            </button>
-          )}
+              <label className="checkbox-row">
+                <input type="checkbox" checked={form.is_active} onChange={updateField("is_active")} />
+                Aktiv (deaktivierte Mitarbeitende erscheinen nicht mehr im Planblatt)
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn-ghost" onClick={closeForm}>
+                Abbrechen
+              </button>
+              <button type="submit" disabled={saving}>
+                {saving ? "Speichert …" : editingId ? "Speichern" : "Anlegen"}
+              </button>
+            </div>
+          </form>
         </div>
-      </form>
+      )}
     </div>
   );
 }

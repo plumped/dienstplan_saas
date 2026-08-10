@@ -1287,31 +1287,18 @@ thead .col-employee {
 
 /* Nutzer-Feedback (2026-08): Stammdatenpflege bei vielen Mitarbeitenden --
    Tabelle (Suche/Sortierung/Filter serverseitig, siehe EmployeeSettings.jsx)
-   links, Bearbeiten-Formular als Panel rechts, statt "Formular oben, Liste
-   darunter" wie zuvor (.side-panel). Eigene Klasse statt .side-panel zu
-   ändern, damit die übrigen, unveränderten Einstellungen-Module (Skills,
-   Stationen, Schichttypen, Absenzarten, Tenant) ihr bisheriges,
-   einspaltiges Layout behalten. */
+   nimmt die volle Breite ein, das Bearbeiten-Formular öffnet als Modal
+   ("Rechts ist Mist, ich würde ein sauberes Popup erwarten" -- eine
+   Dauer-Sidebar daneben wurde als unruhig empfunden). Eigene Klasse statt
+   .side-panel zu ändern, damit die übrigen, unveränderten
+   Einstellungen-Module (Skills, Stationen, Schichttypen, Absenzarten,
+   Tenant) ihr bisheriges, einspaltiges Layout behalten. */
 .employee-settings-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 420px;
-  gap: 20px;
-  align-items: start;
-}
-
-@media (max-width: 900px) {
-  .employee-settings-layout {
-    grid-template-columns: 1fr;
-  }
+  display: block;
 }
 
 .employee-table-panel {
   max-width: none;
-}
-
-.employee-form-panel {
-  position: sticky;
-  top: 12px;
 }
 
 .employee-table-toolbar {
@@ -1404,6 +1391,80 @@ thead .col-employee {
   margin-top: 12px;
   font-size: 12.5px;
   color: var(--ink-muted);
+}
+
+/* Nutzer-Feedback (2026-08): Bearbeiten-Formular als Modal statt
+   Dauer-Sidebar -- Overlay abgedunkelt, Dialog mit fixem Header/Footer und
+   scrollendem Inhalt dazwischen, damit auch das lange Stammdaten-Formular
+   (5+ Abschnitte inkl. Mutterschutz) nicht die ganze Seite sprengt. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 20px;
+  overflow-y: auto;
+  z-index: 1000;
+}
+
+.modal-dialog {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.3);
+  width: 100%;
+  max-width: 640px;
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.modal-close {
+  border: none;
+  background: none;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.modal-close:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
 }
 
 .entry-list {

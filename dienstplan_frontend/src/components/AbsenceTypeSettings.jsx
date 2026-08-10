@@ -124,7 +124,7 @@ export default function AbsenceTypeSettings({ onError }) {
             </span>
           </label>
         </div>
-        <label className="panel-checkbox-row">
+        <label className="checkbox-row">
           <input
             type="checkbox"
             checked={form.deducts_vacation_days}

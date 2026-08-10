@@ -255,7 +255,7 @@ entstanden sind, nicht neu sortiert nach Status):
 | Block | Thema | Status | Aktuell offen |
 |---|---|---|---|
 | 1 | Schweizer Arbeitsgesetz (ArG) | 14 von 17 Punkten erledigt | Lohnfortzahlung Krankheit (16), gelegentliche Nachtarbeit 25 % (17) — **aktueller Fokus**; Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 |
-| 2 | Kernfunktionen Praxisalltag | 26 von 31 Punkten erledigt | Export PDF/Excel (5), Automatisierte Planung (19), Fairness-Punktesystem (20), Lohnart-Mapping (30), CSV-/API-Export (31) |
+| 2 | Kernfunktionen Praxisalltag | 27 von 32 Punkten erledigt | Export PDF/Excel (5), Automatisierte Planung (19), Fairness-Punktesystem (20), Lohnart-Mapping (30), CSV-/API-Export (31) |
 | 3 | Onboarding & Self-Signup | Konzept steht, nichts umgesetzt | kompletter Block |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
 | 5 | Datenschutz (revDSG) & Rechtliches | nichts umgesetzt | kompletter Block (AVV, Löschkonzept, Betroffenenrechte) |
@@ -2246,6 +2246,30 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     - Tests (Serializer/View, insbesondere die Warnliste bei fehlendem Mapping).
     - Frontend: "Export"-Button im neuen "Lohnarten"-Settings-Modul (Punkt 30), löst den
       CSV-Download aus (erster CSV-Download-Fluss im Frontend, kein bestehendes Muster dafür).
+
+32. ✅ **Stammdatenpflege: Mitarbeitenden-Tabelle statt Liste** (2026-08). Nutzer-Feedback: "die
+    Stammdatenpflege ist bei 1200 Mitarbeitenden katastrophal -- unsortierte Liste, scrollend
+    suchen, Bearbeiten klicken, Werte anpassen". `EmployeeViewSet` bekam `filter_backends`
+    (`SearchFilter` auf `first_name`/`last_name`, `OrderingFilter` auf `last_name`/`first_name`/
+    `employment_pct`/`is_active`/`employment_start_date`) sowie `?node=`/`?is_active=`-Filter in
+    `get_queryset()` -- Suche/Sortierung/Filterung laufen jetzt serverseitig statt "alles laden
+    und im Frontend filtern". Neue `api.searchEmployees()` (eine Tabellenseite, roh, ohne
+    `requestAllPages`) ergänzt die bestehende `api.getEmployees()` (kompletter Bestand, weiterhin
+    unverändert für Planblatt/Absenzen/Diensttausch/Dashboard genutzt). Frontend:
+    `EmployeeSettings.jsx` zeigt eine sortierbare, filterbare, paginierte Tabelle (Spaltenköpfe
+    klickbar, Stations-/Status-Filter, Freitextsuche mit 300ms-Debounce, "Weiter"/"Zurück" über
+    die DRF-Pagination) links, das Bearbeiten-Formular als sticky Panel rechts (`grid`-Layout in
+    `.employee-settings-layout`, eigene Klasse statt das gemeinsam genutzte `.side-panel`
+    anzufassen) -- Klick auf eine Zeile oder "Bearbeiten" öffnet direkt den Editor, ohne den
+    bisherigen Kontextwechsel "Formular oben, lange Liste darunter". Nach Anlage/Änderung wird die
+    aktuelle Tabellenseite neu geladen statt den lokalen State zu patchen, damit Sortierung/Filter/
+    Seitenzahl auch bei einer Statusänderung (z. B. "Nur aktive"-Filter + gerade deaktiviert)
+    korrekt bleiben. Bekannter, bewusster Kompromiss: die Autovervollständigung für
+    Anstellungs-Rollentitel (`existingTitles`) deckt seit dieser Umstellung nur noch die aktuell
+    geladene Tabellenseite ab, nicht mehr den kompletten Bestand -- ein eigener Endpoint dafür
+    wäre unverhältnismässig. 11 neue Backend-Tests (Suche, Sortierung auf-/absteigend, Stations-/
+    Status-Filter, Kombination, Tenant-Isolation), mit Playwright gegen 80 Testdatensätze
+    (2 Seiten) end-to-end verifiziert.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

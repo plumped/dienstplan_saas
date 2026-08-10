@@ -5358,3 +5358,93 @@ class PregnancyPermissionAPITests(APITestCase):
         self.auth_as(self.alice_user)
         response = self.client.patch(f"/api/pregnancies/{bob_pregnancy.id}/", {"notes": "x"})
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class EmployeeSearchOrderingAPITests(APITestCase):
+    """
+    Stammdatenpflege (Nutzer-Feedback 2026-08): GET /api/employees/ mit
+    ?search=/?ordering=/?node=/?is_active= für die neue Tabellen-Ansicht in
+    EmployeeSettings.jsx -- bei mehreren hundert Mitarbeitenden muss die
+    Suche/Sortierung serverseitig laufen, siehe EmployeeViewSet-Docstring.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.planner_user = User.objects.create_user(username="planner-search", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=self.planner_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        self.anna = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="Berger", employment_pct=100
+        )
+        self.anna.nodes.add(self.node_a)
+        self.beat = Employee.objects.create(
+            tenant=self.tenant, first_name="Beat", last_name="Meier", employment_pct=60, is_active=False
+        )
+        self.beat.nodes.add(self.node_b)
+        self.carla = Employee.objects.create(
+            tenant=self.tenant, first_name="Carla", last_name="Zumbrunn", employment_pct=80
+        )
+        self.carla.nodes.add(self.node_a)
+
+    def test_search_matches_last_name(self):
+        response = self.client.get("/api/employees/?search=meier")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Meier"])
+
+    def test_search_matches_first_name(self):
+        response = self.client.get("/api/employees/?search=carla")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Zumbrunn"])
+
+    def test_search_no_match_returns_empty(self):
+        response = self.client.get("/api/employees/?search=nonexistent")
+        self.assertEqual(response.data["results"], [])
+
+    def test_default_ordering_is_last_name(self):
+        response = self.client.get("/api/employees/")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Berger", "Meier", "Zumbrunn"])
+
+    def test_ordering_desc_by_last_name(self):
+        response = self.client.get("/api/employees/?ordering=-last_name")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Zumbrunn", "Meier", "Berger"])
+
+    def test_ordering_by_employment_pct(self):
+        response = self.client.get("/api/employees/?ordering=employment_pct")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Meier", "Zumbrunn", "Berger"])
+
+    def test_filter_by_node(self):
+        response = self.client.get(f"/api/employees/?node={self.node_b.id}")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Meier"])
+
+    def test_filter_by_is_active_false(self):
+        response = self.client.get("/api/employees/?is_active=false")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Meier"])
+
+    def test_filter_by_is_active_true(self):
+        response = self.client.get("/api/employees/?is_active=true")
+        names = sorted(e["last_name"] for e in response.data["results"])
+        self.assertEqual(names, ["Berger", "Zumbrunn"])
+
+    def test_search_and_node_filter_combined(self):
+        response = self.client.get(f"/api/employees/?search=zumbrunn&node={self.node_a.id}")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Zumbrunn"])
+
+    def test_search_is_tenant_scoped(self):
+        other_tenant, other_user = make_tenant_with_planner("klinik-x", "planner-x")
+        Employee.objects.create(
+            tenant=other_tenant, first_name="Zora", last_name="Berger", employment_pct=100
+        )
+        response = self.client.get("/api/employees/?search=berger")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Berger"])
+        self.assertEqual(len(response.data["results"]), 1)

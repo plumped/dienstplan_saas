@@ -1285,6 +1285,127 @@ thead .col-employee {
   color: var(--ink);
 }
 
+/* Nutzer-Feedback (2026-08): Stammdatenpflege bei vielen Mitarbeitenden --
+   Tabelle (Suche/Sortierung/Filter serverseitig, siehe EmployeeSettings.jsx)
+   links, Bearbeiten-Formular als Panel rechts, statt "Formular oben, Liste
+   darunter" wie zuvor (.side-panel). Eigene Klasse statt .side-panel zu
+   ändern, damit die übrigen, unveränderten Einstellungen-Module (Skills,
+   Stationen, Schichttypen, Absenzarten, Tenant) ihr bisheriges,
+   einspaltiges Layout behalten. */
+.employee-settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .employee-settings-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.employee-table-panel {
+  max-width: none;
+}
+
+.employee-form-panel {
+  position: sticky;
+  top: 12px;
+}
+
+.employee-table-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.employee-table-toolbar .panel-list-filter {
+  flex: 1;
+  min-width: 160px;
+  width: auto;
+  margin-bottom: 0;
+}
+
+.employee-table-toolbar select {
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.employee-table-scroll {
+  overflow-x: auto;
+}
+
+.employee-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.employee-table th {
+  text-align: left;
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.employee-table-sort {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: none;
+  color: var(--ink-muted);
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.employee-table-sort:hover {
+  color: var(--primary);
+}
+
+.employee-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.employee-table-row {
+  cursor: pointer;
+}
+
+.employee-table-row:hover {
+  background: var(--primary-soft);
+}
+
+.employee-table-row.is-editing {
+  background: var(--primary-soft);
+  font-weight: 600;
+}
+
+.employee-table-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.employee-table-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
 .entry-list {
   list-style: none;
   margin: 0;

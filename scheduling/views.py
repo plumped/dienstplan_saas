@@ -4,7 +4,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework import permissions, viewsets
+from rest_framework import filters, permissions, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -201,9 +201,37 @@ class SkillViewSet(TenantScopedViewSet):
 
 
 class EmployeeViewSet(TenantScopedViewSet):
+    """
+    Stammdatenpflege (Nutzer-Feedback 2026-08): bei mehreren hundert
+    Mitarbeitenden skaliert "alles laden und im Frontend filtern" nicht mehr
+    -- Suche/Sortierung/Filterung laufen deshalb serverseitig, mit der
+    normalen DRF-Pagination (PAGE_SIZE=50) als Ergebnis. Andere Stellen der
+    App (Planblatt, Absenzen, Diensttausch, Dashboard), die weiterhin den
+    KOMPLETTEN Mitarbeiterbestand brauchen, rufen unverändert `GET /api/
+    employees/` ohne diese Parameter auf und paginieren clientseitig durch
+    (api.getEmployees()/requestAllPages) -- dieser Endpoint bleibt also für
+    beide Nutzungsarten kompatibel, nur die neue Stammdaten-Tabelle
+    (EmployeeSettings.jsx) nutzt `?search=`/`?ordering=`/`?node=`/
+    `?is_active=` aktiv.
+    """
+
     permission_classes = [permissions.IsAuthenticated, IsTenantManager]
     queryset = Employee.all_objects.all()
     serializer_class = EmployeeSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["first_name", "last_name"]
+    ordering_fields = ["last_name", "first_name", "employment_pct", "is_active", "employment_start_date"]
+    ordering = ["last_name", "first_name"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        node_id = self.request.query_params.get("node")
+        if node_id:
+            qs = qs.filter(nodes__id=node_id)
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active.lower() in ("1", "true", "yes"))
+        return qs.distinct()
 
     @action(detail=True, methods=["get"], url_path="weekly-overtime")
     def weekly_overtime(self, request, pk=None):

@@ -5,6 +5,25 @@ import BalanceBadge from "./BalanceBadge.jsx";
 import EmploymentEditor from "./EmploymentEditor.jsx";
 import PregnancyEditor from "./PregnancyEditor.jsx";
 
+// Nutzer-Feedback (2026-08): "die Stammdatenpflege ist bei vielen
+// Mitarbeitenden katastrophal -- unsortierte Liste, alles scrollend suchen".
+// Ab dieser Grössenordnung ist "alles laden und im Frontend filtern" (die
+// bisherige Lösung) keine Option mehr -- Suche/Sortierung/Filterung laufen
+// jetzt serverseitig (api.searchEmployees(), EmployeeViewSet:
+// ?search=/?ordering=/?node=/?is_active=/?page=), das Frontend hält jeweils
+// nur eine Tabellenseite (PAGE_SIZE=50) im Speicher.
+// Muss mit REST_FRAMEWORK.PAGE_SIZE in config/settings.py übereinstimmen --
+// nur für die "Seite X von Y"-Anzeige, keine Server-Logik hängt daran (der
+// eigentliche next/previous-Zustand kommt direkt aus der DRF-Pagination).
+const EMPLOYEE_PAGE_SIZE = 50;
+
+const SORT_COLUMNS = [
+  { field: "last_name", label: "Nachname" },
+  { field: "first_name", label: "Vorname" },
+  { field: "employment_pct", label: "Pensum" },
+  { field: "is_active", label: "Status" },
+];
+
 function emptyForm() {
   return {
     first_name: "",
@@ -62,29 +81,72 @@ function selectedOptions(select) {
 //
 // Block 2.16: Formular in Abschnitte gegliedert (fieldset), Felder mit
 // Erklärtext analog zum Django-Admin-help_text, Fehler direkt am Feld statt
-// nur im globalen Banner (error.fields aus api.js), Textfilter über der
-// Liste ab realistischer Praxisgrösse (30+ Mitarbeitende).
+// nur im globalen Banner (error.fields aus api.js).
 export default function EmployeeSettings({ nodes, skills, me, onError }) {
-  const [employees, setEmployees] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
-  const [filter, setFilter] = useState("");
+
+  // Tabellen-Zustand: Freitext-Suche (mit Eingabe-Debounce), Sortierung,
+  // Stations-/Status-Filter, Seite -- alles zusammen bestimmt die eine
+  // Server-Anfrage, die jeweils geladen wird.
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [ordering, setOrdering] = useState("last_name");
+  const [nodeFilter, setNodeFilter] = useState("");
+  const [activeFilter, setActiveFilter] = useState("");
+  const [page, setPage] = useState(1);
+  const [tableData, setTableData] = useState({ count: 0, next: null, previous: null, results: [] });
+  const [listLoading, setListLoading] = useState(true);
+
+  // Freitext-Suche debouncen (300ms), Filter/Sortierung/Seite lösen sofort
+  // eine neue Anfrage aus -- ein Tippvorgang soll nicht bei jedem Zeichen
+  // einen eigenen Request auslösen.
+  useEffect(() => {
+    const timeout = setTimeout(() => setSearch(searchInput), 300);
+    return () => clearTimeout(timeout);
+  }, [searchInput]);
+
+  // Bei jeder Änderung an Suche/Sortierung/Filter zurück auf Seite 1 --
+  // sonst könnte man auf einer Seite landen, die es im neuen Ergebnis gar
+  // nicht mehr gibt.
+  useEffect(() => {
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, ordering, nodeFilter, activeFilter]);
 
   useEffect(() => {
     let cancelled = false;
+    setListLoading(true);
     api
-      .getEmployees()
-      .then((data) => !cancelled && setEmployees(data.results ?? data))
+      .searchEmployees({ search, ordering, node: nodeFilter, isActive: activeFilter, page })
+      .then((data) => !cancelled && setTableData(data))
       .catch((e) => onError(e.message))
-      .finally(() => !cancelled && setLoading(false));
+      .finally(() => !cancelled && setListLoading(false));
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [search, ordering, nodeFilter, activeFilter, page]);
+
+  // Nach jeder Anlage/Änderung die aktuelle Seite neu laden statt den
+  // Eintrag manuell im lokalen Array zu patchen -- so bleiben Sortierung/
+  // Filter/Seitenzahl immer korrekt, auch wenn sich durch die Änderung z. B.
+  // die Sortierposition oder die Sichtbarkeit unter einem aktiven Filter
+  // verschiebt (z. B. Status-Filter "Nur aktive" + gerade deaktiviert).
+  function reloadCurrentPage() {
+    setListLoading(true);
+    api
+      .searchEmployees({ search, ordering, node: nodeFilter, isActive: activeFilter, page })
+      .then(setTableData)
+      .catch((e) => onError(e.message))
+      .finally(() => setListLoading(false));
+  }
+
+  function toggleSort(field) {
+    setOrdering((prev) => (prev === field ? `-${field}` : field));
+  }
 
   function startEditing(employee) {
     setEditingId(employee.id);
@@ -131,12 +193,11 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
     setFieldErrors({});
     try {
       if (editingId) {
-        const updated = await api.updateEmployee(editingId, payload);
-        setEmployees((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
+        await api.updateEmployee(editingId, payload);
       } else {
-        const created = await api.createEmployee(payload);
-        setEmployees((prev) => [...prev, created]);
+        await api.createEmployee(payload);
       }
+      reloadCurrentPage();
       startCreating();
     } catch (e) {
       if (e.fields && typeof e.fields === "object") setFieldErrors(e.fields);
@@ -152,9 +213,13 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
 
   // README Punkt 17: Freitext-Autovervollständigung statt eigener
   // Stammdaten-Liste -- Vorschläge kommen aus bereits im Tenant verwendeten
-  // Rollentiteln, ohne dass dafür ein neuer Endpoint nötig ist.
+  // Rollentiteln. Seit der Umstellung auf serverseitige Suche/Pagination
+  // (Nutzer-Feedback 2026-08) nur noch aus der aktuell geladenen Tabellen-
+  // seite abgeleitet statt aus dem kompletten Bestand -- bewusster
+  // Kompromiss: ein eigener "alle je verwendeten Titel"-Endpoint wäre für
+  // eine reine Autovervollständigung unverhältnismässig.
   const existingTitles = [
-    ...new Set(employees.flatMap((emp) => emp.employments.map((e) => e.title)).filter(Boolean)),
+    ...new Set(tableData.results.flatMap((emp) => emp.employments.map((e) => e.title)).filter(Boolean)),
   ];
 
   function fieldError(key) {
@@ -162,13 +227,121 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
     return message ? <span className="field-error">{message}</span> : null;
   }
 
-  const filteredEmployees = employees.filter((emp) =>
-    `${emp.first_name} ${emp.last_name}`.toLowerCase().includes(filter.trim().toLowerCase())
-  );
+  const totalPages = Math.max(1, Math.ceil(tableData.count / EMPLOYEE_PAGE_SIZE));
 
   return (
-    <div className="side-panel">
-      <form className="panel-form" onSubmit={handleSubmit}>
+    <div className="employee-settings-layout">
+      <div className="panel-list panel-list--full employee-table-panel">
+        <div className="employee-table-toolbar">
+          <input
+            type="search"
+            className="panel-list-filter"
+            placeholder="Name suchen …"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+          />
+          <select value={nodeFilter} onChange={(e) => setNodeFilter(e.target.value)}>
+            <option value="">Alle Stationen</option>
+            {nodes.map((n) => (
+              <option key={n.id} value={n.id}>
+                {n.name}
+              </option>
+            ))}
+          </select>
+          <select value={activeFilter} onChange={(e) => setActiveFilter(e.target.value)}>
+            <option value="">Alle</option>
+            <option value="true">Nur aktive</option>
+            <option value="false">Nur inaktive</option>
+          </select>
+          <button type="button" className="btn-ghost" onClick={startCreating}>
+            + Neuer Mitarbeiter
+          </button>
+        </div>
+
+        {listLoading ? (
+          <p className="loading-state">Wird geladen …</p>
+        ) : !tableData.results.length ? (
+          <p className="empty-state">
+            {search || nodeFilter || activeFilter
+              ? "Keine Mitarbeitenden gefunden."
+              : "Noch keine Mitarbeitenden angelegt."}
+          </p>
+        ) : (
+          <>
+            <div className="employee-table-scroll">
+              <table className="employee-table">
+                <thead>
+                  <tr>
+                    {SORT_COLUMNS.map((col) => (
+                      <th key={col.field}>
+                        <button type="button" className="employee-table-sort" onClick={() => toggleSort(col.field)}>
+                          {col.label}
+                          {ordering === col.field && " ▲"}
+                          {ordering === `-${col.field}` && " ▼"}
+                        </button>
+                      </th>
+                    ))}
+                    <th>Station(en)</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {tableData.results.map((emp) => (
+                    <tr
+                      key={emp.id}
+                      className={`employee-table-row${editingId === emp.id ? " is-editing" : ""}`}
+                      onClick={() => startEditing(emp)}
+                    >
+                      <td>{emp.last_name}</td>
+                      <td>{emp.first_name}</td>
+                      <td>{emp.employment_pct}%</td>
+                      <td>
+                        {emp.is_active ? (
+                          "Aktiv"
+                        ) : (
+                          <span className="status-badge status-badge--cancelled">Inaktiv</span>
+                        )}
+                      </td>
+                      <td>{nodeNames(emp.nodes)}</td>
+                      <td className="employee-table-actions" onClick={(e) => e.stopPropagation()}>
+                        <BalanceBadge employeeId={emp.id} />
+                        <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
+                          Bearbeiten
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="employee-table-pager">
+              <span>
+                {tableData.count} Mitarbeitende{totalPages > 1 ? ` · Seite ${page} von ${totalPages}` : ""}
+              </span>
+              <div className="entry-actions">
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  disabled={!tableData.previous}
+                  onClick={() => setPage((p) => p - 1)}
+                >
+                  ← Zurück
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  disabled={!tableData.next}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Weiter →
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      <form className="panel-form employee-form-panel" onSubmit={handleSubmit}>
         <h2>{editingId ? "Mitarbeiter bearbeiten" : "Mitarbeiter anlegen"}</h2>
 
         <fieldset className="panel-form-group">
@@ -366,53 +539,6 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
           )}
         </div>
       </form>
-
-      <div className="panel-list">
-        <h2>Mitarbeitende</h2>
-        {employees.length > 8 && (
-          <input
-            type="search"
-            className="panel-list-filter"
-            placeholder="Name filtern …"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          />
-        )}
-        {loading ? (
-          <p className="loading-state">Wird geladen …</p>
-        ) : !employees.length ? (
-          <p className="empty-state">Noch keine Mitarbeitenden angelegt.</p>
-        ) : !filteredEmployees.length ? (
-          <p className="empty-state">Keine Mitarbeitenden gefunden.</p>
-        ) : (
-          <ul className="entry-list">
-            {filteredEmployees.map((emp) => (
-              <li key={emp.id} className="entry-list-item">
-                {!emp.is_active && <span className="status-badge status-badge--cancelled">Inaktiv</span>}
-                <span className="entry-main">
-                  <strong>
-                    {emp.first_name} {emp.last_name}
-                  </strong>{" "}
-                  · {emp.employment_pct}% · {nodeNames(emp.nodes)}
-                  {(emp.maximum_weekly_hours || emp.standard_weekly_hours) && (
-                    <span className="entry-note">
-                      {" "}
-                      · Override: {emp.standard_weekly_hours ? `${emp.standard_weekly_hours}h Soll` : ""}
-                      {emp.maximum_weekly_hours ? ` ${emp.maximum_weekly_hours}h Max` : ""}
-                    </span>
-                  )}
-                </span>
-                <span className="entry-actions">
-                  <BalanceBadge employeeId={emp.id} />
-                  <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
-                    Bearbeiten
-                  </button>
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
     </div>
   );
 }

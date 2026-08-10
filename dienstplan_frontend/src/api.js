@@ -160,6 +160,26 @@ export const api = {
   deleteSkill: (id) => request(`/skills/${id}/`, { method: "DELETE" }),
 
   getEmployees: () => requestAllPages("/employees/"),
+  // Stammdatenpflege (Nutzer-Feedback 2026-08): eigene, NICHT paginierend
+  // durchgereichte Variante für die Mitarbeitenden-Tabelle in
+  // EmployeeSettings.jsx -- bei mehreren hundert Mitarbeitenden lädt
+  // getEmployees() (requestAllPages, alle Seiten auf einmal) viel zu viel für
+  // eine einzelne Tabellenansicht. searchEmployees() gibt die rohe
+  // DRF-Pagination-Envelope ({count, next, previous, results}) einer EINEN
+  // Seite zurück, gefiltert/sortiert serverseitig (EmployeeViewSet:
+  // ?search=/?ordering=/?node=/?is_active=/?page=). Alle anderen Stellen der
+  // App (Planblatt, Absenzen, Diensttausch, Dashboard) brauchen weiterhin den
+  // kompletten Bestand und bleiben bei getEmployees().
+  searchEmployees: ({ search, ordering, node, isActive, page } = {}) => {
+    const params = new URLSearchParams();
+    if (search) params.set("search", search);
+    if (ordering) params.set("ordering", ordering);
+    if (node) params.set("node", node);
+    if (isActive !== undefined && isActive !== "") params.set("is_active", isActive);
+    if (page) params.set("page", page);
+    const qs = params.toString();
+    return request(`/employees/${qs ? `?${qs}` : ""}`);
+  },
   createEmployee: (payload) => request("/employees/", { method: "POST", body: payload }),
   updateEmployee: (id, payload) =>
     request(`/employees/${id}/`, { method: "PATCH", body: payload, affectsBalance: true }),

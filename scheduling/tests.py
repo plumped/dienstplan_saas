@@ -5584,3 +5584,35 @@ class NodeMoveAPITests(APITestCase):
         foreign_node = Node.add_root(name="Fremde Station", tenant=other_tenant)
         response = self.client.post(f"/api/nodes/{self.standort_b.id}/move/", {"parent": foreign_node.id})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_move_between_two_non_root_parents_reparents_correctly(self):
+        """
+        Regressionstest für einen treebeard-Bug (Nutzer-Feedback: "ich kann
+        Küche direkt in Station A ziehen, nicht aber von Station A zurück in
+        Hauswirtschaft"): move(pos="sorted-child") bricht fälschlich früh ab
+        ("bereits an der richtigen Stelle"), wenn die Geschwister-Position des
+        gezogenen Knotens unter seinem ALTEN Elternknoten zufällig mit der
+        berechneten Position unter dem NEUEN Elternknoten übereinstimmt --
+        ohne zu prüfen, ob es überhaupt derselbe Elternknoten ist. Bei
+        kleinen Bäumen (Position 1 unter beiden Elternknoten) ist das der
+        Normalfall, nicht die Ausnahme -- "AAA Kind" ist hier bewusst
+        alphabetisch zuerst unter BEIDEN Wurzeln, um genau diese Kollision
+        zu erzwingen.
+        """
+        root_x = Node.add_root(name="Root X", tenant=self.tenant)
+        child_x = root_x.add_child(name="AAA Kind", tenant=self.tenant)
+        root_y = Node.add_root(name="Root Y", tenant=self.tenant)
+        root_y.add_child(name="ZZZ Kind", tenant=self.tenant)
+
+        response = self.client.post(f"/api/nodes/{child_x.id}/move/", {"parent": root_y.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        child_x.refresh_from_db()
+        self.assertEqual(child_x.get_parent().pk, root_y.pk)
+
+        # Und wieder zurück -- derselbe Kollisionsmechanismus in umgekehrter
+        # Richtung (Position 1 unter Root Y jetzt, Position 1 unter Root X
+        # wieder, da Root X inzwischen kinderlos ist).
+        response = self.client.post(f"/api/nodes/{child_x.id}/move/", {"parent": root_x.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        child_x.refresh_from_db()
+        self.assertEqual(child_x.get_parent().pk, root_x.pk)

@@ -2344,6 +2344,27 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Liste, direkter Zug von einem sichtbaren Kind-Knoten auf einen erst nach Auto-Scroll
     sichtbaren, weit entfernten Hauptknoten).
 
+    **Bugfix 3 (2026-08, Nutzer-Feedback: "ich kann die Station Küche direkt in Station A ziehen.
+    Nicht aber von Station A zurück in Hauswirtschaft")**: ein echter Bug in `django-treebeard`
+    (5.3.0) selbst. `move(pos="sorted-child")` wandelt das intern in `"sorted-sibling"` gegen
+    `target.get_last_child()` um und bricht dabei früh ab, sobald die letzte Pfad-Ziffer des
+    gezogenen Knotens (seine Geschwister-Position unter dem ALTEN Elternknoten) zufällig mit der
+    berechneten Position unter dem NEUEN Elternknoten übereinstimmt ("bereits an der richtigen
+    Stelle") -- ohne zu prüfen, ob es sich überhaupt um denselben Elternknoten handelt. Bei kleinen
+    Bäumen (Position 1 unter dem alten UND unter dem neuen Elternknoten) ist das der Normalfall,
+    nicht die Ausnahme, und der Knoten bleibt dabei unbemerkt (Response 200, aber unverändert) an
+    alter Stelle. Workaround in `NodeViewSet.move()`: beim Umhängen zwischen zwei echten (nicht
+    Wurzel-)Elternknoten wird zuerst automatisch über die oberste Ebene geroutet (bereits einzeln
+    erprobt: Wurzel↔Kind funktioniert immer zuverlässig, weil dabei echte, unabhängig berechnete
+    Positionen verglichen werden statt einer zufälligen Kollision) -- inklusive `target.refresh_from_db()`
+    nach dem Zwischenschritt, da eine Wurzel-Einfügung die Pfad-Ziffern bestehender Wurzeln
+    verschieben kann und `target` sonst mit einem veralteten Pfad weiterrechnet. Zusätzliche
+    Post-Move-Verifikation (`node.get_parent() == target`) wirft einen klaren Fehler, statt je
+    wieder still zu scheitern. 2 neue Regressionstests (bewusst mit einem Knoten konstruiert, der
+    alphabetisch an Position 1 unter BEIDEN Elternknoten liegt, um die Kollision gezielt zu
+    erzwingen -- Hin- und Rückrichtung), volle Suite (404 Tests) grün, mit Playwright end-to-end
+    verifiziert.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

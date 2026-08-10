@@ -217,6 +217,36 @@ class NodeViewSet(TenantScopedViewSet):
             if target.pk == node.pk:
                 raise ValidationError({"parent": "Eine Station kann nicht in sich selbst verschoben werden."})
             try:
+                current_parent = node.get_parent()
+                if current_parent is not None and current_parent.pk != target.pk:
+                    # Bugfix (2026-08, Nutzer-Feedback: "ich kann Küche direkt in
+                    # Station A ziehen, nicht aber von Station A zurück in
+                    # Hauswirtschaft"): treebeards move(pos="sorted-child") wandelt
+                    # das intern in "sorted-sibling" gegen target.get_last_child()
+                    # um und bricht früh ab, falls die letzte Pfad-Ziffer des
+                    # gezogenen Knotens zufällig mit der berechneten neuen Position
+                    # übereinstimmt ("bereits an der richtigen Stelle") -- OHNE zu
+                    # prüfen, ob es sich überhaupt um denselben Elternknoten
+                    # handelt. Bei kleinen Bäumen (Position 1 unter dem alten
+                    # Elternknoten, Position 1 unter dem neuen) ist das keine
+                    # Seltenheit, sondern der Normalfall, und der Knoten bleibt
+                    # dann unbemerkt an alter Stelle. Ein Zwischenstopp auf der
+                    # obersten Ebene (bereits einzeln erprobt: Wurzel<->Kind
+                    # funktioniert immer zuverlässig) umgeht das zuverlässig, weil
+                    # beide Teilschritte dann echte, unabhängig berechnete
+                    # Positionen vergleichen statt einer zufälligen Kollision.
+                    anchor_root = Node.get_first_root_node()
+                    if anchor_root is not None and anchor_root.pk != node.pk:
+                        node.move(anchor_root, pos="sorted-sibling")
+                        node.refresh_from_db()
+                        # target selbst kann eine bestehende Wurzel sein (oder
+                        # -- egal ob ja oder nein -- ihr Pfadsegment kann sich
+                        # durch die Einfügung verschieben, da node_order_by
+                        # alle Wurzeln sortiert hält). Ohne Refresh würde
+                        # target.get_last_child() im zweiten Schritt mit dem
+                        # veralteten Pfad suchen und fälschlich nichts finden
+                        # -- treebeard setzt self.target dann intern auf None.
+                        target.refresh_from_db()
                 node.move(target, pos="sorted-child")
             except InvalidMoveToDescendant:
                 raise ValidationError(
@@ -224,6 +254,10 @@ class NodeViewSet(TenantScopedViewSet):
                 )
             except PathOverflow:
                 raise ValidationError({"parent": "Zu viele Stationen auf dieser Ebene -- Verschieben nicht möglich."})
+            node.refresh_from_db()
+            actual_parent = node.get_parent()
+            if actual_parent is None or actual_parent.pk != target.pk:
+                raise ValidationError({"parent": "Verschieben fehlgeschlagen -- bitte erneut versuchen."})
         else:
             # Auf die oberste Ebene verschieben (Wurzelknoten). Wurzelknoten
             # liegen -- wie schon bei add_root() oben -- in einem

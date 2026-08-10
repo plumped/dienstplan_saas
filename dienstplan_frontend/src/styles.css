@@ -1160,6 +1160,12 @@ thead .col-employee {
 .panel-form-row {
   display: flex;
   gap: 12px;
+  /* Nutzer-Feedback (2026-08): ohne align-items rutscht ein Button ohne
+     eigenes Label (z. B. "Hinzufügen" in PregnancyEditor.jsx) sichtbar nach
+     oben/unten, sobald ein Nachbar-Label mehrzeilig umbricht ("Tatsächliches
+     Geburtsdatum (sobald bekannt)") -- flex-end verankert alle Zeilen-Kinder
+     an derselben unteren Kante, unabhängig von der Label-Höhe. */
+  align-items: flex-end;
 }
 
 /* README Punkt 21 (Dashboard): mehrere Karten-Sektionen (offene Absenzen,
@@ -1414,7 +1420,7 @@ thead .col-employee {
   border-radius: var(--radius);
   box-shadow: 0 24px 60px rgba(15, 23, 42, 0.3);
   width: 100%;
-  max-width: 860px;
+  max-width: min(1080px, 94vw);
   max-height: calc(100vh - 80px);
   display: flex;
   flex-direction: column;
@@ -1842,24 +1848,37 @@ thead .col-employee {
 .employment-editor-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
 .employment-editor-row select,
 .employment-editor-row input[type="text"] {
-  padding: 6px 8px;
+  padding: 7px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 12.5px;
+  font-size: 13px;
+}
+
+/* Nutzer-Feedback (2026-08): Team-Auswahl und Rollentitel wirkten winzig
+   und beliebig platziert, obwohl im breiteren Modal genug Raum frei war --
+   beide wachsen jetzt mit statt auf ihrer schmalen Browser-Default-Breite
+   zu verharren. */
+.employment-editor-row select {
+  min-width: 160px;
+}
+
+.employment-editor-row input[type="text"] {
+  flex: 1;
+  min-width: 180px;
 }
 
 .employment-editor-pensum {
-  width: 56px;
-  padding: 6px 8px;
+  width: 68px;
+  padding: 7px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  font-size: 12.5px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
 

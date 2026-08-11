@@ -137,8 +137,33 @@ export default function App() {
   }
 
   if (!loggedIn) {
-    return <LoginForm onSuccess={() => setLoggedIn(true)} />;
+    return (
+      <LoginForm
+        onSuccess={() => {
+          // Bugfix (Nutzer-Feedback 2026-08): App.jsx bleibt beim Login-
+          // Wechsel gemountet (nur `loggedIn` togglet) -- tab/nodeId von
+          // einer VORHERIGEN Sitzung blieben sonst stehen. Marco Bianchi
+          // landete so nach dem erzwungenen Passwortwechsel auf
+          // "Einstellungen", weil dort zuvor ein Admin unterwegs war,
+          // obwohl der Tab-Button für seine Rolle gar nicht sichtbar ist.
+          // Jeder frische Login startet deshalb explizit auf dem Planblatt;
+          // nodeId auf null setzt den untenstehenden Default-Auswahl-Effekt
+          // zurück, der dann automatisch die (bereits backend-seitig auf
+          // die eigene(n) Station(en) gescopte) erste Station wählt.
+          setTab("grid");
+          setNodeId(null);
+          setLoggedIn(true);
+        }}
+      />
+    );
   }
+
+  // Verteidigungslinie gegen genau dieses Szenario, falls `tab` aus
+  // irgendeinem Grund dennoch auf einem Wert steht, den die aktuelle Rolle
+  // nicht sehen darf (z. B. noch nicht geladenes `me` direkt nach Login) --
+  // der Inhaltsbereich rendert dann "Planblatt" statt eines für die Rolle
+  // unsichtbaren Tabs.
+  const activeTab = TABS.some((t) => t.id === tab && (!t.managerOnly || canManageSchedule(me))) ? tab : "grid";
 
   // Nutzer-Feedback (2026-08): erzwungener Passwortwechsel nach admin-
   // seitiger Direktanlage (siehe MembershipAccessSettings.jsx) -- blockiert
@@ -161,6 +186,16 @@ export default function App() {
             ◒
           </span>
           Dienstplan
+          {/* Nutzer-Feedback (2026-08): "oben Links sollte auch noch der
+              Name stehen, damit man weiss wer gerade eingeloggt ist" --
+              Employee-Name bevorzugt (lesbarer als der Login-Benutzername),
+              Fallback auf `username` für die seltenen Konten ohne
+              Mitarbeiterprofil (siehe core.views.MeView). */}
+          {me && (
+            <span className="current-user-name">
+              {me.employee ? `${me.employee.first_name} ${me.employee.last_name}` : me.username}
+            </span>
+          )}
         </div>
 
         <nav className="tab-nav">
@@ -170,7 +205,7 @@ export default function App() {
               <button
                 key={t.id}
                 type="button"
-                className={`tab-btn${tab === t.id ? " is-active" : ""}`}
+                className={`tab-btn${activeTab === t.id ? " is-active" : ""}`}
                 onClick={() => {
                   setTab(t.id);
                   if (t.id === "timerecords") setTimeRecordTabNonce((n) => n + 1);
@@ -188,7 +223,7 @@ export default function App() {
         </nav>
 
         {nodes.length > 0 && <NodeSelector nodes={nodes} value={nodeId} onChange={setNodeId} />}
-        {(tab === "grid" || tab === "timerecords") && (
+        {(activeTab === "grid" || activeTab === "timerecords") && (
           <MonthNav
             year={period.year}
             month={period.month}
@@ -205,6 +240,8 @@ export default function App() {
           onClick={() => {
             api.logout();
             setLoggedIn(false);
+            setTab("grid");
+            setNodeId(null);
           }}
         >
           Abmelden
@@ -221,18 +258,18 @@ export default function App() {
       )}
 
       <main>
-        {tab === "settings" ? (
+        {activeTab === "settings" ? (
           // Bewusst ausserhalb der !nodeId-Sperre unten: ein frischer Tenant
           // ohne Stationen muss die Einstellungen erreichen können, um
           // überhaupt eine erste Station anzulegen (siehe SettingsPanel ->
           // NodeSettings).
           <SettingsPanel me={me} onError={setError} />
-        ) : tab === "dashboard" ? (
+        ) : activeTab === "dashboard" ? (
           // Ebenfalls ausserhalb der !nodeId-Sperre: die Übersicht ist
           // stationsübergreifend (siehe Dashboard.jsx), hängt an keiner
           // einzeln gewählten Station.
           <Dashboard me={me} onNavigate={handleNavigate} onError={setError} />
-        ) : tab === "timerecords" && canViewScheduleReports(me) ? (
+        ) : activeTab === "timerecords" && canViewScheduleReports(me) ? (
           // Nutzer-Feedback (2026-08): "ich muss die Stationen durchsuchen,
           // bis ich die zu bestätigende Erfassung finde" -- für Admin/
           // Planer/HR ersetzt die stationsübergreifende Übersicht die
@@ -253,7 +290,7 @@ export default function App() {
           </p>
         ) : (
           <>
-            {tab === "grid" && (
+            {activeTab === "grid" && (
               <PlanGrid
                 nodeId={nodeId}
                 nodes={nodes}
@@ -264,12 +301,12 @@ export default function App() {
                 onError={setError}
               />
             )}
-            {tab === "yearplan" && (
+            {activeTab === "yearplan" && (
               <YearPlan nodeId={nodeId} nodes={nodes} employees={employees} me={me} onError={setError} />
             )}
-            {tab === "absences" && <AbsencePanel employees={employees} me={me} onError={setError} />}
-            {tab === "trades" && <TradeRequestPanel me={me} onError={setError} />}
-            {tab === "timerecords" && (
+            {activeTab === "absences" && <AbsencePanel employees={employees} me={me} onError={setError} />}
+            {activeTab === "trades" && <TradeRequestPanel me={me} onError={setError} />}
+            {activeTab === "timerecords" && (
               <TimeRecordPanel
                 nodeId={nodeId}
                 year={period.year}

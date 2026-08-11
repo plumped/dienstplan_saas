@@ -100,6 +100,20 @@ button {
   font-size: 20px;
 }
 
+/* Nutzer-Feedback (2026-08): "oben Links sollte auch noch der Name stehen,
+   damit man weiss wer gerade eingeloggt ist" -- bewusst dezenter als die
+   fette Marke selbst (kleinere Schrift, gedämpfte Farbe, dünner Trenner),
+   damit "Dienstplan" die visuell führende Marke bleibt. */
+.current-user-name {
+  font-family: var(--font-body, inherit);
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--ink-muted);
+  padding-left: 8px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border);
+}
+
 .tab-nav {
   display: flex;
   gap: 4px;

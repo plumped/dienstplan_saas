@@ -167,6 +167,7 @@ class MeViewTests(APITestCase):
         self.assertEqual(response.data["role"], "planner")
         self.assertEqual(response.data["tenant_name"], "Klinik A")
         self.assertIsNone(response.data["employee"])
+        self.assertEqual(response.data["username"], "planner")
 
     def test_employee_with_linked_employee_profile(self):
         tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")

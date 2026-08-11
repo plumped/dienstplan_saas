@@ -136,6 +136,12 @@ class MeView(APIView):
                 "role": membership.role,
                 "tenant_name": membership.tenant.name,
                 "must_change_password": request.user.must_change_password,
+                # Nutzer-Feedback (2026-08): "oben Links sollte auch noch der
+                # Name stehen, damit man weiss wer gerade eingeloggt ist" --
+                # Fallback fürs Frontend, falls kein Employee-Profil verknüpft
+                # ist (z. B. "Konten ohne Mitarbeiterprofil"), wo `employee`
+                # unten None bleibt.
+                "username": request.user.username,
                 "employee": (
                     {
                         "id": employee.id,

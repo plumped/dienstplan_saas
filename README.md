@@ -603,6 +603,29 @@ zurückgestellt, bis die Funktionalität steht.
        Rollenänderung + Stationszuordnung an einer bestehenden Person, und die Bestätigung,
        dass eine Person MIT Mitarbeiterprofil in "Konten ohne Mitarbeiterprofil" nicht mehr
        auftaucht.
+   - **Bugfix (2026-08, gefunden beim ersten echten Test durch den Nutzer)**: *"Ich habe mich
+     mit marco.bianchi einloggen können [...] alles tiptop. Nach dem Login wurde ich dann
+     weitergeleitet auf die 'Einstellungen'-Seite. Das darf nicht passieren auch wenn ich keine
+     Schreibrechte habe."* Ursache: `App.jsx` bleibt beim Login-Wechsel gemountet (nur
+     `loggedIn` togglet) -- `tab`/`nodeId` aus einer VORHERIGEN Sitzung blieben stehen. Ein
+     Admin hatte zuvor "Einstellungen" offen; als danach ein Mitarbeiter einloggte, rendierte
+     `tab === "settings"` weiterhin `SettingsPanel`, obwohl der zugehörige Tab-Button für die
+     Mitarbeiter-Rolle gar nicht sichtbar ist (das Rendern selbst war nicht rollengeprüft, nur
+     der Button). Behoben mit zwei Massnahmen: (1) `LoginForm.onSuccess` setzt `tab`/`nodeId`
+     jetzt explizit zurück, jeder frische Login startet auf "Planblatt" mit `nodeId = null`,
+     was den bestehenden Default-Auswahl-Effekt zwingt, die (backend-seitig bereits auf die
+     eigene(n) Station(en) gescopte, siehe Punkt 51) erste Station neu zu wählen -- Mitarbeiter
+     landen so automatisch auf ihrer eigenen Abteilung. (2) Eine `activeTab`-Variable in
+     `App.jsx` prüft für JEDEN Render, ob die aktuelle Rolle den `tab`-Wert überhaupt sehen
+     darf, und fällt sonst auf "grid" zurück -- Verteidigungslinie, falls `tab` aus einem
+     anderen Grund je wieder einen für die Rolle unsichtbaren Wert trägt. Gleichzeitig
+     ergänzt: Name der eingeloggten Person oben links neben der Marke (`GET /api/me/` liefert
+     jetzt zusätzlich `username` als Fallback für Accounts ohne Mitarbeiterprofil), Nutzer-
+     Feedback: *"Zudem sollte oben Links auch noch der Name stehen, damit man weiss wer gerade
+     eingeloggt ist."* Mit Playwright verifiziert: Hans (Admin) lässt "Einstellungen" offen und
+     loggt sich aus, danach loggt sich Marco Bianchi (Mitarbeiter) ein und landet korrekt auf
+     "Planblatt" seiner Station ("Pflege Tag"), der "Einstellungen"-Tab-Button ist nicht
+     sichtbar, und "Marco Bianchi" erscheint oben links.
 2. ✅ **Rollenbewusste Oberfläche**: `GET /api/me/` + `src/roles.js` steuern, was das Frontend
    zeigt -- Admin/Planer die volle Bearbeitungs-Oberfläche, Mitarbeitende eine read-only Ansicht
    mit Selbstbedienung für eigene Absenzen/eigenen Diensttausch, HR nur Lesezugriff (siehe

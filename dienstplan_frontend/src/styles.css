@@ -1157,6 +1157,20 @@ thead .col-employee {
   margin-bottom: 4px;
 }
 
+/* Nutzer-Feedback (2026-08): "Applikationsmanager legt den Benutzer direkt
+   an" -- Kopfzeile mit Titel + "+ Hinzufügen"-Button nebeneinander statt
+   untereinander (MembershipAccessSettings.jsx). */
+.panel-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.panel-list-header h2 {
+  margin-bottom: 0;
+}
+
 .panel-form-row {
   display: flex;
   gap: 12px;

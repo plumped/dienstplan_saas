@@ -133,6 +133,13 @@ export const api = {
   },
 
   getMe: () => request("/me/"),
+  // Erzwungener Passwortwechsel nach admin-seitiger Direktanlage (Nutzer-
+  // Feedback 2026-08, siehe core.views.ChangePasswordView).
+  changePassword: (currentPassword, newPassword) =>
+    request("/me/change-password/", {
+      method: "POST",
+      body: { current_password: currentPassword, new_password: newPassword },
+    }),
 
   // Tenant-Konfiguration (Block 2.14): Single-Object-Endpoint
   // (core.views.TenantView), keine Liste -- genau ein Tenant pro Account.
@@ -366,4 +373,9 @@ export const api = {
   getMemberships: () => requestAllPages("/memberships/"),
   updateMembershipScopedNodes: (id, nodeIds) =>
     request(`/memberships/${id}/`, { method: "PATCH", body: { scoped_nodes: nodeIds } }),
+  // Nutzer-Feedback (2026-08): Direktanlage statt E-Mail-Einladung, siehe
+  // core.serializers.MembershipCreateSerializer -- Response enthält
+  // `temporary_password` EINMALIG (danach nicht mehr abrufbar).
+  createMembership: (payload) => request("/memberships/", { method: "POST", body: payload }),
+  updateMembershipRole: (id, role) => request(`/memberships/${id}/`, { method: "PATCH", body: { role } }),
 };

@@ -51,13 +51,15 @@ const MODULES = [
     description: "Ruhezeit, Höchstarbeitszeit, Überzeit-/Nacht-/Sonntagszuschläge, Ferienanspruch (nur Admin).",
     adminOnly: true,
   },
-  // Nutzer-Feedback (2026-08): "kann man [Planer] Stationen zuweisen?" --
-  // Admin-only, analog "tenant" oben: steuert, wer welche Stationen sieht
-  // (Membership.scoped_nodes), keine Tagesgeschäft-Aufgabe für Planer.
+  // Nutzer-Feedback (2026-08): "kann man [Planer] Stationen zuweisen?" +
+  // "Applikationsmanager legt den Benutzer direkt an, nicht per Mail
+  // einladen" -- Admin-only, analog "tenant" oben: Konten anlegen, Rollen
+  // vergeben, und (für Planer/HR) steuern, wer welche Stationen sieht
+  // (Membership.scoped_nodes).
   {
     id: "access",
-    label: "Planer-/HR-Zugriff",
-    description: "Welche Stationen ein Planer oder HR sieht -- leer bedeutet weiterhin uneingeschränkt.",
+    label: "Mitglieder & Zugriff",
+    description: "Konten anlegen, Rollen vergeben, Stationssicht von Planer/HR einschränken.",
     adminOnly: true,
   },
 ];

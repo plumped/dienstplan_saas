@@ -53,6 +53,22 @@ class User(AbstractUser):
     Auth-Tabellen ergänzt werden.
     """
 
+    # Nutzer-Feedback (2026-08): "Ist das state of the art mit Mailversand? [...]
+    # Applikationsmanager wird den Benutzer anlegen und nicht per Mail
+    # einladen." -- bewusste Entscheidung GEGEN einen E-Mail-Einladungs-Flow
+    # (README Block 3.4/2.1): viele Mitarbeitende in der Zielbranche (Pflege/
+    # Betreuung, Schichtbetrieb) haben keine durchgängig gepflegte private
+    # E-Mail-Adresse. Stattdessen legt ein Admin (core.serializers.
+    # MembershipCreateSerializer) das Konto direkt mit einem einmalig
+    # angezeigten Temp-Passwort an; dieses Flag erzwingt den Passwortwechsel
+    # beim ersten Login (core.views.ChangePasswordView), bevor der Rest der
+    # Oberfläche nutzbar ist.
+    must_change_password = models.BooleanField(
+        default=False,
+        help_text="Erzwingt einen Passwortwechsel beim nächsten Login -- gesetzt, wenn ein Admin dieses "
+        "Konto mit einem Temp-Passwort angelegt hat (siehe MembershipCreateSerializer).",
+    )
+
     def save(self, *args, **kwargs):
         """
         Erzwingt strukturell, dass ein Account nie gleichzeitig Django-Admin-

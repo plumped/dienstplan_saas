@@ -3,7 +3,7 @@ from django.urls import include, path
 from rest_framework.authtoken.views import obtain_auth_token
 
 from core.admin_views import tenant_switch
-from core.views import MeView, TenantHolidaysView, TenantView
+from core.views import ChangePasswordView, MeView, TenantHolidaysView, TenantView
 from scheduling.views import UnderstaffedShiftsView
 
 urlpatterns = [
@@ -15,6 +15,7 @@ urlpatterns = [
     path('api/', include('scheduling.urls')),
     path('api/', include('core.urls')),
     path('api/me/', MeView.as_view()),
+    path('api/me/change-password/', ChangePasswordView.as_view()),
     path('api/tenant/', TenantView.as_view()),
     path('api/tenant/holidays/', TenantHolidaysView.as_view()),
     # README Punkt 21 (Dashboard): einziger neuer Endpoint für das

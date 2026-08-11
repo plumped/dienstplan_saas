@@ -1,6 +1,11 @@
+from django.contrib.auth import get_user_model
+from django.contrib.auth.validators import UnicodeUsernameValidator
+from django.utils.crypto import get_random_string
 from rest_framework import serializers
 
 from core.models import Membership, Tenant, TenantHolidayOverride
+
+User = get_user_model()
 
 
 class TenantSerializer(serializers.ModelSerializer):
@@ -51,10 +56,16 @@ class MembershipSerializer(serializers.ModelSerializer):
     """
     Nutzer-Feedback (2026-08): "kann man [Planer/HR] Stationen zuweisen?"
     -- Admin-only Verwaltung von Membership.scoped_nodes (siehe
-    scheduling.views._employee_scoped_node_ids). Rollenvergabe selbst bleibt
-    bewusst ausserhalb dieses Endpoints (weiterhin nur Django-Admin, siehe
-    EmployeeSettings.jsx-Kommentar) -- hier geht es nur um die
-    Stations-Einschränkung einer bereits bestehenden Mitgliedschaft.
+    scheduling.views._employee_scoped_node_ids).
+
+    Nutzer-Feedback (2026-08): "was am intuitivsten und effizientesten ist
+    -- Applikationsmanager legt den Benutzer direkt an" -- `role` ist
+    inzwischen ebenfalls schreibbar (Admin-only, siehe
+    core.views.MembershipViewSet.perform_update für den Schutz vor
+    "letzter Admin weg" und dem bestehenden Admin/scoped_nodes-Konflikt).
+    Konten selbst werden über MembershipCreateSerializer angelegt, nicht
+    hier -- dieser Serializer bearbeitet nur eine bereits bestehende
+    Mitgliedschaft.
 
     `scoped_nodes` wird von ModelSerializer automatisch als
     PrimaryKeyRelatedField(queryset=Node._default_manager.all()) erzeugt --
@@ -71,7 +82,7 @@ class MembershipSerializer(serializers.ModelSerializer):
     class Meta:
         model = Membership
         fields = ["id", "username", "email", "employee_name", "role", "scoped_nodes"]
-        read_only_fields = ["id", "username", "email", "employee_name", "role"]
+        read_only_fields = ["id", "username", "email", "employee_name"]
 
     def get_employee_name(self, obj):
         # Lokaler Import statt Modul-Level (core.views.MeView-Docstring):
@@ -87,3 +98,55 @@ class MembershipSerializer(serializers.ModelSerializer):
             if node.tenant_id != tenant.id:
                 raise serializers.ValidationError("Ungültige oder fremde Station.")
         return value
+
+
+class MembershipCreateSerializer(serializers.ModelSerializer):
+    """
+    Direktanlage eines neuen Kontos + Mitgliedschaft (MVP-Fahrplan Block 2.1/
+    3.4). Nutzer-Feedback (2026-08): "Ist das state of the art mit
+    Mailversand? [...] Applikationsmanager wird den Benutzer anlegen und
+    nicht per Mail einladen -- was ist am effizientesten und intuitivsten?"
+    -- bewusst KEIN E-Mail-Einladungs-/Self-Signup-Flow, siehe
+    core.models.User.must_change_password-Docstring für die Begründung
+    (Zielbranche ohne durchgängig gepflegte private E-Mail-Adressen).
+
+    Erzeugt User + Membership in einem Schritt: der Admin vergibt nur
+    Benutzername + Rolle (+ optional Name), ein Temp-Passwort wird
+    serverseitig generiert und in der Response EINMALIG zurückgegeben
+    (`temporary_password`, danach nirgends mehr abrufbar -- nur als Hash in
+    der DB) -- der Admin gibt es dem Mitarbeitenden mündlich/auf Papier
+    weiter, analog zu etablierten Schichtplanungs-Tools (Deputy, When I
+    Work, Planday) für Personal ohne Firmen-Mail.
+    """
+
+    username = serializers.CharField(max_length=150, validators=[UnicodeUsernameValidator()], write_only=True)
+    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True, write_only=True)
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, write_only=True)
+    temporary_password = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = Membership
+        fields = ["id", "username", "first_name", "last_name", "role", "temporary_password"]
+        read_only_fields = ["id"]
+
+    def validate_username(self, value):
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("Dieser Benutzername ist bereits vergeben.")
+        return value
+
+    def create(self, validated_data):
+        tenant = self.context["request"].tenant
+        temp_password = get_random_string(12)
+        user = User.objects.create_user(
+            username=validated_data["username"],
+            password=temp_password,
+            first_name=validated_data.get("first_name", ""),
+            last_name=validated_data.get("last_name", ""),
+            must_change_password=True,
+        )
+        membership = Membership.objects.create(user=user, tenant=tenant, role=validated_data["role"])
+        # Transientes Attribut, nicht Teil des Modells -- nur für diese eine
+        # Response verfügbar (temporary_password.read_only greift über
+        # getattr(), siehe Serializer-Docstring).
+        membership.temporary_password = temp_password
+        return membership

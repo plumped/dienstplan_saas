@@ -1,3 +1,5 @@
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.exceptions import NotFound, ValidationError
@@ -7,7 +9,12 @@ from rest_framework.views import APIView
 
 from core.models import Membership, TenantHolidayOverride
 from core.permissions import IsTenantAdmin
-from core.serializers import MembershipSerializer, TenantHolidayOverrideSerializer, TenantSerializer
+from core.serializers import (
+    MembershipCreateSerializer,
+    MembershipSerializer,
+    TenantHolidayOverrideSerializer,
+    TenantSerializer,
+)
 from core.tenancy import resolve_membership_for_user
 
 _EMPTY_TASK_COUNTS = {"absences": 0, "trades": 0, "time_records": 0}
@@ -128,6 +135,7 @@ class MeView(APIView):
             {
                 "role": membership.role,
                 "tenant_name": membership.tenant.name,
+                "must_change_password": request.user.must_change_password,
                 "employee": (
                     {
                         "id": employee.id,
@@ -140,6 +148,33 @@ class MeView(APIView):
                 "task_counts": _task_counts(membership, employee),
             }
         )
+
+
+class ChangePasswordView(APIView):
+    """
+    Eigenes Passwort ändern -- insbesondere für den erzwungenen Wechsel nach
+    admin-seitiger Direktanlage mit Temp-Passwort (User.must_change_password,
+    siehe core.serializers.MembershipCreateSerializer und Nutzer-Feedback
+    2026-08 zum Verzicht auf E-Mail-Einladung). Bewusst ohne IsTenantAdmin/
+    Tenant-Bezug -- jeder eingeloggte Account darf nur sein EIGENES Passwort
+    ändern, unabhängig von Rolle oder Mitgliedschaft.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current_password = request.data.get("current_password") or ""
+        new_password = request.data.get("new_password") or ""
+        if not request.user.check_password(current_password):
+            raise ValidationError({"current_password": ["Aktuelles Passwort ist falsch."]})
+        try:
+            validate_password(new_password, user=request.user)
+        except DjangoValidationError as exc:
+            raise ValidationError({"new_password": exc.messages})
+        request.user.set_password(new_password)
+        request.user.must_change_password = False
+        request.user.save(update_fields=["password", "must_change_password"])
+        return Response({"detail": "Passwort geändert."})
 
 
 class TenantView(TenantScopedAPIMixin, APIView):
@@ -197,16 +232,22 @@ class MembershipViewSet(TenantScopedAPIMixin, viewsets.ModelViewSet):
     Nutzer-Feedback (2026-08): "Kann man [Planer] Stationen zuweisen?" --
     Admin-only Verwaltung von Membership.scoped_nodes (siehe
     scheduling.views._employee_scoped_node_ids und MembershipSerializer).
-    Bewusst kein create/destroy über diesen Endpoint: es geht nur um die
-    Stations-Einschränkung EINER bereits bestehenden Mitgliedschaft, nicht um
-    Einladung/Rollenvergabe (bleibt wie bisher Django-Admin-only, siehe
-    EmployeeSettings.jsx-Kommentar) -- ein "falscher" Endpoint dafür wäre
-    mehr Verwirrung als Nutzen.
+
+    Nutzer-Feedback (2026-08): "Applikationsmanager wird den Benutzer anlegen
+    und nicht per Mail einladen -- was ist am effizientesten und
+    intuitivsten?" -- Admin darf hier inzwischen auch neue Mitgliedschaften
+    anlegen (POST, siehe MembershipCreateSerializer) und die Rolle
+    bestehender ändern (PATCH `role`, siehe MembershipSerializer). Bewusst
+    weiterhin kein DELETE: Deaktivierung/Entfernen eines Kontos ist ein
+    eigenes, heikleres Thema (u. a. was mit bestehenden Zuweisungen/
+    Historie passiert) -- ausserhalb des Rahmens dieser Änderung.
     """
 
-    http_method_names = ["get", "head", "options", "patch"]
-    serializer_class = MembershipSerializer
+    http_method_names = ["get", "post", "head", "options", "patch"]
     permission_classes = [IsAuthenticated, IsTenantAdmin]
+
+    def get_serializer_class(self):
+        return MembershipCreateSerializer if self.action == "create" else MembershipSerializer
 
     def get_queryset(self):
         if not self.request.tenant:
@@ -216,14 +257,53 @@ class MembershipViewSet(TenantScopedAPIMixin, viewsets.ModelViewSet):
         )
 
     def perform_update(self, serializer):
+        instance = serializer.instance
+        new_role = serializer.validated_data.get("role", instance.role)
+
+        # Verteidigungslinie gegen eine strukturell eigentlich unmögliche
+        # Kombination (User.save()/Membership.save() verhindern sie für NEUE
+        # Datensätze, siehe deren Docstrings) -- ein is_staff/is_superuser-
+        # Account mit Membership kann trotzdem vorkommen (z. B. über
+        # loaddata/dumpdata-Fixtures, die Model.save() umgehen). Ohne diese
+        # Prüfung würde Membership.save() weiter unten eine
+        # django.core.exceptions.ValidationError werfen, die DRF NICHT
+        # automatisch in eine 400-Antwort übersetzt -- Ergebnis wäre ein
+        # nackter 500 statt einer verständlichen Fehlermeldung.
+        if instance.user.is_staff or instance.user.is_superuser:
+            raise ValidationError(
+                {"role": ["Dieser Account hat Django-Admin-Zugriff -- Rolle kann hier nicht geändert werden."]}
+            )
+
         # ADMIN ist in _employee_scoped_node_ids() unbedingt uneingeschränkt
         # (Nutzer-Vorgabe: "Nur Admin darf immer alles sehen") -- scoped_nodes
-        # auf einer Admin-Mitgliedschaft zu speichern hätte also nie einen
-        # Effekt. Klarer Fehler statt eines stillen No-Ops.
-        if serializer.instance.role == Membership.Role.ADMIN:
+        # auf einer (neuen oder bestehenden) Admin-Mitgliedschaft zu speichern
+        # hätte also nie einen Effekt. Klarer Fehler statt eines stillen No-Ops.
+        #
+        # Bugfix: DRF wrappt einen einzelnen String-Wert in einem
+        # ValidationError-Dict NICHT automatisch in eine Liste (nur der
+        # Top-Level-Fall tut das) -- api.js liest Feldfehler aber konsequent
+        # als `[0]` (erwartet also ein Array). Ohne die Liste hier kam beim
+        # Rendern nur das erste ZEICHEN der Meldung an ("E" statt der ganzen
+        # Nachricht).
+        if new_role == Membership.Role.ADMIN and serializer.validated_data.get("scoped_nodes"):
             raise ValidationError(
-                {"scoped_nodes": "Admin sieht immer alle Stationen -- keine Einschränkung möglich."}
+                {"scoped_nodes": ["Admin sieht immer alle Stationen -- keine Einschränkung möglich."]}
             )
+
+        # Schutz vor versehentlichem "Aussperren": ein Tenant ohne Admin
+        # könnte sich selbst nicht mehr verwalten (Django-Admin ist bewusst
+        # kein Kundenzugriff, siehe User.save()-Docstring).
+        if instance.role == Membership.Role.ADMIN and new_role != Membership.Role.ADMIN:
+            other_admins_exist = (
+                Membership.objects.filter(tenant=instance.tenant, role=Membership.Role.ADMIN)
+                .exclude(pk=instance.pk)
+                .exists()
+            )
+            if not other_admins_exist:
+                raise ValidationError(
+                    {"role": ["Es muss mindestens eine Admin-Mitgliedschaft je Mandant erhalten bleiben."]}
+                )
+
         serializer.save()
 
 

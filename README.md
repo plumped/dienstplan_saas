@@ -529,8 +529,40 @@ zurückgestellt, bis die Funktionalität steht.
    `OwnEmployeeRecordPermission`, `ShiftTradeRequestPermission`) wertet `Membership.role`
    jetzt in allen ViewSets aus. Lesen bleibt für alle Rollen offen; Schreiben an
    Stammdaten/Planblatt ist Admin/Planer vorbehalten, HR schreibt nirgends, Mitarbeitende dürfen
-   nur eigene Absenzen und eigenen Diensttausch verwalten. *Noch offen*: es gibt noch keine
-   Verwaltung der Rollen/Einladungen selbst im Frontend (siehe Block 3.4).
+   nur eigene Absenzen und eigenen Diensttausch verwalten. Rollen-/Kontenverwaltung im Frontend
+   (siehe unten) schliesst die früher hier vermerkte Lücke.
+   - ✅ **Mitgliederverwaltung im Frontend** (2026-08): Nutzer-Feedback: *"Ich frage mich halt
+     was am intuitivsten und effizientesten ist aus Sicht des Anwenders. Auf Django Admin habe
+     sowieso NUR ich als Entwickler Zugriff und sonst niemand."* + *"Ist das state of the art
+     mit Mailversand? Stelle mir nur vor im Betrieb, da wird ein Applikationsmanager den
+     Benutzer anlegen und nicht per Mail einladen."* -- bewusst **kein** E-Mail-Einladungs-Flow
+     (Begründung: Schichtpersonal in der Zielbranche hat oft keine durchgängig gepflegte
+     private E-Mail-Adresse; Deputy/When I Work/Planday lösen das in der Praxis genauso).
+     Stattdessen: `POST /api/memberships/` (`MembershipCreateSerializer`) legt Username + Rolle
+     direkt an, generiert ein Temp-Passwort serverseitig und gibt es **einmalig** in der
+     Response zurück (`temporary_password` -- danach nirgends mehr abrufbar, nur als Hash in
+     der DB). `User.must_change_password` erzwingt beim ersten Login einen Passwortwechsel
+     (`POST /api/me/change-password/`, `ChangePasswordView`) -- das Frontend blockiert dafür
+     die gesamte Oberfläche mit `ForcePasswordChangeModal.jsx`, bis erledigt. Rolle bestehender
+     Mitgliedschaften ist jetzt ebenfalls per Dropdown änderbar (`PATCH /api/memberships/<id>/`,
+     `role`-Feld in `MembershipSerializer` nicht mehr read-only) -- inkl. zweier Schutzmechanismen
+     in `MembershipViewSet.perform_update`: mindestens eine Admin-Mitgliedschaft muss je Mandant
+     erhalten bleiben, und Admin-Rolle + `scoped_nodes`-Einschränkung schliessen sich weiterhin
+     gegenseitig aus. `MembershipAccessSettings.jsx` (Settings-Kachel jetzt "Mitglieder &
+     Zugriff" statt "Planer-/HR-Zugriff") zeigt dafür eine neue "Mitglieder"-Sektion oberhalb
+     der bestehenden Stations-Einschränkung.
+   - Beim Testen aufgefallener, unabhängiger Bug mitgefixt: DRF wrappt einen einzelnen
+     String-Wert innerhalb eines `ValidationError`-Dicts NICHT automatisch in eine Liste (nur
+     der Top-Level-Fall tut das) -- `api.js` liest Feldfehler aber konsequent als `[0]` (erwartet
+     ein Array). Ohne Liste kam im Frontend nur das erste ZEICHEN der Fehlermeldung an. Betraf
+     u. a. die neuen Rollenwechsel-Fehlermeldungen und wurde dort korrigiert (`{"field": [...]}`
+     statt `{"field": "..."}`); an anderen, älteren Stellen mit demselben Muster (ausserhalb
+     des Rahmens dieser Änderung) kann derselbe Effekt weiterhin auftreten.
+   - Zusätzlich behoben: ein latenter Datenkonflikt (Django-Admin-Account mit gleichzeitiger
+     Tenant-Mitgliedschaft, strukturell eigentlich durch `User.save()`/`Membership.save()`
+     ausgeschlossen, aber via Fixture-Laden entstanden) liess `PATCH .../role` mit einem
+     nackten HTTP 500 abstürzen, statt eine verständliche Fehlermeldung zu zeigen --
+     `MembershipViewSet.perform_update` prüft das jetzt vorab und liefert eine klare 400-Antwort.
 2. ✅ **Rollenbewusste Oberfläche**: `GET /api/me/` + `src/roles.js` steuern, was das Frontend
    zeigt -- Admin/Planer die volle Bearbeitungs-Oberfläche, Mitarbeitende eine read-only Ansicht
    mit Selbstbedienung für eigene Absenzen/eigenen Diensttausch, HR nur Lesezugriff (siehe
@@ -2676,14 +2708,24 @@ Setup-Wizard statt direkt in den Django-Admin.
    (mit sinnvollen Vorlagen zur Auswahl statt Leerformular) → Mitarbeitende (CSV-Import statt
    Einzelanlage). Mit sichtbarer Fortschritts-Checkliste (Muster: Linear/Notion-Onboarding) statt
    alles auf einer langen Formularseite abzufragen.
-4. **Einladungs-Flow** für weitere Mitarbeitende (E-Mail-Einladung statt manuellem Anlegen im
-   Admin) — Folgeschritt nach dem Setup-Wizard, für den laufenden Betrieb.
-5. **Passwort-Reset/Magic-Link-Login** — aktuell nicht vorhanden, nur `POST /api/auth/token/` mit
-   bekanntem Passwort. Voraussetzung für Punkt 2 (Self-Serve-Signup ohne Passwort-Vergabe durch
-   einen Admin).
-6. **Rollenverwaltung im Frontend**, sobald Block 2.1 (rollenbasierte Berechtigungen) steht —
-   damit der Setup-Wizard (Punkt 3) dem ersten Account direkt die Admin-Rolle zuweisen kann, ohne
-   Django-Admin-Umweg.
+4. **Konten für weitere Mitarbeitende anlegen** — inzwischen NICHT mehr per E-Mail-Einladung
+   geplant (Grundsatzentscheid revidiert, siehe Punkt 6): Block 2.1 hat mit
+   `MembershipAccessSettings.jsx`/`MembershipCreateSerializer` bereits eine Direktanlage
+   (Username + Rolle + einmalig angezeigtes Temp-Passwort, erzwungener Wechsel beim ersten
+   Login) für den laufenden Betrieb umgesetzt. Für Block 3 bleibt offen: dieselbe Direktanlage
+   in den Setup-Wizard (Punkt 3) integrieren, statt sie separat in "Einstellungen" zu suchen.
+5. **Passwort-Reset bei vergessenem Passwort** — aktuell nicht vorhanden, nur der erzwungene
+   Wechsel eines bekannten Temp-Passworts (Punkt 6) sowie `POST /api/auth/token/` mit bekanntem
+   Passwort. Ohne E-Mail-Infrastruktur (bewusster Verzicht, siehe Punkt 6) müsste das über den
+   Applikationsmanager laufen (Konto-Reset = neues Temp-Passwort vergeben), nicht per
+   Magic-Link/E-Mail.
+6. ✅ **Rollenverwaltung im Frontend** (2026-08, siehe Block 2.1 für Details): Nutzer-Feedback
+   zu diesem Punkt führte zur Revision des ursprünglich hier notierten E-Mail-Einladungs-Plans
+   — *"Ist das state of the art mit Mailversand? [...] Applikationsmanager wird den Benutzer
+   anlegen und nicht per Mail einladen"*. Direktanlage + Rollen-Dropdown sind seitdem bereits
+   im laufenden Betrieb (Settings-Tab) nutzbar, nicht erst an den künftigen Setup-Wizard
+   (Punkt 3) gekoppelt -- der Wizard kann diese bestehende Funktion später wiederverwenden,
+   statt sie neu zu bauen.
 
 ### 4. Produktionsreife & Sicherheit
 

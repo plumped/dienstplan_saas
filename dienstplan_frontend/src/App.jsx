@@ -3,6 +3,7 @@ import { api, onTasksChanged } from "./api.js";
 import AbsencePanel from "./components/AbsencePanel.jsx";
 import BalanceBadge from "./components/BalanceBadge.jsx";
 import Dashboard from "./components/Dashboard.jsx";
+import ForcePasswordChangeModal from "./components/ForcePasswordChangeModal.jsx";
 import LoginForm from "./components/LoginForm.jsx";
 import MonthNav from "./components/MonthNav.jsx";
 import NodeSelector from "./components/NodeSelector.jsx";
@@ -137,6 +138,19 @@ export default function App() {
 
   if (!loggedIn) {
     return <LoginForm onSuccess={() => setLoggedIn(true)} />;
+  }
+
+  // Nutzer-Feedback (2026-08): erzwungener Passwortwechsel nach admin-
+  // seitiger Direktanlage (siehe MembershipAccessSettings.jsx) -- blockiert
+  // den Rest der Oberfläche, solange must_change_password gesetzt ist. `me`
+  // ist beim allerersten Render nach Login noch null (GET /api/me/ lädt
+  // asynchron), das Gate greift erst, sobald die Antwort da ist.
+  if (me?.must_change_password) {
+    return (
+      <ForcePasswordChangeModal
+        onDone={() => setMe((prev) => ({ ...prev, must_change_password: false }))}
+      />
+    );
   }
 
   return (

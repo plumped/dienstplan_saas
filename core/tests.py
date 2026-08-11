@@ -610,11 +610,157 @@ class MembershipViewSetTests(APITestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_cannot_create_or_delete_membership_via_endpoint(self):
+    def test_cannot_delete_membership_via_endpoint(self):
         self.auth_as(self.admin_user)
-        create_response = self.client.post(
-            "/api/memberships/", {"role": "planner", "scoped_nodes": []}, format="json"
-        )
-        self.assertEqual(create_response.status_code, 405)
         delete_response = self.client.delete(f"/api/memberships/{self.planner_membership.id}/")
         self.assertEqual(delete_response.status_code, 405)
+
+    def test_admin_can_create_membership_with_generated_password(self):
+        # Nutzer-Feedback (2026-08): "Applikationsmanager wird den Benutzer
+        # anlegen und nicht per Mail einladen" -- Direktanlage statt
+        # E-Mail-Einladung, siehe MembershipCreateSerializer.
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/memberships/",
+            {"username": "neu-hire", "first_name": "Neu", "last_name": "Hire", "role": "employee"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data["temporary_password"])
+        new_user = User.objects.get(username="neu-hire")
+        self.assertTrue(new_user.must_change_password)
+        self.assertTrue(new_user.check_password(response.data["temporary_password"]))
+        membership = Membership.objects.get(user=new_user, tenant=self.tenant)
+        self.assertEqual(membership.role, Membership.Role.EMPLOYEE)
+
+    def test_create_membership_rejects_duplicate_username(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/memberships/", {"username": "planner", "role": "employee"}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_non_admin_cannot_create_membership(self):
+        for user in (self.planner_user, self.employee_user):
+            self.auth_as(user)
+            response = self.client.post(
+                "/api/memberships/", {"username": "whoever", "role": "employee"}, format="json"
+            )
+            self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_change_role_of_existing_membership(self):
+        # Nutzer-Feedback (2026-08): Rolle bestehender Mitglieder direkt per
+        # Dropdown änderbar, nicht mehr nur über Django-Admin.
+        self.auth_as(self.admin_user)
+        response = self.client.patch(
+            f"/api/memberships/{self.planner_membership.id}/", {"role": "hr"}, format="json"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.planner_membership.refresh_from_db()
+        self.assertEqual(self.planner_membership.role, Membership.Role.HR)
+
+    def test_role_change_to_admin_with_scoped_nodes_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.patch(
+            f"/api/memberships/{self.planner_membership.id}/",
+            {"role": "admin", "scoped_nodes": [self.node.id]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_cannot_demote_last_admin(self):
+        self.auth_as(self.admin_user)
+        response = self.client.patch(
+            f"/api/memberships/{self.admin_membership.id}/", {"role": "planner"}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.admin_membership.refresh_from_db()
+        self.assertEqual(self.admin_membership.role, Membership.Role.ADMIN)
+
+    def test_role_change_on_staff_membership_returns_clean_400_not_500(self):
+        # Regression: ein is_staff/is_superuser-Account mit Membership kann
+        # strukturell eigentlich nicht entstehen (User.save()/Membership.
+        # save() verhindern das für NEUE Datensätze), existierte aber als
+        # Altlast in den Demo-Fixtures (vermutlich via loaddata, das
+        # Model.save() umgeht) und liess PATCH role bis zu diesem Fix mit
+        # einem nackten 500 statt einer 400-Fehlermeldung crashen.
+        staff_user = User.objects.create_user(username="staff-with-membership", password="pw-not-real-123!")
+        # bulk_create() ruft KEIN Model.save() auf (direktes INSERT) --
+        # simuliert damit denselben Umgehungsweg wie loaddata/dumpdata-
+        # Fixtures, über den die reale Altlast entstanden sein muss.
+        Membership.objects.bulk_create(
+            [Membership(user=staff_user, tenant=self.tenant, role=Membership.Role.ADMIN)]
+        )
+        # .update() ist ein direktes SQL-UPDATE, ruft ebenfalls kein
+        # Model.save() auf -- User.save() würde die Kombination sonst selbst
+        # verhindern (siehe dessen Docstring), genau wie im echten Leben nur
+        # über einen Weg ausserhalb des ORM-save()-Pfads entstehbar.
+        User.objects.filter(pk=staff_user.pk).update(is_staff=True)
+        staff_membership = Membership.objects.get(user=staff_user)
+        self.auth_as(self.admin_user)
+        response = self.client.patch(
+            f"/api/memberships/{staff_membership.id}/", {"role": "employee"}, format="json"
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_can_demote_admin_when_another_admin_remains(self):
+        second_admin_user = User.objects.create_user(username="admin2", password="pw-not-real-123!")
+        second_admin_membership = Membership.objects.create(
+            user=second_admin_user, tenant=self.tenant, role=Membership.Role.ADMIN
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.patch(
+            f"/api/memberships/{second_admin_membership.id}/", {"role": "planner"}, format="json"
+        )
+        self.assertEqual(response.status_code, 200)
+
+
+class ChangePasswordViewTests(APITestCase):
+    """
+    Erzwungener Passwortwechsel nach admin-seitiger Direktanlage (Nutzer-
+    Feedback 2026-08, siehe MembershipCreateSerializer/User.
+    must_change_password).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-changepw")
+        self.user = User.objects.create_user(
+            username="neuling", password="temp-pw-123!", must_change_password=True
+        )
+        Membership.objects.create(user=self.user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_me_reports_must_change_password(self):
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["must_change_password"])
+
+    def test_wrong_current_password_rejected(self):
+        response = self.client.post(
+            "/api/me/change-password/",
+            {"current_password": "falsch", "new_password": "ein-neues-sicheres-pw-99"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_weak_new_password_rejected(self):
+        response = self.client.post(
+            "/api/me/change-password/",
+            {"current_password": "temp-pw-123!", "new_password": "1234"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.must_change_password)
+
+    def test_successful_change_clears_flag(self):
+        response = self.client.post(
+            "/api/me/change-password/",
+            {"current_password": "temp-pw-123!", "new_password": "ein-neues-sicheres-pw-99"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertFalse(self.user.must_change_password)
+        self.assertTrue(self.user.check_password("ein-neues-sicheres-pw-99"))

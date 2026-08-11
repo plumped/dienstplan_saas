@@ -211,7 +211,9 @@ export default function PayrollSettings({ onError }) {
         <h2>Export</h2>
         <p className="panel-hint">
           Lohn-Rohdaten eines Kalendermonats als CSV, pro Mitarbeiter eine Zeile je Kategorie
-          (Personalnummer, Name, Lohnart-Code, Bezeichnung, Menge, Einheit, Periode).
+          (Personalnummer, Name, Kostenstelle, Lohnart-Code, Bezeichnung, Menge, Einheit, Periode).
+          Die Kostenstelle kommt von den Stationen des Mitarbeitenden (Einstellungen → Stationen) --
+          leer, wenn keine konfiguriert ist oder mehrere unterschiedliche Kostenstellen zutreffen.
         </p>
         <div className="panel-form-row">
           <label>

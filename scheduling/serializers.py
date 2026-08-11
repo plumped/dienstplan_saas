@@ -96,11 +96,20 @@ class NodeSerializer(serializers.ModelSerializer):
         write_only=True,
         help_text="ID des übergeordneten Knotens. Leer lassen für einen Wurzelknoten (z. B. Standort).",
     )
+    # MVP-Fahrplan Block 2, Punkt 30/31: effective_cost_center zeigt den
+    # tatsächlich beim Lohn-Export verwendeten Wert (eigener oder von der
+    # Station geerbt, siehe Node.effective_cost_center()) -- ohne dieses
+    # Feld könnte ein Admin einer leeren cost_center nicht ansehen, ob damit
+    # "keine Kostenstelle" oder "geerbt von X" gemeint ist.
+    effective_cost_center = serializers.SerializerMethodField()
 
     class Meta:
         model = Node
-        fields = ["id", "name", "path", "depth", "parent"]
-        read_only_fields = ["path", "depth"]
+        fields = ["id", "name", "path", "depth", "parent", "cost_center", "effective_cost_center"]
+        read_only_fields = ["path", "depth", "effective_cost_center"]
+
+    def get_effective_cost_center(self, obj):
+        return obj.effective_cost_center()
 
 
 class SkillSerializer(serializers.ModelSerializer):

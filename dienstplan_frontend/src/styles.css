@@ -1686,6 +1686,17 @@ thead .col-employee {
   user-select: none;
 }
 
+/* MVP-Fahrplan Block 2, Punkt 30/31: Name + Kostenstelle nebeneinander im
+   Edit-Modus einer Station (NodeSettings.jsx). */
+.node-tree-edit-group {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.node-tree-edit-group input {
+  width: 140px;
+}
+
 .node-tree-root-drop {
   display: flex;
   align-items: center;

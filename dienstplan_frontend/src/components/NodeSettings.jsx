@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api.js";
 
 function emptyForm() {
-  return { name: "", parent: "" };
+  return { name: "", parent: "", cost_center: "" };
 }
 
 // Nutzer-Feedback (2026-08): "sollten wir die anderen Tabs auch umbauen?" --
@@ -30,6 +30,7 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState("");
+  const [editCostCenter, setEditCostCenter] = useState("");
   const [search, setSearch] = useState("");
   // dragSourceId: die gerade gezogene Station. hoverTargetId: aktuelles
   // Ziel unter dem Mauszeiger (Node-ID oder "root" für die oberste Ebene).
@@ -106,6 +107,7 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
       const created = await api.createNode({
         name: form.name.trim(),
         parent: form.parent ? Number(form.parent) : undefined,
+        cost_center: form.cost_center.trim(),
       });
       onCreated(created);
       setForm(emptyForm());
@@ -116,19 +118,39 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
     }
   }
 
-  async function handleRename(node) {
-    if (!editName.trim() || editName === node.name) {
+  // MVP-Fahrplan Block 2, Punkt 30/31 (Nutzer-Feedback 2026-08: "was wir
+  // völlig vergessen haben sind Kostenstellen auf den Abteilungen"):
+  // Umbenennen speichert jetzt Name UND Kostenstelle zusammen, statt nur
+  // den Namen -- ein Ort, ein Save-Vorgang pro Station.
+  async function handleSaveEdit(node) {
+    const name = editName.trim();
+    const costCenter = editCostCenter.trim();
+    if (!name || (name === node.name && costCenter === (node.cost_center || ""))) {
       setEditingId(null);
       return;
     }
     try {
-      const updated = await api.updateNode(node.id, { name: editName.trim() });
+      const updated = await api.updateNode(node.id, { name, cost_center: costCenter });
       onUpdated(updated);
     } catch (e) {
       onError(e.message);
     } finally {
       setEditingId(null);
     }
+  }
+
+  // Name- und Kostenstelle-Feld sitzen nebeneinander im Edit-Modus -- ein
+  // Tab-Wechsel zwischen beiden würde sonst (bei einem onBlur PRO Feld) den
+  // Edit-Modus vorzeitig schliessen, bevor das zweite Feld überhaupt
+  // editiert wurde. onBlur auf der gemeinsamen Umhüllung + ein Tick warten,
+  // ob der neue Fokus noch innerhalb der Gruppe liegt, behebt das.
+  function handleEditGroupBlur(event, node) {
+    const container = event.currentTarget;
+    window.requestAnimationFrame(() => {
+      if (!container.contains(document.activeElement)) {
+        handleSaveEdit(node);
+      }
+    });
   }
 
   async function handleDelete(node) {
@@ -231,7 +253,19 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
               ))}
             </select>
           </label>
+          <label>
+            Kostenstelle (optional)
+            <input
+              type="text"
+              value={form.cost_center}
+              onChange={(e) => setForm((prev) => ({ ...prev, cost_center: e.target.value }))}
+            />
+          </label>
         </div>
+        <p className="panel-hint">
+          Für den Lohn-Export (Einstellungen → Lohnarten). Leer lassen vererbt die Kostenstelle der
+          übergeordneten Station.
+        </p>
         <button type="submit" disabled={saving || !form.name.trim()}>
           {saving ? "Speichert …" : "Anlegen"}
         </button>
@@ -285,16 +319,33 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
                     ⠿
                   </span>
                   {editingId === n.id ? (
-                    <input
-                      type="text"
-                      value={editName}
-                      autoFocus
-                      onChange={(e) => setEditName(e.target.value)}
-                      onBlur={() => handleRename(n)}
-                      onKeyDown={(e) => e.key === "Enter" && handleRename(n)}
-                    />
+                    <span className="node-tree-edit-group" onBlur={(e) => handleEditGroupBlur(e, n)}>
+                      <input
+                        type="text"
+                        value={editName}
+                        autoFocus
+                        onChange={(e) => setEditName(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && handleSaveEdit(n)}
+                      />
+                      <input
+                        type="text"
+                        value={editCostCenter}
+                        placeholder="Kostenstelle"
+                        onChange={(e) => setEditCostCenter(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && handleSaveEdit(n)}
+                      />
+                    </span>
                   ) : (
-                    <strong>{n.name}</strong>
+                    <>
+                      <strong>{n.name}</strong>
+                      {n.effective_cost_center && (
+                        <span className="entry-note">
+                          {" "}
+                          · Kostenstelle {n.effective_cost_center}
+                          {!n.cost_center && " (geerbt)"}
+                        </span>
+                      )}
+                    </>
                   )}
                 </span>
                 <span className="entry-actions">
@@ -305,9 +356,10 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
                       onClick={() => {
                         setEditingId(n.id);
                         setEditName(n.name);
+                        setEditCostCenter(n.cost_center || "");
                       }}
                     >
-                      Umbenennen
+                      Bearbeiten
                     </button>
                   )}
                   <button type="button" className="btn-ghost" onClick={() => handleDelete(n)}>

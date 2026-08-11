@@ -139,6 +139,13 @@ class Node(MP_Node, TenantScopedModel):
     """
 
     name = models.CharField(max_length=200)
+    cost_center = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Kostenstelle für den Lohn-Export (Block 2 Punkt 30/31). Leer lassen, um von der "
+        "übergeordneten Station zu erben (siehe effective_cost_center()) -- ein Team ohne eigene "
+        "Kostenstelle übernimmt so automatisch die seiner Station.",
+    )
 
     node_order_by = ["name"]
 
@@ -147,6 +154,21 @@ class Node(MP_Node, TenantScopedModel):
 
     def __str__(self):
         return self.name
+
+    def effective_cost_center(self):
+        """
+        Eigene Kostenstelle, sonst von der nächstgelegenen Vorfahren-Station
+        geerbt (z. B. übernimmt ein Team ohne eigene Kostenstelle die seiner
+        Station) -- None, wenn nirgends in der Kette konfiguriert.
+        get_ancestors() liefert Wurzel zuerst, `reversed()` dreht das um,
+        damit der NÄCHSTE Vorfahre zuerst geprüft wird.
+        """
+        if self.cost_center:
+            return self.cost_center
+        for ancestor in reversed(self.get_ancestors()):
+            if ancestor.cost_center:
+                return ancestor.cost_center
+        return None
 
 
 class Skill(TenantScopedModel):
@@ -1064,6 +1086,23 @@ class Employee(TenantScopedModel):
             "holiday_days": len(holiday_days),
             "is_provisional": is_provisional,
         }
+
+    def effective_cost_center(self):
+        """
+        Kostenstelle für den Lohn-Export (Block 2 Punkt 30/31): eindeutig
+        nur, wenn alle Stationen dieses Mitarbeitenden (Employee.nodes,
+        inkl. Vererbung von Eltern-Knoten, siehe Node.effective_cost_center())
+        auf dieselbe Kostenstelle auflösen. Bei mehreren unterschiedlichen
+        Kostenstellen oder wenn keine konfiguriert ist: None -- bekannte
+        Vereinfachung, eine echte Aufteilung nach Station müsste
+        monthly_summary() selbst pro Station aufschlüsseln (die Stunden
+        werden dort tenant-/mitarbeiterweit aggregiert, nicht pro Node).
+        """
+        centers = {n.effective_cost_center() for n in self.nodes.all()}
+        centers.discard(None)
+        if len(centers) == 1:
+            return next(iter(centers))
+        return None
 
     def payroll_raw_lines(self, year=None, month=None):
         """

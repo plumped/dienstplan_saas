@@ -6709,6 +6709,57 @@ class PayrollRawLinesTests(TestCase):
         self.assertEqual(special["amount"], 0.8)  # 4h * 20%
 
 
+class CostCenterTests(TestCase):
+    """
+    Nutzer-Feedback (2026-08): "was wir völlig vergessen haben sind
+    Kostenstellen auf den Abteilungen" -- Node.effective_cost_center()
+    (Vererbung entlang der Stationshierarchie) und Employee.
+    effective_cost_center() (eindeutig nur, wenn alle Stationen des
+    Mitarbeitenden übereinstimmen).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-kst")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+
+    def test_node_uses_own_cost_center(self):
+        node = Node.add_root(name="Station A", tenant=self.tenant, cost_center="KST-100")
+        self.assertEqual(node.effective_cost_center(), "KST-100")
+
+    def test_node_inherits_from_parent(self):
+        root = Node.add_root(name="Station A", tenant=self.tenant, cost_center="KST-100")
+        team = root.add_child(name="Team 1", tenant=self.tenant)
+        self.assertEqual(team.effective_cost_center(), "KST-100")
+
+    def test_node_inherits_from_nearest_ancestor(self):
+        root = Node.add_root(name="Standort", tenant=self.tenant, cost_center="KST-ROOT")
+        station = root.add_child(name="Station A", tenant=self.tenant, cost_center="KST-100")
+        team = station.add_child(name="Team 1", tenant=self.tenant)
+        self.assertEqual(team.effective_cost_center(), "KST-100")
+
+    def test_node_without_any_cost_center_returns_none(self):
+        root = Node.add_root(name="Station A", tenant=self.tenant)
+        child = root.add_child(name="Team 1", tenant=self.tenant)
+        self.assertIsNone(child.effective_cost_center())
+
+    def test_employee_cost_center_unique_across_nodes(self):
+        node_a = Node.add_root(name="Station A", tenant=self.tenant, cost_center="KST-100")
+        node_b = Node.add_root(name="Station B", tenant=self.tenant, cost_center="KST-100")
+        self.employee.nodes.add(node_a, node_b)
+        self.assertEqual(self.employee.effective_cost_center(), "KST-100")
+
+    def test_employee_cost_center_ambiguous_returns_none(self):
+        node_a = Node.add_root(name="Station A", tenant=self.tenant, cost_center="KST-100")
+        node_b = Node.add_root(name="Station B", tenant=self.tenant, cost_center="KST-200")
+        self.employee.nodes.add(node_a, node_b)
+        self.assertIsNone(self.employee.effective_cost_center())
+
+    def test_employee_without_nodes_returns_none(self):
+        self.assertIsNone(self.employee.effective_cost_center())
+
+
 class PayrollExportViewTests(APITestCase):
     """
     MVP-Fahrplan Block 2, Punkt 31: PayrollExportView -- JSON/CSV-Export,
@@ -6781,10 +6832,15 @@ class PayrollExportViewTests(APITestCase):
         self.assertEqual(len(response.data["employees"]), 1)
         entry = response.data["employees"][0]
         self.assertEqual(entry["employee_name"], "Anna A")
+        self.assertIsNone(entry["cost_center"])
         self.assertEqual(entry["lines"], [{"payroll_code": "100", "payroll_label": "Normalstunden", "amount": 8.0, "unit": "hours"}])
         self.assertEqual(response.data["warnings"], [])
 
-    def test_inactive_mapping_is_ignored(self):
+    def test_deactivated_mapping_is_excluded_without_warning(self):
+        # Nutzer-Feedback (2026-08): "deaktivierte Kategorien gelten als
+        # bewusst ausgeschlossen" -- anders als eine nie konfigurierte
+        # Kategorie (Warnung, siehe test_unmapped_category_appears_...) darf
+        # eine vom Admin bewusst deaktivierte Zeile KEINE Warnung auslösen.
         PayrollCategoryMapping.objects.create(
             tenant=self.tenant,
             category=PayrollCategoryMapping.Category.REGULAR_HOURS,
@@ -6794,7 +6850,20 @@ class PayrollExportViewTests(APITestCase):
         self.auth_as(self.admin_user)
         response = self.client.get("/api/payroll-export/?month=2026-06")
         self.assertEqual(response.data["employees"], [])
-        self.assertIn("Normalstunden: kein Lohnart-Code konfiguriert", response.data["warnings"])
+        self.assertEqual(response.data["warnings"], [])
+
+    def test_cost_center_included_when_employee_nodes_agree(self):
+        self.node.cost_center = "KST-100"
+        self.node.save(update_fields=["cost_center"])
+        self.employee.nodes.add(self.node)
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertEqual(response.data["employees"][0]["cost_center"], "KST-100")
 
     def test_csv_output(self):
         PayrollCategoryMapping.objects.create(
@@ -6809,5 +6878,5 @@ class PayrollExportViewTests(APITestCase):
         self.assertEqual(response["Content-Type"], "text/csv")
         self.assertIn("attachment", response["Content-Disposition"])
         content = response.content.decode()
-        self.assertIn("Personalnummer,Name,Lohnart-Code,Bezeichnung,Menge,Einheit,Periode", content)
-        self.assertIn(f"{self.employee.id},Anna A,100,Normalstunden,8.0,hours,2026-06", content)
+        self.assertIn("Personalnummer,Name,Kostenstelle,Lohnart-Code,Bezeichnung,Menge,Einheit,Periode", content)
+        self.assertIn(f"{self.employee.id},Anna A,,100,Normalstunden,8.0,hours,2026-06", content)

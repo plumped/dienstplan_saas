@@ -213,14 +213,15 @@ class NodeViewSet(TenantScopedViewSet):
         tenant = self.request.tenant
         parent_id = serializer.validated_data.pop("parent", None)
         name = serializer.validated_data["name"]
+        cost_center = serializer.validated_data.get("cost_center", "")
 
         if parent_id:
             parent = Node.all_objects.filter(tenant=tenant, pk=parent_id).first()
             if parent is None:
                 raise ValidationError({"parent": "Ungültiger oder fremder Knoten."})
-            node = parent.add_child(name=name, tenant=tenant)
+            node = parent.add_child(name=name, tenant=tenant, cost_center=cost_center)
         else:
-            node = Node.add_root(name=name, tenant=tenant)
+            node = Node.add_root(name=name, tenant=tenant, cost_center=cost_center)
 
         serializer.instance = node
 
@@ -1261,9 +1262,19 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
         except ValueError:
             raise ValidationError({"month": "Ungültiges Format, erwartet YYYY-MM."})
 
-        mappings = PayrollCategoryMapping.all_objects.filter(tenant=tenant, is_active=True)
-        mapping_by_category = {m.category: m for m in mappings if m.category}
-        mapping_by_template = {m.special_template_id: m for m in mappings if m.special_template_id}
+        # Nutzer-Feedback (2026-08): "deaktivierte Kategorien gelten als
+        # bewusst ausgeschlossen" -- eine Kategorie mit is_active=False hat
+        # der Admin absichtlich abgewählt (z. B. "Sonntagszuschlag lösen wir
+        # anders") und braucht deshalb KEINE Warnung, anders als eine nie
+        # konfigurierte Kategorie (mögliches Versehen). `mappings` enthält
+        # deshalb bewusst ALLE Zeilen (aktiv + inaktiv): configured_*
+        # entscheidet über die Warnung, active_by_* über die tatsächliche
+        # Code-Zuordnung.
+        mappings = list(PayrollCategoryMapping.all_objects.filter(tenant=tenant))
+        active_by_category = {m.category: m for m in mappings if m.category and m.is_active}
+        active_by_template = {m.special_template_id: m for m in mappings if m.special_template_id and m.is_active}
+        configured_categories = {m.category for m in mappings if m.category}
+        configured_templates = {m.special_template_id for m in mappings if m.special_template_id}
         special_template_names = {
             t.id: t.name
             for t in TimeTemplate.all_objects.filter(tenant=tenant, category=TimeTemplate.Category.SPECIAL)
@@ -1276,13 +1287,16 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
             lines = []
             for raw in employee.payroll_raw_lines(year, month):
                 if raw["category"]:
-                    mapping = mapping_by_category.get(raw["category"])
+                    mapping = active_by_category.get(raw["category"])
                     label = PayrollCategoryMapping.Category(raw["category"]).label
+                    is_configured = raw["category"] in configured_categories
                 else:
-                    mapping = mapping_by_template.get(raw["special_template_id"])
+                    mapping = active_by_template.get(raw["special_template_id"])
                     label = special_template_names.get(raw["special_template_id"], "?")
+                    is_configured = raw["special_template_id"] in configured_templates
                 if mapping is None:
-                    warnings.add(f"{label}: kein Lohnart-Code konfiguriert")
+                    if not is_configured:
+                        warnings.add(f"{label}: kein Lohnart-Code konfiguriert")
                     continue
                 lines.append(
                     {
@@ -1297,6 +1311,11 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
                     {
                         "employee_id": employee.id,
                         "employee_name": f"{employee.first_name} {employee.last_name}",
+                        # MVP-Fahrplan Block 2 Punkt 30/31 (Nutzer-Feedback
+                        # 2026-08): Kostenstelle der Station(en), siehe
+                        # Employee.effective_cost_center() -- None, wenn
+                        # mehrdeutig oder nirgends konfiguriert.
+                        "cost_center": employee.effective_cost_center(),
                         "lines": lines,
                     }
                 )
@@ -1312,7 +1331,9 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
         response = HttpResponse(content_type="text/csv")
         response["Content-Disposition"] = f'attachment; filename="lohn-export-{year}-{month:02d}.csv"'
         writer = csv.writer(response)
-        writer.writerow(["Personalnummer", "Name", "Lohnart-Code", "Bezeichnung", "Menge", "Einheit", "Periode"])
+        writer.writerow(
+            ["Personalnummer", "Name", "Kostenstelle", "Lohnart-Code", "Bezeichnung", "Menge", "Einheit", "Periode"]
+        )
         period = f"{year}-{month:02d}"
         for employee in result_employees:
             for line in employee["lines"]:
@@ -1320,6 +1341,7 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
                     [
                         employee["employee_id"],
                         employee["employee_name"],
+                        employee["cost_center"] or "",
                         line["payroll_code"],
                         line["payroll_label"],
                         line["amount"],

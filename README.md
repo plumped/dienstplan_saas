@@ -2361,16 +2361,35 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Variante über `?output=csv` (bewusst NICHT `?format=csv` -- DRF reserviert `format` selbst für
     die Content-Negotiation, ein unbekannter Wert dort liess die Anfrage mit 404 statt der
     erwarteten CSV-Antwort fehlschlagen, empirisch beim ersten Testlauf gefunden), Spalten:
-    Personalnummer (Employee-ID, kein eigenes Feld dafür nötig), Name, Lohnart-Code, Bezeichnung,
-    Menge, Einheit, Periode.
+    Personalnummer (Employee-ID, kein eigenes Feld dafür nötig), Name, Kostenstelle, Lohnart-Code,
+    Bezeichnung, Menge, Einheit, Periode.
 
     Frontend: `api.downloadPayrollExportCsv()` löst den ersten Datei-Download der App aus (eigener
     `fetch`-Aufruf mit Auth-Header statt des JSON-`request()`-Helpers, `Blob` + temporärer
     `<a download>`). Der "CSV herunterladen"-Button im "Lohnarten"-Modul lädt vorher die JSON-
-    Vorschau, um die Warnliste zusätzlich sichtbar im UI anzuzeigen. 23 neue Backend-Tests (Modell-
-    Constraints, API-Berechtigungen inkl. Tenant-Grenze für `special_template`, `payroll_raw_lines`
-    -- Normalstunden/Überstunden/Sonntagszuschlag/Absenztage-Gruppierung/Spezialitäten-Zeilen --,
-    Export-View JSON/CSV/Warnliste/Berechtigungen), volle Suite grün.
+    Vorschau, um die Warnliste zusätzlich sichtbar im UI anzuzeigen.
+
+    **Nachbesserung (2026-08, Zweitmeinung eingeholt):** zwei Lücken nachgezogen --
+    - **Kostenstelle**: komplett vergessen. Neues `Node.cost_center` (Freitext, leer = Vererbung
+      von der nächsten Vorfahren-Station, `effective_cost_center()`) -- ein Team ohne eigene
+      Kostenstelle übernimmt automatisch die seiner Station. `Employee.effective_cost_center()`
+      ist nur eindeutig, wenn alle Stationen des Mitarbeitenden (`Employee.nodes`) auf dieselbe
+      Kostenstelle auflösen, sonst `None` (bekannte Vereinfachung -- eine echte Aufteilung nach
+      Station müsste `monthly_summary()` selbst pro Station aufschlüsseln, siehe deren Docstring).
+      Editierbar in Einstellungen → Stationen (Anlegen-Formular + Inline-Bearbeiten, zeigt bei
+      geerbtem Wert "(geerbt)" an).
+    - **Bugfix Warnliste**: eine vom Admin bewusst deaktivierte Kategorie
+      (`PayrollCategoryMapping.is_active=False`) landete bisher fälschlich in derselben
+      Warnliste wie eine nie konfigurierte -- "deaktiviert" ist aber eine bewusste Entscheidung
+      ("diese Kategorie lösen wir anders"), keine vergessene. Die View unterscheidet jetzt explizit
+      zwischen "nie konfiguriert" (warnt) und "konfiguriert, aber deaktiviert" (bewusst
+      ausgeschlossen, keine Warnung).
+
+    31 neue Backend-Tests insgesamt (Modell-Constraints, API-Berechtigungen inkl. Tenant-Grenze
+    für `special_template`, `payroll_raw_lines` -- Normalstunden/Überstunden/Sonntagszuschlag/
+    Absenztage-Gruppierung/Spezialitäten-Zeilen --, Export-View JSON/CSV/Warnliste/
+    Berechtigungen, Kostenstellen-Vererbung entlang der Stationshierarchie, Eindeutigkeits-Logik
+    bei mehreren Stationen), volle Suite grün.
 
 32. ✅ **Stammdatenpflege: Mitarbeitenden-Tabelle statt Liste** (2026-08). Nutzer-Feedback: "die
     Stammdatenpflege ist bei 1200 Mitarbeitenden katastrophal -- unsortierte Liste, scrollend

@@ -325,11 +325,13 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                         )}
                       </td>
                       <td>{nodeNames(emp.nodes)}</td>
-                      <td className="settings-table-actions" onClick={(e) => e.stopPropagation()}>
-                        <BalanceBadge employeeId={emp.id} />
-                        <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
-                          Bearbeiten
-                        </button>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <span className="settings-table-actions">
+                          <BalanceBadge employeeId={emp.id} />
+                          <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
+                            Bearbeiten
+                          </button>
+                        </span>
                       </td>
                     </tr>
                   ))}

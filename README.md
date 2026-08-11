@@ -2545,6 +2545,21 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Zeile. Mit Playwright verifiziert (Screenshot zeigt Checkbox, Text, Ist-Zeit und
     "Bestätigen"-Button auf gemeinsamer vertikaler Mitte, kein Versatz mehr).
 
+    **Bugfix (2026-08, Nutzer-Feedback: "gut aber warum hat der bottom border immer noch eine
+    Abstufung unter 'Korrigieren'?")**: der `vertical-align`-Fix allein reichte nicht -- die
+    eigentliche Ursache war `display: flex` direkt auf dem `<td className="settings-table-actions">`.
+    Ein `<td>`, dessen `display` auf `flex` überschrieben wird, verlässt sein normales
+    table-cell-Boxmodell; der Browser berechnete die Zeilenhöhe für genau diese eine Zelle 0.5px
+    abweichend von den übrigen Zellen (per `getBoundingClientRect()` gemessen: 46px statt 46.5px),
+    was als minimal versetzte Zeilenborder sichtbar wurde. Der Effekt betraf denselben,
+    wiederverwendeten `.settings-table-actions`-Klassennamen auch in `TimeTemplateSettings.jsx`
+    und `EmployeeSettings.jsx` -- dort bisher nur nicht aufgefallen. Fix an allen drei Stellen:
+    `display: flex` liegt jetzt auf einem `<span className="settings-table-actions">` innerhalb
+    eines normalen `<td>`, das Boxmodell der Zeile bleibt für alle Zellen identisch. Mit
+    Playwright verifiziert (`getBoundingClientRect()` aller Zellen einer Zeile liefert jetzt
+    exakt gleiche top/bottom/height-Werte, Screenshot zeigt eine durchgehende, unversetzte
+    Border).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

@@ -426,13 +426,15 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                                 {risky && " ⚠"})
                               </span>
                             </td>
-                            <td className="settings-table-actions">
-                              <button type="button" className="btn-ghost" onClick={() => openCorrect(r)}>
-                                Korrigieren
-                              </button>
-                              <button type="button" onClick={() => handleConfirm(r)}>
-                                Bestätigen
-                              </button>
+                            <td>
+                              <span className="settings-table-actions">
+                                <button type="button" className="btn-ghost" onClick={() => openCorrect(r)}>
+                                  Korrigieren
+                                </button>
+                                <button type="button" onClick={() => handleConfirm(r)}>
+                                  Bestätigen
+                                </button>
+                              </span>
                             </td>
                           </tr>
                         );
@@ -527,10 +529,12 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                             <td>{employeeName(a.employee)}</td>
                             <td>{nodeName(a.node)}</td>
                             <td>{template?.name ?? `#${a.template}`}</td>
-                            <td className="settings-table-actions">
-                              <button type="button" onClick={() => openCapture(a)}>
-                                Erfassen
-                              </button>
+                            <td>
+                              <span className="settings-table-actions">
+                                <button type="button" onClick={() => openCapture(a)}>
+                                  Erfassen
+                                </button>
+                              </span>
                             </td>
                           </tr>
                         );

@@ -268,13 +268,15 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                         {t.segments?.length > 1 && <span className="entry-note">{t.segments.length} Segmente</span>}
                         {t.minimum_staffing > 0 && <span className="entry-note"> min. {t.minimum_staffing} Pers.</span>}
                       </td>
-                      <td className="settings-table-actions" onClick={(e) => e.stopPropagation()}>
-                        <button type="button" className="btn-ghost" onClick={() => startEditing(t)}>
-                          Bearbeiten
-                        </button>
-                        <button type="button" className="btn-ghost" onClick={() => handleDelete(t)}>
-                          Löschen
-                        </button>
+                      <td onClick={(e) => e.stopPropagation()}>
+                        <span className="settings-table-actions">
+                          <button type="button" className="btn-ghost" onClick={() => startEditing(t)}>
+                            Bearbeiten
+                          </button>
+                          <button type="button" className="btn-ghost" onClick={() => handleDelete(t)}>
+                            Löschen
+                          </button>
+                        </span>
                       </td>
                     </tr>
                   ))}

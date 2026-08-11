@@ -1441,6 +1441,14 @@ thead .col-employee {
   font-weight: 600;
 }
 
+/* Nutzer-Feedback (2026-08): "warum hat der bottom border immer noch eine
+   Abstufung unter 'Korrigieren'?" -- Ursache war `display: flex` direkt auf
+   dem <td>: das bricht dessen normales table-cell-Boxmodell, wodurch der
+   Browser die Zeilenhöhe für diese eine Zelle 0.5px abweichend berechnete
+   (per getBoundingClientRect gemessen) und die Zeilenborder dadurch minimal
+   versetzt wirkte. Jetzt liegt die Flex-Klasse auf einem <span> innerhalb
+   eines normalen <td>, das Boxmodell der Zeile bleibt für alle Zellen
+   identisch. */
 .settings-table-actions {
   display: flex;
   align-items: center;

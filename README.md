@@ -2597,6 +2597,55 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Aufschlüsselung bei einer/mehreren Spezialitäten, Spezialität ohne Zuschlag bleibt aussen vor,
     Serializer-Roundtrip, API-Response), volle Suite (433 Tests) grün.
 
+    **Gleitzeit-Korridor statt automatischer Überzeitauszahlung** (2026-08, Nutzer-Rückfrage anhand
+    eines echten Beispiels: Marco Bianchi, 80%-Pensum, Mo-Do volle Frühschicht statt 5x reduziert --
+    "würde die Lohnbuchhaltung das 'Rauschen' nun auszahlen? Bei uns gilt Gleitzeit, nur angeordnete
+    Überstunden werden effektiv abgerechnet" / "Was ist state of the art? Wie machen das andere
+    Tools?"): bis hierhin wurde jede positive Monats-Soll/Ist-Differenz automatisch mit dem
+    Überzeitzuschlag versehen -- bei einer Gleitzeit-Vereinbarung zu grosszügig, da reines
+    Kalenderrauschen (z. B. ein Monat mit einem Montag mehr als Freitagen bei einem festen
+    4-Tage-Muster) genauso abgerechnet würde wie echte angeordnete Mehrarbeit. Statt einer Markierung
+    pro einzelner Schicht (zu aufwendig, siehe Diskussion) das branchenübliche Muster: eine
+    **Gleitzeit-Bandbreite** pro Tenant (`Tenant.flextime_corridor_hours`, Default 20h, neues
+    Settings-Feld unter "Regel-Engine & Zuschläge" → "Überzeit") -- der laufende Jahressaldo
+    (`Employee.time_account_summary()["saldo_hours"]`) darf sich frei darin bewegen, erst der
+    positive Anteil darüber hinaus wird in der Monatsauswertung als "ausserhalb des Korridors"
+    vorgeschlagen und muss dort **einmal pro Mitarbeiter und Monat** per Klick bestätigt werden,
+    bevor er in `overtime_surcharge_hours` (und damit später in den Lohnlauf) einfliesst -- kein
+    Zutun der Planer beim alltäglichen Einteilen nötig, nur eine bewusste Entscheidung am
+    Monatsende für die tatsächlich abrechnungsrelevanten Fälle.
+
+    Neues Modell `OvertimeSettlement` (ein Datensatz pro Mitarbeiter/Monat, `hours` +
+    `surcharge_hours` zum Bestätigungszeitpunkt fixiert, `HistoricalRecords` für die
+    Nachvollziehbarkeit analog `Absence`/`ShiftTradeRequest`) -- `Employee.
+    _flextime_corridor_status(year, month)` vergleicht den kumulierten Jahressaldo (abzüglich bereits
+    in früheren Monaten desselben Jahres bestätigter Beträge) mit der Bandbreite;
+    `confirm_overtime_settlement()` legt den Datensatz an (idempotent -- ein zweiter Klick zahlt
+    nicht doppelt aus) und wirft einen Fehler, wenn nichts ausserhalb des Korridors liegt. Neuer
+    Endpoint `POST /api/employees/{id}/settle-overtime/` (Body `{year, month}`, gleiche
+    Admin/Planer-Berechtigung wie `monthly-summary`). `monthly_summary()` liefert neu `saldo_hours`,
+    `flextime_corridor_hours`, `flextime_corridor_excess_hours`, `is_overtime_settled` zusätzlich zu
+    den bestehenden Feldern -- `overtime_hours` bleibt als reine Kennzahl "wie weit war dieser Monat
+    vom Soll entfernt" bestehen, ist aber nicht mehr automatisch abrechnungsrelevant.
+
+    Bewusste Abgrenzung: die persönliche Gleitzeit-Saldo-Anzeige (BalanceBadge in Topbar/
+    Mitarbeiterliste, `time_account_summary()`) bleibt unverändert und zeigt weiterhin den reinen
+    Ist/Soll-Verlauf, unabhängig von bereits bestätigten `OvertimeSettlement`-Beträgen -- eine
+    Rückkopplung dorthin (bestätigte/ausbezahlte Stunden aus dem persönlichen Saldo herausrechnen)
+    wäre ein sinnvoller nächster Schritt, war aber nicht Teil dieser Anfrage und hätte den
+    bereits breit verwendeten `time_account_summary()` angefasst.
+
+    Frontend: `TenantSettings.jsx` neues Feld "Gleitzeit-Bandbreite (h)"; `MonthlySummaryPanel.jsx`
+    zeigt den kumulierten Saldo als eigene Zeile, bei Überschuss eine Hinweisbox
+    (`.corridor-callout`) mit "Überschuss bestätigen"-Button, nach Bestätigung stattdessen einen
+    Bestätigungs-Hinweis. 12 neue Backend-Tests (Korridor-Erkennung, Bestätigung inkl. Idempotenz,
+    Ablehnung ohne Überschuss, kein erneutes Flaggen bereits bestätigter Beträge in einem
+    Folgemonat, API-Berechtigung/-Response), volle Suite grün. Mit Playwright gegen echte
+    Testheim-Daten verifiziert: Marco Bianchis 1.68h Kalenderrauschen (weit unter dem 20h-Korridor)
+    erscheint korrekt ohne Hinweisbox und mit 0h Zuschlag; ein Testmitarbeiter mit 27h Saldo zeigt
+    die Hinweisbox mit 7h Überschuss, Bestätigen setzt den Zuschlag auf 1.75h (25%) und bleibt nach
+    Neuladen der Seite bestehen.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

@@ -13,6 +13,13 @@ const MONTH_NAMES = [
 // ein eigenes, separates Settings-Modul nur für Admin/Planer (siehe
 // EmployeeViewSet.monthly_summary-Berechtigung) -- die Zahlen hier dienen
 // der externen Lohnbuchhaltung, nicht der Selbstauskunft.
+//
+// Nutzer-Feedback (2026-08): "bei uns gilt Gleitzeit, nur angeordnete
+// Überstunden werden effektiv abgerechnet" -- overtime_surcharge_hours wird
+// deshalb NICHT mehr automatisch aus jeder Soll/Ist-Differenz berechnet,
+// sondern erst, sobald ein Saldo-Überschuss ausserhalb der Gleitzeit-
+// Bandbreite (Tenant.flextime_corridor_hours) hier bestätigt wurde (siehe
+// flextime_corridor_excess_hours/handleSettle unten).
 export default function MonthlySummaryPanel({ onError }) {
   const today = new Date();
   const [employees, setEmployees] = useState([]);
@@ -21,6 +28,7 @@ export default function MonthlySummaryPanel({ onError }) {
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [settling, setSettling] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -56,12 +64,25 @@ export default function MonthlySummaryPanel({ onError }) {
 
   if (loading) return <p className="loading-state">Mitarbeitende werden geladen …</p>;
 
+  async function handleSettle() {
+    setSettling(true);
+    try {
+      const data = await api.settleOvertime(employeeId, year, month);
+      setSummary(data);
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setSettling(false);
+    }
+  }
+
   const rows = summary
     ? [
         { key: "soll", label: "Soll-Stunden", value: summary.soll_hours },
         { key: "ist", label: "Ist-Stunden", value: summary.ist_hours },
-        { key: "overtime", label: "Überzeitstunden", value: summary.overtime_hours },
-        { key: "overtime-surcharge", label: "davon Zuschlag", value: summary.overtime_surcharge_hours },
+        { key: "overtime", label: "Überzeitstunden (Monat)", value: summary.overtime_hours },
+        { key: "saldo", label: "Gleitzeitsaldo (Jahr, kumuliert)", value: summary.saldo_hours },
+        { key: "overtime-surcharge", label: "davon abgerechnet (Zuschlag)", value: summary.overtime_surcharge_hours },
         { key: "night", label: "Nachtstunden", value: summary.night_hours },
         { key: "night-surcharge", label: "davon Zeitgutschrift", value: summary.night_surcharge_hours },
         { key: "sunday", label: "Sonntagsstunden", value: summary.sunday_hours },
@@ -127,6 +148,27 @@ export default function MonthlySummaryPanel({ onError }) {
               ))}
             </tbody>
           </table>
+
+          {summary.flextime_corridor_excess_hours > 0 && (
+            <div className="corridor-callout">
+              <p>
+                <strong>{summary.flextime_corridor_excess_hours} h</strong> liegen über der
+                Gleitzeit-Bandbreite von {summary.flextime_corridor_hours} h (Einstellungen →
+                Regel-Engine &amp; Zuschläge) und sind noch nicht abgerechnet. Nutzer-Feedback (2026-08):
+                "bei uns gilt Gleitzeit, nur angeordnete Überstunden werden effektiv abgerechnet" -- erst
+                nach Bestätigung fliesst dieser Betrag in den Lohnlauf ein.
+              </p>
+              <button type="button" onClick={handleSettle} disabled={settling}>
+                {settling ? "Bestätigt …" : "Überschuss bestätigen"}
+              </button>
+            </div>
+          )}
+          {summary.is_overtime_settled && (
+            <p className="panel-hint">
+              Für diesen Monat bereits bestätigt: {summary.overtime_surcharge_hours} h Zuschlag fliessen in
+              den Lohnlauf ein.
+            </p>
+          )}
 
           {summary.special_surcharge_breakdown.length > 0 && (
             <>

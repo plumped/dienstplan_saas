@@ -77,6 +77,14 @@ const FIELD_GROUPS = [
         label: "Überzeitzuschlag (%)",
         hint: "Art. 13 Abs. 1 ArG: i. d. R. 25%, GAV-abhängig anpassbar.",
       },
+      {
+        key: "flextime_corridor_hours",
+        label: "Gleitzeit-Bandbreite (h)",
+        hint: "Nutzer-Feedback: \"bei uns gilt Gleitzeit, nur angeordnete Überstunden werden effektiv "
+          + "abgerechnet\". Der laufende Saldo darf sich innerhalb dieser Bandbreite frei bewegen, ohne "
+          + "Zuschlag -- erst der Anteil darüber hinaus wird in der Monatsauswertung zur Bestätigung "
+          + "vorgeschlagen.",
+      },
     ],
   },
   {

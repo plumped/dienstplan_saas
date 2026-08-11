@@ -190,6 +190,8 @@ export const api = {
   getEmployeeWeeklyOvertime: (id, week) => request(`/employees/${id}/weekly-overtime/?week=${week}`),
   getEmployeeMonthlySummary: (id, year, month) =>
     request(`/employees/${id}/monthly-summary/?year=${year}&month=${month}`),
+  settleOvertime: (id, year, month) =>
+    request(`/employees/${id}/settle-overtime/`, { method: "POST", body: { year, month } }),
 
   getTimeTemplates: () => requestAllPages("/time-templates/"),
   // Stammdatenpflege (Nutzer-Feedback 2026-08): gleiches Muster wie

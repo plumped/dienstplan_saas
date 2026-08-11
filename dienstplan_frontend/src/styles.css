@@ -1270,6 +1270,28 @@ thead .col-employee {
   font-variant-numeric: tabular-nums;
 }
 
+/* Nutzer-Feedback (2026-08): "bei uns gilt Gleitzeit, nur angeordnete
+   Überstunden werden effektiv abgerechnet" -- Hinweisbox in der
+   Monatsauswertung (MonthlySummaryPanel.jsx), sobald der Jahressaldo die
+   Gleitzeit-Bandbreite überschreitet und eine Bestätigung fürs Bestätigen
+   des Überschusses aussteht. */
+.corridor-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 4px 0 16px;
+  padding: 10px 14px;
+  background: var(--warn-soft);
+  border-radius: 8px;
+}
+
+.corridor-callout p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+
 /* Block 2.16: Fehler direkt am Feld statt nur im globalen Banner. */
 .field-error {
   margin-top: -8px;

@@ -126,6 +126,16 @@ class Tenant(models.Model):
         help_text="Zuschlag auf Überzeitstunden in Prozent (Art. 13 Abs. 1 ArG: i. d. R. 25%, "
         "GAV-abhängig anpassbar).",
     )
+    flextime_corridor_hours = models.PositiveSmallIntegerField(
+        default=20,
+        help_text="Nutzer-Feedback (2026-08): 'bei uns gilt Gleitzeit, nur angeordnete Überstunden "
+        "werden effektiv abgerechnet'. Gleitzeit-Bandbreite in Stunden: der laufende Gleitzeitsaldo "
+        "(scheduling.models.Employee.time_account_summary) darf sich innerhalb dieses Korridors frei "
+        "bewegen -- weder Zuschlag noch Auszahlung, ohne dass Planer pro Schicht etwas markieren "
+        "müssen. Erst der Anteil, der über den Korridor hinausgeht, wird in der Monatsauswertung "
+        "als abrechnungsrelevant vorgeschlagen und muss dort einmalig pro Monat bestätigt werden "
+        "(scheduling.models.OvertimeSettlement), bevor er in overtime_surcharge_hours einfliesst.",
+    )
 
     # Feriensaldo (MVP-Fahrplan Block 2.7): Default pro Tenant, einzelne
     # Mitarbeitende können das über Employee.vacation_days_per_year

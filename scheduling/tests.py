@@ -20,6 +20,7 @@ from .models import (
     Employee,
     Employment,
     Node,
+    OvertimeSettlement,
     Pregnancy,
     ShiftAssignment,
     ShiftPreference,
@@ -2315,6 +2316,17 @@ class MonthlySummaryTests(APITestCase):
     def _june_weekdays(self):
         return [date(2026, 6, d) for d in range(1, 31) if date(2026, 6, d).weekday() < 5]
 
+    def _start_employment_in_june(self):
+        # Gleitzeit-Korridor-Tests brauchen time_account_summary()["saldo_hours"]
+        # (Jahres-Gleitzeitkonto ab Jahresanfang bzw. Eintrittsdatum) --
+        # ohne diesen Reset würde der Saldo faelschlich ab 1. Januar
+        # berechnet und durch die in diesen Tests unbestueckten Monate
+        # Januar-Mai einen riesigen, aber rein testartefaktbedingten
+        # Fehlbetrag zeigen (kein Bezug zur Monatsauswertung selbst, die
+        # ohnehin nur Juni betrachtet).
+        self.employee.employment_start_date = date(2026, 6, 1)
+        self.employee.save(update_fields=["employment_start_date"])
+
     def test_no_shifts_means_full_soll_and_no_overtime(self):
         summary = self.employee.monthly_summary(2026, 6)
         self.assertEqual(summary["month_start"], date(2026, 6, 1))
@@ -2334,14 +2346,95 @@ class MonthlySummaryTests(APITestCase):
         self.assertEqual(summary["overtime_surcharge_hours"], 0)
         self.assertTrue(summary["is_provisional"])  # keine Zeiterfassung erfasst
 
-    def test_extra_shift_yields_overtime_and_surcharge(self):
+    def test_extra_shift_yields_overtime_but_no_automatic_surcharge(self):
+        # Nutzer-Feedback (2026-08): "bei uns gilt Gleitzeit, nur angeordnete
+        # Überstunden werden effektiv abgerechnet" -- Überzeit innerhalb der
+        # Gleitzeit-Bandbreite (Tenant-Default 20h) ist reines Saldo-
+        # Rauschen und wird NICHT mehr automatisch mit Zuschlag abgerechnet.
+        self._start_employment_in_june()
         for day in self._june_weekdays():
             self._assign(day)
         self._assign(date(2026, 6, 6))  # Samstag, zusaetzliche 8h
         summary = self.employee.monthly_summary(2026, 6)
         self.assertEqual(summary["ist_hours"], 184.0)
-        self.assertEqual(summary["overtime_hours"], 8.0)
-        self.assertEqual(summary["overtime_surcharge_hours"], 2.0)  # 25% Zuschlag (Tenant-Default)
+        self.assertEqual(summary["overtime_hours"], 8.0)  # informativ, unveraendert
+        self.assertEqual(summary["overtime_surcharge_hours"], 0)  # nichts bestaetigt
+        self.assertEqual(summary["saldo_hours"], 8.0)
+        self.assertEqual(summary["flextime_corridor_hours"], 20)
+        self.assertEqual(summary["flextime_corridor_excess_hours"], 0)  # 8h < 20h Korridor
+        self.assertFalse(summary["is_overtime_settled"])
+
+    # --- Gleitzeit-Korridor + Bestätigung (Nutzer-Feedback 2026-08) ---
+
+    def test_saldo_beyond_corridor_is_flagged_but_not_paid(self):
+        # 3 zusaetzliche Samstage (24h) -> Jahressaldo 24h, ueber dem
+        # 20h-Korridor -> 4h Ueberschuss werden zur Bestaetigung
+        # vorgeschlagen, aber noch nicht automatisch ausbezahlt.
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        for d in (6, 13, 20):
+            self._assign(date(2026, 6, d))
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["saldo_hours"], 24.0)
+        self.assertEqual(summary["flextime_corridor_excess_hours"], 4.0)
+        self.assertEqual(summary["overtime_surcharge_hours"], 0)
+        self.assertFalse(summary["is_overtime_settled"])
+
+    def test_confirm_overtime_settlement_creates_record_and_pays_out(self):
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        for d in (6, 13, 20):
+            self._assign(date(2026, 6, d))
+        settlement = self.employee.confirm_overtime_settlement(2026, 6)
+        self.assertEqual(settlement.hours, 4.0)
+        self.assertEqual(settlement.surcharge_hours, 1.0)  # 4h * 25% Tenant-Default
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["overtime_surcharge_hours"], 1.0)
+        self.assertEqual(summary["flextime_corridor_excess_hours"], 0)
+        self.assertTrue(summary["is_overtime_settled"])
+
+    def test_confirm_overtime_settlement_is_idempotent(self):
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        for d in (6, 13, 20):
+            self._assign(date(2026, 6, d))
+        first = self.employee.confirm_overtime_settlement(2026, 6)
+        second = self.employee.confirm_overtime_settlement(2026, 6)
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(
+            OvertimeSettlement.objects.filter(employee=self.employee, year=2026, month=6).count(), 1
+        )
+
+    def test_confirm_overtime_settlement_raises_when_nothing_to_confirm(self):
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        with self.assertRaises(ValueError):
+            self.employee.confirm_overtime_settlement(2026, 6)
+
+    def test_settled_hours_do_not_get_flagged_again_in_a_later_month(self):
+        # Juni: 4h Ueberschuss bestaetigt. Juli: Mitarbeiter arbeitet exakt
+        # sein Soll (0 neue Differenz) -- der kumulierte Jahressaldo bleibt
+        # bei 24h, davon 4h bereits bestaetigt -> unbestaetigt sind nur noch
+        # 20h, genau am Korridor, kein neuer Ueberschuss im Juli.
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        for d in (6, 13, 20):
+            self._assign(date(2026, 6, d))
+        self.employee.confirm_overtime_settlement(2026, 6)
+
+        july_weekdays = [date(2026, 7, d) for d in range(1, 32) if date(2026, 7, d).weekday() < 5]
+        for day in july_weekdays:
+            self._assign(day)
+
+        july_summary = self.employee.monthly_summary(2026, 7)
+        self.assertEqual(july_summary["saldo_hours"], 24.0)
+        self.assertEqual(july_summary["flextime_corridor_excess_hours"], 0)
+        self.assertFalse(july_summary["is_overtime_settled"])
 
     def test_shifts_outside_month_are_excluded(self):
         self._assign(date(2026, 6, 1))
@@ -2539,6 +2632,57 @@ class MonthlySummaryTests(APITestCase):
         # monthly_summary-Docstring).
         self.auth_as(self.employee_user)
         response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=2026&month=6")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    # --- API: Gleitzeit-Korridor-Bestätigung ---
+
+    def _make_corridor_excess(self):
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        for d in (6, 13, 20):
+            self._assign(date(2026, 6, d))
+
+    def test_api_settle_overtime_confirms_excess_for_planner(self):
+        self._make_corridor_excess()
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/settle-overtime/", {"year": 2026, "month": 6}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["overtime_surcharge_hours"], 1.0)
+        self.assertTrue(response.data["is_overtime_settled"])
+        self.assertEqual(
+            OvertimeSettlement.objects.filter(employee=self.employee, year=2026, month=6).count(), 1
+        )
+
+    def test_api_settle_overtime_is_idempotent(self):
+        self._make_corridor_excess()
+        self.auth_as(self.planner_user)
+        self.client.post(f"/api/employees/{self.employee.id}/settle-overtime/", {"year": 2026, "month": 6})
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/settle-overtime/", {"year": 2026, "month": 6}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            OvertimeSettlement.objects.filter(employee=self.employee, year=2026, month=6).count(), 1
+        )
+
+    def test_api_settle_overtime_rejects_when_nothing_to_confirm(self):
+        for day in self._june_weekdays():
+            self._assign(day)
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/settle-overtime/", {"year": 2026, "month": 6}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_api_settle_overtime_forbidden_for_employee_role(self):
+        self._make_corridor_excess()
+        self.auth_as(self.employee_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/settle-overtime/", {"year": 2026, "month": 6}
+        )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
 

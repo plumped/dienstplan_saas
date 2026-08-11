@@ -462,6 +462,37 @@ class EmployeeViewSet(TenantScopedViewSet):
         summary = employee.monthly_summary(year, month)
         return Response(MonthlySummarySerializer(summary).data)
 
+    @action(detail=True, methods=["post"], url_path="settle-overtime")
+    def settle_overtime(self, request, pk=None):
+        """
+        Bestätigt den aktuellen Gleitzeit-Korridor-Überschuss (Employee.
+        _flextime_corridor_status) für einen Monat als abrechnungsrelevant
+        (Nutzer-Feedback 2026-08: "bei uns gilt Gleitzeit, nur angeordnete
+        Überstunden werden effektiv abgerechnet"). Body: {"year": YYYY,
+        "month": 1-12} (Default aktueller Monat). Idempotent -- ein bereits
+        bestätigter Monat ändert sich durch einen erneuten Aufruf nicht.
+        Gleiche Berechtigung wie monthly_summary() (Admin/Planer, kein
+        Selbstbedienungs-Endpoint).
+        """
+        if request.membership.role not in (Membership.Role.ADMIN, Membership.Role.PLANNER):
+            raise PermissionDenied("Nur Admin/Planer dürfen einen Gleitzeit-Überschuss bestätigen.")
+        employee = self.get_object()
+        today = timezone.localdate()
+        year_param = request.data.get("year")
+        month_param = request.data.get("month")
+        try:
+            year = int(year_param) if year_param else today.year
+            month = int(month_param) if month_param else today.month
+        except (TypeError, ValueError):
+            raise ValidationError({"year": "Ungültiges Jahr oder ungültiger Monat."})
+        if not 1 <= month <= 12:
+            raise ValidationError({"month": "Monat muss zwischen 1 und 12 liegen."})
+        try:
+            employee.confirm_overtime_settlement(year, month)
+        except ValueError as exc:
+            raise ValidationError(str(exc))
+        return Response(MonthlySummarySerializer(employee.monthly_summary(year, month)).data)
+
 
 class AbsenceTypeViewSet(TenantScopedViewSet):
     """

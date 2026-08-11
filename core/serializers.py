@@ -24,6 +24,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "time_record_deviation_tolerance_minutes",
             "standard_weekly_hours",
             "overtime_surcharge_pct",
+            "flextime_corridor_hours",
             "default_vacation_days_per_year",
             "night_work_surcharge_pct",
             "night_work_regular_threshold_nights",

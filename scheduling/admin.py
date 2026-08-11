@@ -10,6 +10,7 @@ from .models import (
     Employee,
     Employment,
     Node,
+    OvertimeSettlement,
     Pregnancy,
     ShiftAssignment,
     ShiftPreference,
@@ -96,6 +97,12 @@ class AbsenceAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["employee", "type", "start_date", "end_date", "day_portion", "tenant"]
     list_filter = ["tenant", "type", "day_portion"]
     date_hierarchy = "start_date"
+
+
+@admin.register(OvertimeSettlement)
+class OvertimeSettlementAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
+    list_display = ["employee", "year", "month", "hours", "surcharge_hours", "confirmed_at", "tenant"]
+    list_filter = ["tenant", "year"]
 
 
 @admin.register(Pregnancy)

@@ -701,6 +701,10 @@ class Employee(TenantScopedModel):
                 "ist_hours": 0.0,
                 "overtime_hours": 0.0,
                 "overtime_surcharge_hours": 0.0,
+                "saldo_hours": 0.0,
+                "flextime_corridor_hours": self.tenant.flextime_corridor_hours,
+                "flextime_corridor_excess_hours": 0.0,
+                "is_overtime_settled": False,
                 "night_hours": 0.0,
                 "night_surcharge_hours": 0.0,
                 "sunday_hours": 0.0,
@@ -795,8 +799,18 @@ class Employee(TenantScopedModel):
         special_surcharge_hours = round(sum(e["surcharge_hours"] for e in special_surcharge_breakdown), 2)
 
         ist_hours = round(ist_hours, 2)
+        # Nutzer-Feedback (2026-08): "bei uns gilt Gleitzeit, nur angeordnete
+        # Überstunden werden effektiv abgerechnet" -- overtime_hours bleibt
+        # als reine Kennzahl "wie weit war dieser Monat vom Soll entfernt"
+        # bestehen, ist aber NICHT mehr automatisch abrechnungsrelevant.
+        # Massgeblich für overtime_surcharge_hours ist stattdessen der
+        # Gleitzeit-Korridor (siehe _flextime_corridor_status/
+        # OvertimeSettlement): erst der Anteil des laufenden Jahressaldos,
+        # der über die Tenant-Bandbreite (flextime_corridor_hours) hinausgeht
+        # UND von Planer/Admin für diesen Monat bestätigt wurde, zählt.
         overtime_hours = round(max(0.0, ist_hours - soll_hours), 2)
-        overtime_surcharge_hours = round(overtime_hours * self.tenant.overtime_surcharge_pct / 100, 2)
+        corridor = self._flextime_corridor_status(year, month)
+        overtime_surcharge_hours = corridor["settled_surcharge_hours"]
 
         night_hours = round(night_hours, 2)
         # Zeitgutschrift (Art. 17b ArG) nur bei regelmässiger Nachtarbeit --
@@ -820,6 +834,10 @@ class Employee(TenantScopedModel):
             "ist_hours": ist_hours,
             "overtime_hours": overtime_hours,
             "overtime_surcharge_hours": overtime_surcharge_hours,
+            "saldo_hours": corridor["saldo_hours"],
+            "flextime_corridor_hours": corridor["corridor_hours"],
+            "flextime_corridor_excess_hours": corridor["excess_hours"],
+            "is_overtime_settled": corridor["is_settled"],
             "night_hours": night_hours,
             "night_surcharge_hours": night_surcharge_hours,
             "sunday_hours": sunday_hours,
@@ -828,6 +846,112 @@ class Employee(TenantScopedModel):
             "special_surcharge_breakdown": special_surcharge_breakdown,
             "is_provisional": is_provisional,
         }
+
+    def _flextime_corridor_status(self, year, month):
+        """
+        Gleitzeit-Korridor-Status für einen Monat (Nutzer-Feedback 2026-08:
+        "bei uns gilt Gleitzeit, nur angeordnete Überstunden werden effektiv
+        abgerechnet"). Vergleicht den laufenden Jahressaldo
+        (time_account_summary()["saldo_hours"] zum Monatsende, abzüglich
+        bereits in früheren Monaten DIESES Jahres bestätigter
+        OvertimeSettlement-Beträge) mit der Tenant-Bandbreite
+        (flextime_corridor_hours). Nur der POSITIVE Übertritt zählt -- ein
+        stark negativer Saldo ist kein Auszahlungsthema, sondern etwas, das
+        die Mitarbeitenden selbst über die Zeit wieder ausgleichen.
+
+        Ist für diesen Monat bereits eine Bestätigung vorhanden (idempotent,
+        siehe confirm_overtime_settlement), wird deren fixierter Wert
+        zurückgegeben statt neu zu rechnen -- der bestätigte Betrag ändert
+        sich nicht rückwirkend, auch wenn sich Zuweisungen danach noch
+        verschieben.
+        """
+        month_end = date(year, month, calendar.monthrange(year, month)[1])
+        saldo_hours = self.time_account_summary(as_of_date=month_end)["saldo_hours"]
+
+        settlement_this_month = self.overtime_settlements.filter(year=year, month=month).first()
+        if settlement_this_month:
+            return {
+                "corridor_hours": self.tenant.flextime_corridor_hours,
+                "saldo_hours": saldo_hours,
+                "excess_hours": 0.0,
+                "is_settled": True,
+                "settled_hours": settlement_this_month.hours,
+                "settled_surcharge_hours": settlement_this_month.surcharge_hours,
+            }
+
+        settled_prior_this_year = self.overtime_settlements.filter(year=year, month__lt=month).aggregate(
+            total=models.Sum("hours")
+        )["total"] or 0.0
+        unsettled_saldo = saldo_hours - settled_prior_this_year
+        excess_hours = round(max(0.0, unsettled_saldo - self.tenant.flextime_corridor_hours), 2)
+
+        return {
+            "corridor_hours": self.tenant.flextime_corridor_hours,
+            "saldo_hours": saldo_hours,
+            "excess_hours": excess_hours,
+            "is_settled": False,
+            "settled_hours": 0.0,
+            "settled_surcharge_hours": 0.0,
+        }
+
+    def confirm_overtime_settlement(self, year, month):
+        """
+        Bestätigt den aktuellen Gleitzeit-Korridor-Überschuss für einen Monat
+        als abrechnungsrelevant -- legt einen OvertimeSettlement-Datensatz an,
+        der den weiteren Saldo-Verlauf dauerhaft um genau diese Stunden
+        reduziert (auditierbar pro Monat statt eines einzelnen mutierbaren
+        Werts wie overtime_balance_carryover_hours). Idempotent: ein bereits
+        bestätigter Monat liefert den bestehenden Datensatz unverändert
+        zurück, ein zweiter Klick zahlt nicht doppelt aus.
+        """
+        existing = self.overtime_settlements.filter(year=year, month=month).first()
+        if existing:
+            return existing
+        status = self._flextime_corridor_status(year, month)
+        if status["excess_hours"] <= 0:
+            raise ValueError(
+                "Kein Saldo ausserhalb des Gleitzeit-Korridors für diesen Monat -- nichts zu bestätigen."
+            )
+        return OvertimeSettlement.objects.create(
+            tenant=self.tenant,
+            employee=self,
+            year=year,
+            month=month,
+            hours=status["excess_hours"],
+            surcharge_hours=round(status["excess_hours"] * self.tenant.overtime_surcharge_pct / 100, 2),
+        )
+
+
+class OvertimeSettlement(TenantScopedModel):
+    """
+    Bestätigte Auszahlung von Gleitzeit-Saldo ausserhalb des Korridors
+    (Nutzer-Feedback 2026-08: "bei uns gilt Gleitzeit, nur angeordnete
+    Überstunden werden effektiv abgerechnet" -- siehe
+    Employee._flextime_corridor_status/confirm_overtime_settlement). Ein
+    Datensatz pro Mitarbeiter und Monat, angelegt per Klick in der
+    Monatsauswertung statt einer Markierung pro einzelner Schicht -- reduziert
+    den weiteren Saldo-Verlauf dauerhaft um `hours`, `surcharge_hours` ist der
+    zum Bestätigungszeitpunkt gültige Zuschlag (Tenant.overtime_surcharge_pct)
+    und fliesst als einzige Quelle in monthly_summary()["overtime_surcharge_
+    hours"] ein -- reine Kalender-/Gleitzeit-Schwankungen innerhalb des
+    Korridors werden dadurch nie automatisch "ausbezahlt".
+    """
+
+    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="overtime_settlements")
+    year = models.PositiveSmallIntegerField()
+    month = models.PositiveSmallIntegerField()
+    hours = models.FloatField(help_text="Bestätigte Stunden ausserhalb des Gleitzeit-Korridors.")
+    surcharge_hours = models.FloatField(help_text="hours * Tenant.overtime_surcharge_pct/100 zum Bestätigungszeitpunkt.")
+    confirmed_at = models.DateTimeField(auto_now_add=True)
+
+    history = HistoricalRecords()
+
+    class Meta:
+        unique_together = ("employee", "year", "month")
+        ordering = ["-year", "-month"]
+
+    def __str__(self):
+        return f"{self.employee} {self.year}-{self.month:02d}: {self.hours}h"
 
 
 class Pregnancy(TenantScopedModel):

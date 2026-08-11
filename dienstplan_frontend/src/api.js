@@ -194,6 +194,7 @@ export const api = {
   updateEmployee: (id, payload) =>
     request(`/employees/${id}/`, { method: "PATCH", body: payload, affectsBalance: true }),
   getEmployeeBalance: (id) => request(`/employees/${id}/balance/`),
+  getEmployeeSickPay: (id) => request(`/employees/${id}/sick-pay/`),
   getEmployeeWeeklyOvertime: (id, week) => request(`/employees/${id}/weekly-overtime/?week=${week}`),
   getEmployeeMonthlySummary: (id, year, month) =>
     request(`/employees/${id}/monthly-summary/?year=${year}&month=${month}`),

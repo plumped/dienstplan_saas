@@ -30,6 +30,9 @@ from .models import (
     TimeRecordSegment,
     TimeTemplate,
     TimeTemplateSegment,
+    _basel_scale_weeks,
+    _bern_scale_weeks,
+    _zurich_scale_weeks,
 )
 
 User = get_user_model()
@@ -2301,6 +2304,186 @@ class EmployeeBalanceTests(APITestCase):
         self.assertEqual(before["saldo_hours"], after["saldo_hours"])
         self.assertEqual(before["plan_saldo_hours"], after["plan_saldo_hours"])
         self.assertEqual(before["annual_remaining_hours"], after["annual_remaining_hours"])
+
+
+class SickPaySummaryTests(APITestCase):
+    """
+    Lohnfortzahlung bei Krankheit (MVP-Fahrplan Block 1 Punkt 16, Art. 324a
+    OR): Dienstjahr-Berechnung, Gerichtsskalen und Employee.sick_pay_summary().
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-sickpay")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="A",
+            employment_pct=100,
+            employment_start_date=date(2024, 3, 15),
+        )
+        self.planner_user = User.objects.create_user(username="planner-sp", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        self.sick_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True
+        )
+        self.other_type = AbsenceType.objects.create(tenant=self.tenant, name="Sonstiges")
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    # --- Dienstjahr-Berechnung ---
+
+    def test_service_years_before_first_anniversary(self):
+        self.assertEqual(self.employee._service_years_on(date(2025, 3, 14)), 0)
+
+    def test_service_years_on_and_after_anniversary(self):
+        self.assertEqual(self.employee._service_years_on(date(2025, 3, 15)), 1)
+        self.assertEqual(self.employee._service_years_on(date(2026, 6, 1)), 2)
+
+    def test_current_service_year_window_before_anniversary(self):
+        start, end, number = self.employee._current_service_year_window(date(2026, 2, 1))
+        self.assertEqual(start, date(2025, 3, 15))
+        self.assertEqual(end, date(2026, 3, 14))
+        self.assertEqual(number, 2)
+
+    def test_current_service_year_window_on_anniversary(self):
+        start, end, number = self.employee._current_service_year_window(date(2026, 3, 15))
+        self.assertEqual(start, date(2026, 3, 15))
+        self.assertEqual(end, date(2027, 3, 14))
+        self.assertEqual(number, 3)
+
+    # --- Skalen (Näherungswerte, siehe Docstrings der Skala-Funktionen) ---
+
+    def test_basel_scale_first_year_is_three_weeks(self):
+        self.assertEqual(_basel_scale_weeks(1), 3)
+
+    def test_bern_scale_grows_four_weeks_per_service_year_after_first(self):
+        self.assertEqual(_bern_scale_weeks(1), 3)
+        self.assertEqual(_bern_scale_weeks(2), 8)
+        self.assertEqual(_bern_scale_weeks(3), 12)
+
+    def test_zurich_scale_first_year_is_three_weeks(self):
+        self.assertEqual(_zurich_scale_weeks(1), 3)
+
+    # --- sick_pay_summary() ---
+
+    def test_summary_counts_calendar_days_including_weekend(self):
+        # Sa+So zaehlen mit, anders als bei vacation_balance() (_count_workdays).
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 20),  # Freitag
+            end_date=date(2026, 3, 23),  # Montag -- 4 Kalendertage inkl. Wochenende
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.sick_pay_summary(date(2026, 4, 1))
+        self.assertEqual(summary["used_days"], 4)
+
+    def test_summary_half_day_counts_as_half(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 20),
+            end_date=date(2026, 3, 20),
+            day_portion=Absence.DayPortion.MORNING,
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.sick_pay_summary(date(2026, 4, 1))
+        self.assertEqual(summary["used_days"], 0.5)
+
+    def test_summary_ignores_pending_and_non_sick_absence_types(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 20),
+            end_date=date(2026, 3, 21),
+            type=self.sick_type,
+            status=Absence.Status.PENDING,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 22),
+            end_date=date(2026, 3, 22),
+            type=self.other_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.sick_pay_summary(date(2026, 4, 1))
+        self.assertEqual(summary["used_days"], 0)
+
+    def test_summary_clips_absence_to_service_year_window(self):
+        # Anspruch/Verbrauch beziehen sich auf das laufende Dienstjahr
+        # (15.3.2025-14.3.2026), nicht das Kalenderjahr -- eine Absenz, die
+        # über den Jahrestag hinausläuft, wird an der Fenstergrenze gekappt.
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 10),
+            end_date=date(2026, 3, 20),  # 5 Tage vor, 6 Tage nach dem 15.3.2026
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        before_anniversary = self.employee.sick_pay_summary(date(2026, 3, 1))
+        self.assertEqual(before_anniversary["used_days"], 5)
+        after_anniversary = self.employee.sick_pay_summary(date(2026, 3, 16))
+        self.assertEqual(after_anniversary["used_days"], 6)
+
+    def test_summary_scale_model_reports_entitlement_and_remaining(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 20),
+            end_date=date(2026, 3, 21),
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.sick_pay_summary(date(2026, 4, 1))
+        self.assertEqual(summary["model"], Tenant.SickPayModel.SCALE)
+        self.assertEqual(summary["scale"], Tenant.SickPayScale.BASEL)
+        self.assertEqual(summary["service_year_number"], 3)
+        self.assertEqual(summary["entitlement_weeks"], _basel_scale_weeks(3))
+        self.assertEqual(summary["entitlement_days"], _basel_scale_weeks(3) * 7)
+        self.assertEqual(summary["remaining_days"], _basel_scale_weeks(3) * 7 - 2)
+        self.assertIsNone(summary["waiting_days"])
+
+    def test_summary_insurance_model_has_no_scale_entitlement(self):
+        self.tenant.sick_pay_model = Tenant.SickPayModel.DAILY_ALLOWANCE_INSURANCE
+        self.tenant.sick_pay_waiting_days = 3
+        self.tenant.save(update_fields=["sick_pay_model", "sick_pay_waiting_days"])
+        summary = self.employee.sick_pay_summary(date(2026, 4, 1))
+        self.assertEqual(summary["model"], Tenant.SickPayModel.DAILY_ALLOWANCE_INSURANCE)
+        self.assertIsNone(summary["scale"])
+        self.assertIsNone(summary["entitlement_weeks"])
+        self.assertIsNone(summary["entitlement_days"])
+        self.assertIsNone(summary["remaining_days"])
+        self.assertEqual(summary["waiting_days"], 3)
+
+    # --- API ---
+
+    def test_api_returns_sick_pay_summary(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 20),
+            end_date=date(2026, 3, 21),
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/sick-pay/?as_of=2026-04-01")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["used_days"], 2)
+        self.assertEqual(response.data["service_year_number"], 3)
+        self.assertEqual(response.data["model"], "scale")
+        self.assertEqual(response.data["scale"], "basel")
+
+    def test_api_rejects_invalid_as_of_param(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/sick-pay/?as_of=not-a-date")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class MonthlySummaryTests(APITestCase):

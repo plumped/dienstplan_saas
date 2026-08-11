@@ -254,7 +254,7 @@ entstanden sind, nicht neu sortiert nach Status):
 
 | Block | Thema | Status | Aktuell offen |
 |---|---|---|---|
-| 1 | Schweizer Arbeitsgesetz (ArG) | 15 von 17 Punkten erledigt | Lohnfortzahlung Krankheit (16) — **aktueller Fokus**; Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 |
+| 1 | Schweizer Arbeitsgesetz (ArG) | ✅ 16 von 17 Punkten erledigt | Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 (Aufbewahrungspflicht) |
 | 2 | Kernfunktionen Praxisalltag | 27 von 32 Punkten erledigt | Export PDF/Excel (5), Automatisierte Planung (19), Fairness-Punktesystem (20), Lohnart-Mapping (30), CSV-/API-Export (31) |
 | 3 | Onboarding & Self-Signup | Konzept steht, nichts umgesetzt | kompletter Block |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
@@ -262,9 +262,10 @@ entstanden sind, nicht neu sortiert nach Status):
 | 6 | Abrechnung (nur falls kommerziell verkauft) | nichts umgesetzt | Zahlungsanbieter, Trial/Limits |
 | 7 | Zeitmanagement | ✅ vollständig umgesetzt | — |
 
-Reihenfolge aktuell: Block 1 fertigstellen (funktionale Vollständigkeit vor Produktionsreife,
-Nutzerentscheid 2026-08), danach Block 2 Punkt 30/31 (Lohn-Export). Block 4/5 (Produktion) bewusst
-zurückgestellt, bis die Funktionalität steht.
+Reihenfolge aktuell: Block 1 ist mit Punkt 16 (Lohnfortzahlung Krankheit) inhaltlich fertig
+(Nutzerentscheid 2026-08: funktionale Vollständigkeit vor Produktionsreife), als Nächstes Block 2
+Punkt 30/31 (Lohn-Export). Block 4/5 (Produktion) bewusst zurückgestellt, bis die Funktionalität
+steht.
 
 ### 1. Schweizer Arbeitsgesetz (ArG) — Regel-Engine vervollständigen
 
@@ -475,30 +476,45 @@ zurückgestellt, bis die Funktionalität steht.
     Warnhinweis im Planblatt nötig -- die Regel-Engine-Fehlermeldung läuft über denselben
     bestehenden Fehlerbanner wie beim Jugendschutz.
 
-16. **Lohnfortzahlung bei Krankheit (Art. 324a OR)** — nicht abgedeckt (Compliance-Audit 2026-08).
-    Absenzen vom Typ Krankheit werden korrekt als Soll-neutral erfasst
-    (`Employee._approved_absence_day_weights()`/`time_account_summary()`), aber es gibt keine
-    Verfolgung der Anspruchsdauer nach Dienstjahren (Basler/Berner/Zürcher Skala, kantonal
-    unterschiedlich zugeordnet) oder einen Hinweis, wenn der Anspruch erschöpft ist.
+16. ✅ **Lohnfortzahlung bei Krankheit (Art. 324a OR)** (2026-08). Das Gesetz selbst nennt nur
+    "eine beschränkte Zeit" — konkretisiert durch drei kantonal unterschiedlich angewendete
+    Gerichts-Skalen (Basler/Berner/Zürcher Skala), die selbst nicht kodifiziert sind. Bewusst
+    **keine** automatische Ableitung der Skala aus `Tenant.canton` (ursprünglich so geplant,
+    siehe Historie unten) — welche Skala kantonal gilt, ist selbst eine Auslegungsfrage der
+    Gerichtspraxis, keine 1:1-Zuordnung; der Admin bestätigt die Wahl deshalb explizit
+    (`Tenant.sick_pay_scale`), analog zu `night_work_permit_confirmed` (Punkt 5).
 
-    **Wichtiger Realitäts-Check vor der Umsetzung** (Diskussion 2026-08): viele Betriebe
-    versichern das über eine Krankentaggeldversicherung (typisch 80 % Lohn ab Tag 2–30
-    Wartefrist, bis 720 Tage) statt sich auf die gesetzliche Skala zu verlassen — dann ersetzt die
-    Police die Skala komplett. Das Modell muss **beide** Varianten abbilden können, sonst passt es
-    nur für einen Teil der Kundschaft.
+    **Realitäts-Check vor der Umsetzung** (Diskussion 2026-08): viele Betriebe versichern die
+    Lohnfortzahlungspflicht stattdessen über eine Krankentaggeldversicherung (typischerweise
+    80 % Lohn ab Wartefrist) — die Police ersetzt dann die Skala komplett. `Tenant.sick_pay_model`
+    (`scale` / `daily_allowance_insurance`) bildet **beide** Varianten ab, nicht nur die Skala;
+    bei `daily_allowance_insurance` ist nur eine Wartefrist (`sick_pay_waiting_days`) relevant,
+    kein Tage-Anspruch — die App rechnet bewusst kein Taggeld/keine Lohnprozente aus (Grenzziehung
+    Zeitmanagement vs. Lohnbuchhaltung, siehe Block 2, Punkt 30/31).
 
-    **Implementierungsschritte:**
-    - Tenant-Konfiguration: `Tenant.sick_pay_model` (Auswahl `scale` / `daily_allowance_insurance`).
-      Bei `scale`: Skala-Zuordnung über das bereits vorhandene `Tenant.canton` (Zürcher/Berner/
-      Basler-Kantone). Bei `daily_allowance_insurance`: konfigurierbare Wartefrist in Tagen statt
-      Skala-Tabelle.
-    - Skala-Tabellen (Dienstjahr → Anspruchsdauer) als Python-Konstanten je Skala-Typ.
-    - Berechnung: neue Methode `Employee.sick_pay_summary(reference_date)` — Dienstjahr ab
-      `employment_start_date`, bereits bezogene Krankheitstage **im laufenden Dienstjahr**
-      kumuliert (nicht Kalenderjahr — mehrere Absenzen im selben Dienstjahr zählen zusammen),
-      verbleibender Anspruch, Warnung bei Erschöpfung.
-    - Rein informativ (wie die Nachtarbeit-Bewilligungswarnung) — blockiert keine Absenz.
-    - API-Endpoint + Serializer, Tests, Frontend-Warnhinweis im Abwesenheiten-Tab.
+    Neues `AbsenceType.counts_as_sick_leave`-Flag (analog `deducts_vacation_days`, Block 2 Punkt
+    24) — nur Absenzen eines so markierten Typs zählen gegen den Anspruch, kein Rückgriff auf den
+    Namen (ein Tenant könnte den Typ z. B. "Unfall/Krankheit" nennen). Neue Methode
+    `Employee.sick_pay_summary(reference_date)`: Anspruch/Verbrauch beziehen sich auf das
+    **laufende Dienstjahr** (12-Monats-Zyklus ab dem Jahrestag von `employment_start_date`, NICHT
+    das Kalenderjahr wie bei `vacation_balance()`) — `Employee._current_service_year_window()`
+    ermittelt Fensterstart/-ende/Dienstjahr-Nummer analog zu `_age_on()`. Verbrauch wird in
+    **Kalendertagen** gezählt statt Mo-Fr-Werktagen wie bei `vacation_balance()`/
+    `_count_workdays()` — einmal krank, zählt auch das Wochenende mit; Halbtags-Absenzen zählen
+    0.5 Tage (gleiches Muster wie beim Feriensaldo). Rein informativ (wie die
+    Nachtarbeit-Bewilligungswarnung) — blockiert keine Absenz.
+
+    Neuer Endpoint `GET /api/employees/<id>/sick-pay/` (`?as_of=YYYY-MM-DD`, Default heute),
+    `SickPaySummarySerializer`, für alle Rollen lesbar (`IsTenantManager`, bewusste
+    Mitarbeiter-Selbstauskunft wie bei `balance`/`weekly-overtime`). Frontend:
+    `AbsenceTypeSettings.jsx` hat eine zweite Checkbox für `counts_as_sick_leave`,
+    `TenantSettings.jsx` eine neue Feldgruppe "Lohnfortzahlung bei Krankheit" (Modell/Skala/
+    Wartefrist). `AbsencePanel.jsx` lädt den Anspruch des gewählten Mitarbeitenden nur, wenn im
+    Formular eine Absenzart mit `counts_as_sick_leave` gewählt ist, und zeigt ihn als Hinweis
+    unter dem Formular — bei ausgeschöpftem Anspruch in derselben Warnbox-Optik wie der
+    Gleitzeit-Bandbreiten-Hinweis (`.corridor-callout`, Block 2 Punkt 11). 15 neue Backend-Tests
+    (Dienstjahr-Berechnung inkl. Jahrestag-Grenzfall, alle drei Skalen, Kalendertag-/Halbtags-
+    Zählung, Fenster-Kappung, beide `sick_pay_model`-Varianten, API), volle Suite grün.
 
 17. ✅ **Gelegentliche Nachtarbeit — 25 % Lohnzuschlag (Art. 17b Abs. 2 ArG)** (2026-08,
     Compliance-Audit). Abgedeckt war bisher nur die Zeitgutschrift für **regelmässige**

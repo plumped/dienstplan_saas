@@ -88,7 +88,7 @@ class ShiftAssignmentAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
 
 @admin.register(AbsenceType)
 class AbsenceTypeAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
-    list_display = ["name", "color", "deducts_vacation_days", "tenant"]
+    list_display = ["name", "color", "deducts_vacation_days", "counts_as_sick_leave", "tenant"]
     list_filter = ["tenant"]
 
 

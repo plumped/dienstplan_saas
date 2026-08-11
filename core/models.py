@@ -202,6 +202,46 @@ class Tenant(models.Model):
         "Ausnahmen gelten -- auf 0 setzen, falls nicht zutreffend).",
     )
 
+    # Lohnfortzahlung bei Krankheit (MVP-Fahrplan Block 1, Punkt 16, Art. 324a
+    # OR): das Gesetz selbst nennt nur "eine beschränkte Zeit", konkretisiert
+    # durch drei kantonal unterschiedlich angewendete Gerichts-Skalen
+    # (Basler/Berner/Zürcher Skala) -- siehe scheduling.models.Employee.
+    # sick_pay_summary() für die Berechnung. Bewusst KEINE automatische
+    # Ableitung der Skala aus `canton` oben: welche Skala kantonal gilt, ist
+    # selbst eine Auslegungsfrage der Gerichtspraxis, keine kodifizierte
+    # 1:1-Zuordnung -- der Admin bestätigt die Wahl deshalb explizit, analog
+    # zu night_work_permit_confirmed oben (App gibt keine Rechtsberatung).
+    class SickPayModel(models.TextChoices):
+        SCALE = "scale", "Gerichtliche Skala (Basel/Bern/Zürich)"
+        DAILY_ALLOWANCE_INSURANCE = "daily_allowance_insurance", "Krankentaggeldversicherung"
+
+    class SickPayScale(models.TextChoices):
+        BASEL = "basel", "Basler Skala"
+        BERN = "bern", "Berner Skala"
+        ZUERICH = "zuerich", "Zürcher Skala"
+
+    sick_pay_model = models.CharField(
+        max_length=30,
+        choices=SickPayModel.choices,
+        default=SickPayModel.SCALE,
+        help_text="Viele Betriebe versichern die Lohnfortzahlungspflicht über eine "
+        "Krankentaggeldversicherung (typischerweise 80% Lohn ab Wartefrist) statt sich auf die "
+        "gerichtliche Skala zu verlassen -- die Police ersetzt dann die Skala komplett.",
+    )
+    sick_pay_scale = models.CharField(
+        max_length=10,
+        choices=SickPayScale.choices,
+        default=SickPayScale.BASEL,
+        help_text="Nur relevant, wenn sick_pay_model = 'scale'. Die hinterlegten Werte sind gängige "
+        "Näherungswerte der jeweiligen Skala -- vor Produktivnutzung mit einer Rechts-/"
+        "Treuhandstelle verifizieren, da sich die Gerichtspraxis unterscheiden kann.",
+    )
+    sick_pay_waiting_days = models.PositiveSmallIntegerField(
+        default=2,
+        help_text="Nur relevant, wenn sick_pay_model = 'daily_allowance_insurance': Wartefrist in "
+        "Tagen (aus der Police), bis das Taggeld einsetzt -- vorher zahlt der Betrieb selbst weiter.",
+    )
+
     # Feiertagskalender (Arbeitszeitmodell Block 2.7 Punkt 7): Grundlage für
     # die Jahressoll-/Saldo-Berechnung in scheduling.models.Employee
     # (annual_target_hours/time_account_summary) -- Feiertage reduzieren das

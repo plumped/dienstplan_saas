@@ -145,6 +145,14 @@ class TenantAdmin(admin.ModelAdmin):
                 "weekly_hours_summary() (siehe README).",
             },
         ),
+        (
+            "Lohnfortzahlung bei Krankheit (Art. 324a OR)",
+            {
+                "fields": ("sick_pay_model", "sick_pay_scale", "sick_pay_waiting_days"),
+                "description": "Grundlage für Employee.sick_pay_summary(). Die Skala-Werte sind "
+                "Näherungen -- vor Produktivnutzung mit einer Rechts-/Treuhandstelle verifizieren.",
+            },
+        ),
     )
 
 

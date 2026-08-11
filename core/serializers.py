@@ -36,6 +36,9 @@ class TenantSerializer(serializers.ModelSerializer):
             "night_work_permit_confirmed",
             "occasional_night_work_surcharge_pct",
             "sunday_work_surcharge_pct",
+            "sick_pay_model",
+            "sick_pay_scale",
+            "sick_pay_waiting_days",
             "canton",
         ]
         read_only_fields = ["id", "name"]

@@ -3,7 +3,13 @@ import { api } from "../api.js";
 import { chipGlyph } from "../chipGlyph.js";
 
 function emptyForm() {
-  return { name: "", color: "#64748b", icon: "", deducts_vacation_days: false };
+  return {
+    name: "",
+    color: "#64748b",
+    icon: "",
+    deducts_vacation_days: false,
+    counts_as_sick_leave: false,
+  };
 }
 
 function toFormValues(absenceType) {
@@ -12,6 +18,7 @@ function toFormValues(absenceType) {
     color: absenceType.color,
     icon: absenceType.icon ?? "",
     deducts_vacation_days: absenceType.deducts_vacation_days,
+    counts_as_sick_leave: absenceType.counts_as_sick_leave,
   };
 }
 
@@ -59,6 +66,7 @@ export default function AbsenceTypeSettings({ onError }) {
       color: form.color,
       icon: form.icon,
       deducts_vacation_days: form.deducts_vacation_days,
+      counts_as_sick_leave: form.counts_as_sick_leave,
     };
     setSaving(true);
     try {
@@ -136,6 +144,19 @@ export default function AbsenceTypeSettings({ onError }) {
           Genehmigte Absenzen dieser Art zählen als Ferienbezug (Employee.vacation_balance()) --
           typischerweise nur für eine einzige Absenzart wie "Ferien" aktiv.
         </p>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={form.counts_as_sick_leave}
+            onChange={(e) => setForm((prev) => ({ ...prev, counts_as_sick_leave: e.target.checked }))}
+          />
+          Zählt gegen den Lohnfortzahlungs-Anspruch bei Krankheit
+        </label>
+        <p className="panel-hint">
+          Genehmigte Absenzen dieser Art zählen gegen den Anspruch nach Art. 324a OR
+          (Employee.sick_pay_summary()) -- typischerweise nur für eine Absenzart wie "Krankheit"
+          aktiv.
+        </p>
 
         <div className="entry-actions">
           <button type="submit" disabled={saving}>
@@ -165,6 +186,9 @@ export default function AbsenceTypeSettings({ onError }) {
                 <span className="entry-main">
                   <strong>{t.name}</strong>
                   {t.deducts_vacation_days && <span className="entry-note"> · zieht Ferientage ab</span>}
+                  {t.counts_as_sick_leave && (
+                    <span className="entry-note"> · zählt als Krankheit (Lohnfortzahlung)</span>
+                  )}
                 </span>
                 <span className="entry-actions">
                   <button type="button" className="btn-ghost" onClick={() => startEditing(t)}>

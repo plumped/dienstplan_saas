@@ -130,6 +130,41 @@ const FIELD_GROUPS = [
     ],
   },
   {
+    title: "Lohnfortzahlung bei Krankheit (Art. 324a OR)",
+    fields: [
+      {
+        key: "sick_pay_model",
+        label: "Modell",
+        hint: "Viele Betriebe versichern die Lohnfortzahlungspflicht über eine "
+          + "Krankentaggeldversicherung (typischerweise 80% Lohn ab Wartefrist) statt sich auf die "
+          + "gerichtliche Skala zu verlassen -- die Police ersetzt dann die Skala komplett.",
+        type: "select",
+        options: [
+          ["scale", "Gerichtliche Skala (Basel/Bern/Zürich)"],
+          ["daily_allowance_insurance", "Krankentaggeldversicherung"],
+        ],
+      },
+      {
+        key: "sick_pay_scale",
+        label: "Skala",
+        hint: "Nur relevant bei Modell \"Gerichtliche Skala\". Näherungswerte -- vor "
+          + "Produktivnutzung mit einer Rechts-/Treuhandstelle verifizieren.",
+        type: "select",
+        options: [
+          ["basel", "Basler Skala"],
+          ["bern", "Berner Skala"],
+          ["zuerich", "Zürcher Skala"],
+        ],
+      },
+      {
+        key: "sick_pay_waiting_days",
+        label: "Wartefrist Krankentaggeldversicherung (Tage)",
+        hint: "Nur relevant bei Modell \"Krankentaggeldversicherung\": Tage aus der Police, bis das "
+          + "Taggeld einsetzt -- vorher zahlt der Betrieb selbst weiter.",
+      },
+    ],
+  },
+  {
     title: "Feiertagskalender (Arbeitszeitmodell)",
     fields: [
       {

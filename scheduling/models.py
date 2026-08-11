@@ -9,7 +9,7 @@ from django.utils import timezone
 from simple_history.models import HistoricalRecords
 from treebeard.mp_tree import MP_Node
 
-from core.models import TenantScopedModel
+from core.models import Tenant, TenantScopedModel
 
 # Nachtarbeitszeitraum nach Art. 10 Abs. 1 / Art. 16 ArG (Grundregel; einzelne
 # Branchenverordnungen können abweichen, hier bewusst nicht tenant-konfigurierbar
@@ -85,6 +85,49 @@ def _count_workdays(start_date, end_date):
 def _default_employment_start_date():
     """Default für Employee.employment_start_date: 1. Januar des laufenden Jahres."""
     return date(timezone.localdate().year, 1, 1)
+
+
+# Gerichtliche Skalen zur Lohnfortzahlungsdauer bei Krankheit (Art. 324a OR,
+# Employee.sick_pay_summary()). Das Gesetz selbst nennt nur "eine beschränkte
+# Zeit" -- diese drei Skalen sind gängige, in der Praxis verbreitete
+# Konkretisierungen der Gerichte, aber NICHT im Gesetz kodifiziert und nicht
+# schweizweit einheitlich. Die hier hinterlegten Wochenwerte sind gängige
+# Näherungen -- vor Produktivnutzung mit einer Rechts-/Treuhandstelle
+# verifizieren (siehe auch Tenant.sick_pay_scale help_text).
+def _basel_scale_weeks(service_years):
+    """Basler Skala: 3 Wochen im 1. Dienstjahr, danach gestaffelt nach Dienstjahren."""
+    table = {1: 3, 2: 9, 3: 9, 4: 13, 5: 13}
+    if service_years in table:
+        return table[service_years]
+    if service_years < 1:
+        return 0
+    return 13 + (service_years - 5) * 4
+
+
+def _bern_scale_weeks(service_years):
+    """Berner Skala: 3 Wochen im 1. Dienstjahr, danach 4 Wochen je weiterem Dienstjahr."""
+    if service_years < 1:
+        return 0
+    if service_years == 1:
+        return 3
+    return service_years * 4
+
+
+def _zurich_scale_weeks(service_years):
+    """Zürcher Skala: 3 Wochen im 1. Dienstjahr, danach gestaffelt nach Dienstjahren."""
+    table = {1: 3, 2: 8, 3: 9, 4: 10, 5: 11, 6: 12, 7: 13, 8: 14, 9: 15, 10: 16}
+    if service_years in table:
+        return table[service_years]
+    if service_years < 1:
+        return 0
+    return 16 + (service_years - 10)
+
+
+_SICK_PAY_SCALE_FUNCTIONS = {
+    "basel": _basel_scale_weeks,
+    "bern": _bern_scale_weeks,
+    "zuerich": _zurich_scale_weeks,
+}
 
 
 class Node(MP_Node, TenantScopedModel):
@@ -213,6 +256,44 @@ class Employee(TenantScopedModel):
         """True, wenn der Mitarbeiter am reference_date unter 18 Jahre alt ist."""
         age = self._age_on(reference_date)
         return age is not None and age < 18
+
+    def _service_years_on(self, reference_date):
+        """
+        Vollendete Dienstjahre am reference_date, analog zu _age_on() aber
+        bezogen auf employment_start_date statt birth_date (für die
+        Skala-Einstufung in sick_pay_summary()). Kein None-Guard nötig --
+        anders als birth_date hat employment_start_date immer einen Default
+        (_default_employment_start_date).
+        """
+        start = self.employment_start_date
+        return reference_date.year - start.year - (
+            (reference_date.month, reference_date.day) < (start.month, start.day)
+        )
+
+    def _current_service_year_window(self, reference_date):
+        """
+        (window_start, window_end, service_year_number) des laufenden
+        Dienstjahres (12-Monats-Zyklus ab dem Jahrestag von
+        employment_start_date, nicht Kalenderjahr) für reference_date --
+        Grundlage für den Anspruchs-/Verbrauchszeitraum in
+        sick_pay_summary(). service_year_number ist 1-basiert (erstes
+        Dienstjahr = 1, wie in den Gerichtsskalen üblich).
+        """
+        start = self.employment_start_date
+        anniversary_year = reference_date.year
+        if (reference_date.month, reference_date.day) < (start.month, start.day):
+            anniversary_year -= 1
+        try:
+            window_start = start.replace(year=anniversary_year)
+        except ValueError:
+            # 29. Februar ohne Schaltjahr im Ziel-Jahr.
+            window_start = start.replace(year=anniversary_year, day=28)
+        try:
+            window_end = start.replace(year=anniversary_year + 1) - timedelta(days=1)
+        except ValueError:
+            window_end = start.replace(year=anniversary_year + 1, day=28) - timedelta(days=1)
+        service_year_number = anniversary_year - start.year + 1
+        return window_start, window_end, service_year_number
 
     def is_maternity_protected_on(self, reference_date):
         """
@@ -672,6 +753,79 @@ class Employee(TenantScopedModel):
             "remaining_days": entitlement_days - used_days,
         }
 
+    def sick_pay_summary(self, reference_date=None):
+        """
+        Lohnfortzahlungs-Anspruch bei Krankheit (Art. 324a OR, MVP-Fahrplan
+        Block 1 Punkt 16) für das laufende Dienstjahr (12-Monats-Zyklus ab
+        dem Jahrestag von employment_start_date, siehe
+        _current_service_year_window() -- NICHT das Kalenderjahr wie bei
+        vacation_balance()).
+
+        Anders als vacation_balance() wird hier in KALENDERTAGEN gezählt statt
+        in Mo-Fr-Werktagen (_count_workdays): einmal krank, zählt auch das
+        Wochenende mit -- die Skalen sind auf Kalendertage/-wochen ausgelegt.
+
+        Zwei Modelle (Tenant.sick_pay_model), Rückgabe-Keys sind in BEIDEN
+        Fällen vorhanden (auf None/0 gesetzt, wenn nicht zutreffend), damit
+        das Frontend nicht je nach Modell unterschiedliche Felder behandeln
+        muss:
+          - "scale": Anspruch aus der gewählten Gerichtsskala
+            (Tenant.sick_pay_scale) nach Dienstjahr, siehe
+            _basel_scale_weeks()/_bern_scale_weeks()/_zurich_scale_weeks()
+            und deren Disclaimer zu Näherungswerten.
+          - "daily_allowance_insurance": keine Skala -- die Police übernimmt
+            ab der Wartefrist (Tenant.sick_pay_waiting_days), siehe
+            Tenant.sick_pay_model help_text. used_days wird trotzdem
+            ausgewiesen (informativ, z. B. um die Wartefrist selbst im Blick
+            zu behalten), aber es gibt keinen Tages-Anspruch/-Saldo zu
+            berechnen -- die App rechnet bewusst kein Taggeld/keine
+            Lohnprozente aus (Grenzziehung Zeitmanagement vs.
+            Lohnbuchhaltung, siehe README).
+        """
+        reference_date = reference_date or timezone.localdate()
+        window_start, window_end, service_year_number = self._current_service_year_window(reference_date)
+        tenant = self.tenant
+
+        absences = Absence.all_objects.filter(
+            employee=self,
+            type__counts_as_sick_leave=True,
+            status=Absence.Status.APPROVED,
+            start_date__lte=window_end,
+            end_date__gte=window_start,
+        )
+        used_days = sum(
+            ((min(a.end_date, window_end) - max(a.start_date, window_start)).days + 1)
+            * (0.5 if a.day_portion != Absence.DayPortion.FULL else 1)
+            for a in absences
+        )
+
+        entitlement_weeks = None
+        entitlement_days = None
+        remaining_days = None
+        if tenant.sick_pay_model == Tenant.SickPayModel.SCALE:
+            scale_func = _SICK_PAY_SCALE_FUNCTIONS[tenant.sick_pay_scale]
+            entitlement_weeks = scale_func(service_year_number)
+            entitlement_days = entitlement_weeks * 7
+            remaining_days = entitlement_days - used_days
+
+        return {
+            "reference_date": reference_date,
+            "service_year_number": service_year_number,
+            "service_year_start": window_start,
+            "service_year_end": window_end,
+            "used_days": used_days,
+            "model": tenant.sick_pay_model,
+            "scale": tenant.sick_pay_scale if tenant.sick_pay_model == Tenant.SickPayModel.SCALE else None,
+            "entitlement_weeks": entitlement_weeks,
+            "entitlement_days": entitlement_days,
+            "remaining_days": remaining_days,
+            "waiting_days": (
+                tenant.sick_pay_waiting_days
+                if tenant.sick_pay_model == Tenant.SickPayModel.DAILY_ALLOWANCE_INSURANCE
+                else None
+            ),
+        }
+
     def monthly_summary(self, year=None, month=None):
         """
         Monatsauswertung Soll/Ist-Stunden (README Block 2.6, "Basis für den
@@ -1098,6 +1252,17 @@ class AbsenceType(TenantScopedModel):
     deducts_vacation_days = models.BooleanField(
         default=False,
         help_text="Genehmigte Tage dieses Typs zählen als Ferienbezug (Employee.vacation_balance()).",
+    )
+    # MVP-Fahrplan Block 1, Punkt 16 (Lohnfortzahlung bei Krankheit, Art. 324a
+    # OR): analog zu deducts_vacation_days -- nur Absenzen eines Typs mit
+    # dieser Flag zählen gegen den Krankheits-Anspruch (Employee.
+    # sick_pay_summary()). Bewusst kein Rückgriff auf den Namen ("Krankheit"),
+    # weil AbsenceType ein frei benennbarer Katalog ist (siehe Docstring
+    # oben) -- ein Tenant könnte den Typ z. B. "Unfall/Krankheit" nennen.
+    counts_as_sick_leave = models.BooleanField(
+        default=False,
+        help_text="Genehmigte Tage dieses Typs zählen gegen den Lohnfortzahlungs-Anspruch bei Krankheit "
+        "(Art. 324a OR, Employee.sick_pay_summary()).",
     )
 
     class Meta:

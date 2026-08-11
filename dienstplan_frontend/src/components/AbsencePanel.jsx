@@ -18,6 +18,8 @@ const DAY_PORTIONS = [
   { value: "afternoon", label: "Nur nachmittags" },
 ];
 
+const SICK_PAY_SCALE_LABELS = { basel: "Basler", bern: "Berner", zuerich: "Zürcher" };
+
 function emptyForm(defaultEmployeeId, defaultTypeId) {
   return {
     employee: defaultEmployeeId ?? "",
@@ -52,6 +54,11 @@ export default function AbsencePanel({ employees, me, onError }) {
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState(() => emptyForm(defaultEmployeeId));
   const [saving, setSaving] = useState(false);
+  // MVP-Fahrplan Block 1 Punkt 16 (Art. 324a OR): Lohnfortzahlungs-Anspruch
+  // des gerade gewählten Mitarbeiters, nur geladen wenn im Formular
+  // tatsächlich eine Absenzart mit counts_as_sick_leave ausgewählt ist (kein
+  // unnötiger Roundtrip für Ferien/Sonstiges).
+  const [sickPaySummary, setSickPaySummary] = useState(null);
 
   useEffect(() => {
     setForm((prev) => ({ ...emptyForm(defaultEmployeeId, absenceTypes[0]?.id), type: prev.type || absenceTypes[0]?.id || "" }));
@@ -109,6 +116,24 @@ export default function AbsencePanel({ employees, me, onError }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employees, canManage]);
+
+  const selectedAbsenceType = absenceTypesById.get(Number(form.type));
+
+  useEffect(() => {
+    if (!canWrite || !form.employee || !selectedAbsenceType?.counts_as_sick_leave) {
+      setSickPaySummary(null);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getEmployeeSickPay(form.employee)
+      .then((data) => !cancelled && setSickPaySummary(data))
+      .catch(() => !cancelled && setSickPaySummary(null));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canWrite, form.employee, selectedAbsenceType?.counts_as_sick_leave]);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -262,6 +287,31 @@ export default function AbsencePanel({ employees, me, onError }) {
               onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
             />
           </label>
+          {sickPaySummary && sickPaySummary.model === "scale" && (
+            <div className={sickPaySummary.remaining_days <= 0 ? "corridor-callout" : "panel-hint"}>
+              {sickPaySummary.remaining_days <= 0 ? (
+                <p>
+                  <strong>Lohnfortzahlungs-Anspruch bereits ausgeschöpft</strong> im laufenden
+                  Dienstjahr ({sickPaySummary.service_year_start} – {sickPaySummary.service_year_end}):{" "}
+                  {sickPaySummary.used_days} von {sickPaySummary.entitlement_days} Tagen verbraucht
+                  (Art. 324a OR, {SICK_PAY_SCALE_LABELS[sickPaySummary.scale]} Skala).
+                </p>
+              ) : (
+                <>
+                  Lohnfortzahlungs-Anspruch im laufenden Dienstjahr ({sickPaySummary.service_year_start} –{" "}
+                  {sickPaySummary.service_year_end}): {sickPaySummary.remaining_days} von{" "}
+                  {sickPaySummary.entitlement_days} Tagen verbleibend (Art. 324a OR,{" "}
+                  {SICK_PAY_SCALE_LABELS[sickPaySummary.scale]} Skala).
+                </>
+              )}
+            </div>
+          )}
+          {sickPaySummary && sickPaySummary.model === "daily_allowance_insurance" && (
+            <p className="panel-hint">
+              Krankentaggeldversicherung: Wartefrist {sickPaySummary.waiting_days} Tage, bisher{" "}
+              {sickPaySummary.used_days} Tage im laufenden Dienstjahr erfasst.
+            </p>
+          )}
           <button type="submit" disabled={saving || !form.employee}>
             {saving ? "Speichert …" : "Anlegen"}
           </button>

@@ -309,6 +309,22 @@ class EmployeeBalanceSerializer(serializers.Serializer):
     vacation_remaining_days = serializers.FloatField()
 
 
+class SickPaySummarySerializer(serializers.Serializer):
+    """Read-only: Ergebnis von Employee.sick_pay_summary (Block 1 Punkt 16, Art. 324a OR)."""
+
+    reference_date = serializers.DateField()
+    service_year_number = serializers.IntegerField()
+    service_year_start = serializers.DateField()
+    service_year_end = serializers.DateField()
+    used_days = serializers.FloatField()
+    model = serializers.CharField()
+    scale = serializers.CharField(allow_null=True)
+    entitlement_weeks = serializers.IntegerField(allow_null=True)
+    entitlement_days = serializers.IntegerField(allow_null=True)
+    remaining_days = serializers.FloatField(allow_null=True)
+    waiting_days = serializers.IntegerField(allow_null=True)
+
+
 class WeeklyOvertimeSerializer(serializers.Serializer):
     """Read-only: Ergebnis von Employee.weekly_hours_summary (Block 1.11, Art. 13 ArG)."""
 
@@ -505,7 +521,7 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
 class AbsenceTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = AbsenceType
-        fields = ["id", "name", "color", "icon", "deducts_vacation_days"]
+        fields = ["id", "name", "color", "icon", "deducts_vacation_days", "counts_as_sick_leave"]
 
 
 class AbsenceSerializer(serializers.ModelSerializer):

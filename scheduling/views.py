@@ -62,6 +62,7 @@ from .serializers import (
     ShiftAssignmentSerializer,
     ShiftPreferenceSerializer,
     ShiftTradeRequestSerializer,
+    SickPaySummarySerializer,
     SkillSerializer,
     TimeRecordSerializer,
     TimeTemplateSerializer,
@@ -429,6 +430,28 @@ class EmployeeViewSet(TenantScopedViewSet):
             "vacation_remaining_days": vacation["remaining_days"],
         }
         return Response(EmployeeBalanceSerializer(data).data)
+
+    @action(detail=True, methods=["get"], url_path="sick-pay")
+    def sick_pay(self, request, pk=None):
+        """
+        Lohnfortzahlungs-Anspruch bei Krankheit für das laufende Dienstjahr
+        (MVP-Fahrplan Block 1 Punkt 16, Art. 324a OR, Employee.
+        sick_pay_summary). ?as_of=YYYY-MM-DD (Default heute) bestimmt den
+        Stichtag für die Dienstjahr-Ermittlung. Lesen wie bei balance/
+        weekly_overtime/night_work für alle Rollen offen (bewusste
+        Mitarbeiter-Selbstauskunft, README Block 2.7).
+        """
+        employee = self.get_object()
+        as_of_param = request.query_params.get("as_of")
+        if as_of_param:
+            try:
+                as_of_date = date.fromisoformat(as_of_param)
+            except ValueError:
+                raise ValidationError({"as_of": "Ungültiges Datum, erwartet YYYY-MM-DD."})
+        else:
+            as_of_date = timezone.localdate()
+        summary = employee.sick_pay_summary(as_of_date)
+        return Response(SickPaySummarySerializer(summary).data)
 
     @action(detail=True, methods=["get"], url_path="monthly-summary")
     def monthly_summary(self, request, pk=None):

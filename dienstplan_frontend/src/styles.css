@@ -1419,13 +1419,13 @@ thead .col-employee {
 .settings-table td {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
-  /* Nutzer-Feedback (2026-08, Screenshot): die neue zweizeilige "Ist-Zeit"-
-     Zelle (Uhrzeiten + Abweichungs-Badge) machte Zeilen höher als die
-     übrigen einzeiligen Zellen -- ohne vertical-align hängen die dann
-     mittig ("middle", Browser-Default) statt oben, was uneins bündig
-     wirkte. Oben ausgerichtet ist bei einer Datentabelle ohnehin die
-     erwartbare Norm, unabhängig von variabler Zeilenhöhe. */
-  vertical-align: top;
+  /* Nutzer-Feedback (2026-08, zweite Runde): "kannst du nicht einfach alles
+     vertikal zentrieren in der Zeile? Es soll perfekt aussehen ohne
+     Abstufungen" -- seit die Ist-Zeit-Spalte einzeilig ist (Uhrzeiten +
+     Abweichung nebeneinander statt gestapelt), gibt es keinen Grund mehr für
+     eine Sonderausrichtung: alle Zellen zentriert, unabhängig davon, ob eine
+     Zelle (z.B. die Aktionsspalte mit Button) etwas höher ist als reiner Text. */
+  vertical-align: middle;
 }
 
 .settings-table-row {

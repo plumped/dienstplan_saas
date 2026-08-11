@@ -2534,6 +2534,17 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Klammern direkt dahinter, exakt wie vom Nutzer vorgeschlagen. Mit Playwright verifiziert
     (Zellentext `07:00–12:00, 13:00–16:24 (±0 h)`, Screenshot bestätigt einzeilige Darstellung).
 
+    **UX-Nachbesserung (2026-08, Nutzer-Feedback mit Screenshot: "Es ist immer noch verschoben!
+    kannst du nicht einfach alles vertikal zentrieren in der Zeile? Es soll perfekt aussehen ohne
+    Abstufungen etc.")**: der vorherige `vertical-align: top`-Fix stammte aus der Zeit, als die
+    Ist-Zeit-Zelle noch zweizeilig war -- seit der Umstellung auf eine Zeile (siehe oben) war er
+    hinfällig und sorgte stattdessen dafür, dass die Aktionsspalte (Button "Bestätigen" mit eigener
+    Höhe durch Padding/Border) oben an der Zeile hing statt zentriert zu sein, was wie eine
+    Verschiebung wirkte. Fix: `.settings-table td` auf `vertical-align: middle` zurückgestellt --
+    jetzt zentrieren sich alle Zellen unabhängig von ihrer individuellen Höhe einheitlich in der
+    Zeile. Mit Playwright verifiziert (Screenshot zeigt Checkbox, Text, Ist-Zeit und
+    "Bestätigen"-Button auf gemeinsamer vertikaler Mitte, kein Versatz mehr).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

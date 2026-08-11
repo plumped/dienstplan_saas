@@ -32,6 +32,7 @@ function emptyForm(defaultNodeId) {
     required_skill: "",
     minimum_staffing: 0,
     category: "shift",
+    surcharge_pct: 0,
     segments: [],
   };
 }
@@ -48,6 +49,7 @@ function toFormValues(template) {
     required_skill: template.required_skill ?? "",
     minimum_staffing: template.minimum_staffing,
     category: template.category ?? "shift",
+    surcharge_pct: template.surcharge_pct ?? 0,
     segments: (template.segments ?? []).map((s) => ({
       start_time: s.start_time.slice(0, 5),
       end_time: s.end_time.slice(0, 5),
@@ -158,6 +160,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
       required_skill: form.required_skill || null,
       minimum_staffing: Number(form.minimum_staffing) || 0,
       category: form.category,
+      surcharge_pct: form.category === "special" ? Number(form.surcharge_pct) || 0 : 0,
       segments: form.segments.map((s, i) => ({ order: i, start_time: s.start_time, end_time: s.end_time })),
     };
     setSaving(true);
@@ -267,6 +270,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                       <td>
                         {t.segments?.length > 1 && <span className="entry-note">{t.segments.length} Segmente</span>}
                         {t.minimum_staffing > 0 && <span className="entry-note"> min. {t.minimum_staffing} Pers.</span>}
+                        {t.surcharge_pct > 0 && <span className="entry-note"> Zuschlag {t.surcharge_pct}%</span>}
                       </td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <span className="settings-table-actions">
@@ -428,11 +432,29 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                     <option value="special">Spezialität</option>
                   </select>
                   <span className="panel-hint">
-                    Nur für die Stempelleisten im Planblatt/Jahresplan: Spezialitäten (z. B.
+                    Für die Stempelleisten im Planblatt/Jahresplan: Spezialitäten (z. B.
                     Pikettdienst) erscheinen dort in einer eigenen Zeile, getrennt von den regulären
-                    Diensten -- hat sonst keine Auswirkung.
+                    Diensten, und können zusätzlich einen eigenen Lohnzuschlag tragen (siehe unten).
                   </span>
                 </label>
+                {form.category === "special" && (
+                  <label>
+                    Lohnzuschlag in % (0 = kein Zuschlag)
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={form.surcharge_pct}
+                      onChange={(e) => setForm((prev) => ({ ...prev, surcharge_pct: e.target.value }))}
+                    />
+                    <span className="panel-hint">
+                      Nutzer-Feedback (2026-08): "wenn jemand Pikett macht, ist dieser
+                      zuschlagsberechtigt" -- wird auf die geplanten Stunden dieser Spezialität
+                      angerechnet (z. B. 50% bei Pikett) und erscheint pro Spezialität einzeln
+                      aufgeschlüsselt in der Monatsauswertung.
+                    </span>
+                  </label>
+                )}
               </div>
 
               <h3>Blockstruktur (optional, Block 1.9)</h3>

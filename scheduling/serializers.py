@@ -265,6 +265,22 @@ class NightWorkSummarySerializer(serializers.Serializer):
     medical_exam_due = serializers.BooleanField()
 
 
+class SpecialSurchargeBreakdownSerializer(serializers.Serializer):
+    """
+    Read-only: ein Eintrag aus Employee.monthly_summary()["special_surcharge_breakdown"]
+    -- Zuschlagsstunden für eine einzelne Spezialität (z. B. Pikett) mit
+    TimeTemplate.surcharge_pct > 0, nicht zu einer Summe zusammengefasst
+    (README Punkt 30: das künftige Lohnart-Mapping braucht pro Spezialität
+    einen eigenen Lohnart-Code).
+    """
+
+    template_id = serializers.IntegerField()
+    template_name = serializers.CharField()
+    surcharge_pct = serializers.IntegerField()
+    hours = serializers.FloatField()
+    surcharge_hours = serializers.FloatField()
+
+
 class MonthlySummarySerializer(serializers.Serializer):
     """Read-only: Ergebnis von Employee.monthly_summary (Block 2.6, Lohnlauf-Basis)."""
 
@@ -280,6 +296,8 @@ class MonthlySummarySerializer(serializers.Serializer):
     night_surcharge_hours = serializers.FloatField()
     sunday_hours = serializers.FloatField()
     sunday_surcharge_hours = serializers.FloatField()
+    special_surcharge_hours = serializers.FloatField()
+    special_surcharge_breakdown = SpecialSurchargeBreakdownSerializer(many=True)
     is_provisional = serializers.BooleanField()
 
 
@@ -314,6 +332,7 @@ class TimeTemplateSerializer(serializers.ModelSerializer):
             "required_skill",
             "minimum_staffing",
             "category",
+            "surcharge_pct",
             "segments",
         ]
 

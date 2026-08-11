@@ -66,6 +66,7 @@ export default function MonthlySummaryPanel({ onError }) {
         { key: "night-surcharge", label: "davon Zeitgutschrift", value: summary.night_surcharge_hours },
         { key: "sunday", label: "Sonntagsstunden", value: summary.sunday_hours },
         { key: "sunday-surcharge", label: "davon Zuschlag", value: summary.sunday_surcharge_hours },
+        { key: "special-surcharge", label: "Spezialitäten-Zuschlag total", value: summary.special_surcharge_hours },
       ]
     : [];
 
@@ -126,6 +127,38 @@ export default function MonthlySummaryPanel({ onError }) {
               ))}
             </tbody>
           </table>
+
+          {summary.special_surcharge_breakdown.length > 0 && (
+            <>
+              <h3>Spezialitäten-Zuschlag nach Schichttyp</h3>
+              <p className="panel-hint">
+                Nutzer-Feedback (2026-08): "wenn jemand Pikett macht, ist dieser zuschlagsberechtigt"
+                -- pro Spezialität einzeln statt als eine Summe, damit später jede ihren eigenen
+                Lohnart-Code im Lohnsystem bekommen kann (README Punkt 30).
+              </p>
+              <table className="monthly-summary-table">
+                <thead>
+                  <tr>
+                    <th>Spezialität</th>
+                    <th>Stunden</th>
+                    <th>Zuschlag %</th>
+                    <th>Zuschlagsstunden</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.special_surcharge_breakdown.map((entry) => (
+                    <tr key={entry.template_id}>
+                      <td>{entry.template_name}</td>
+                      <td>{entry.hours} h</td>
+                      <td>{entry.surcharge_pct}%</td>
+                      <td>{entry.surcharge_hours} h</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+
           <p className="panel-hint">
             Zeitraum {summary.month_start} – {summary.month_end}.{" "}
             {summary.is_provisional

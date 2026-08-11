@@ -2425,6 +2425,69 @@ class MonthlySummaryTests(APITestCase):
         self.assertEqual(summary["night_hours"], 175.0)  # 25 * 7h
         self.assertEqual(summary["night_surcharge_hours"], 17.5)  # 10% Zeitgutschrift (Tenant-Default)
 
+    # --- Spezialitäten-Zuschlag (Nutzer-Feedback 2026-08: "wenn jemand
+    # Pikett macht, ist dieser zuschlagsberechtigt") ---
+
+    def test_special_assignment_without_surcharge_is_excluded_from_ist_hours(self):
+        # Bugfix-Regression: monthly_summary() schloss Spezialitäten bisher
+        # -- anders als weekly_hours_summary()/time_account_summary() --
+        # nicht von den normalen Ist-/Nacht-/Sonntagsstunden aus.
+        pikett = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett", start_time=time(20, 0), end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        self._assign(date(2026, 6, 1), template=pikett)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["ist_hours"], 0)
+        self.assertEqual(summary["night_hours"], 0)
+        self.assertEqual(summary["sunday_hours"], 0)
+        self.assertEqual(summary["special_surcharge_hours"], 0)
+        self.assertEqual(summary["special_surcharge_breakdown"], [])
+
+    def test_special_assignment_with_surcharge_appears_in_breakdown(self):
+        pikett = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett", start_time=time(20, 0), end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL, surcharge_pct=50,
+        )
+        self._assign(date(2026, 6, 1), template=pikett)
+        self._assign(date(2026, 6, 2), template=pikett)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["special_surcharge_hours"], 2.0)  # 2 * 2h * 50%
+        self.assertEqual(
+            summary["special_surcharge_breakdown"],
+            [{"template_id": pikett.id, "template_name": "Pikett", "surcharge_pct": 50, "hours": 4.0, "surcharge_hours": 2.0}],
+        )
+        # bleibt weiterhin von der normalen Ist-Stundenzahl ausgeschlossen
+        self.assertEqual(summary["ist_hours"], 0)
+
+    def test_multiple_special_templates_yield_separate_breakdown_entries(self):
+        pikett_tag = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett Tag", start_time=time(8, 0), end_time=time(18, 0),
+            category=TimeTemplate.Category.SPECIAL, surcharge_pct=25,
+        )
+        pikett_nacht = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett Nacht", start_time=time(22, 0), end_time=time(6, 0),
+            category=TimeTemplate.Category.SPECIAL, surcharge_pct=50,
+        )
+        self._assign(date(2026, 6, 1), template=pikett_tag)
+        self._assign(date(2026, 6, 2), template=pikett_nacht)
+        summary = self.employee.monthly_summary(2026, 6)
+        names = [entry["template_name"] for entry in summary["special_surcharge_breakdown"]]
+        self.assertEqual(names, ["Pikett Nacht", "Pikett Tag"])  # alphabetisch sortiert
+        self.assertEqual(summary["special_surcharge_hours"], 2.5 + 4.0)  # Pikett Tag 10h*25%=2.5, Pikett Nacht 8h*50%=4.0
+
+    def test_special_assignment_without_surcharge_pct_is_absent_from_breakdown(self):
+        # Spezialität ohne konfigurierten Zuschlag (Default 0) -- z. B. rein
+        # informativer Bereitschaftsdienst ohne Lohnrelevanz.
+        info_only = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Bereitschaft", start_time=time(20, 0), end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        self._assign(date(2026, 6, 1), template=info_only)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["special_surcharge_breakdown"], [])
+        self.assertEqual(summary["special_surcharge_hours"], 0)
+
     # --- API ---
 
     def test_api_returns_monthly_summary_for_planner(self):
@@ -2436,6 +2499,20 @@ class MonthlySummaryTests(APITestCase):
         self.assertEqual(response.data["ist_hours"], 176.0)
         self.assertEqual(response.data["soll_hours"], 176.0)
         self.assertEqual(response.data["month"], 6)
+
+    def test_api_returns_special_surcharge_breakdown(self):
+        pikett = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett", start_time=time(20, 0), end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL, surcharge_pct=50,
+        )
+        self._assign(date(2026, 6, 1), template=pikett)
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=2026&month=6")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["special_surcharge_hours"], 1.0)
+        self.assertEqual(len(response.data["special_surcharge_breakdown"]), 1)
+        self.assertEqual(response.data["special_surcharge_breakdown"][0]["template_name"], "Pikett")
+        self.assertEqual(response.data["special_surcharge_breakdown"][0]["surcharge_pct"], 50)
 
     def test_api_defaults_to_current_year_and_month(self):
         self.auth_as(self.planner_user)
@@ -4556,6 +4633,27 @@ class TimeTemplateCategoryAPITests(APITestCase):
         )
         self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(create_response.data["category"], "shift")
+
+    def test_surcharge_pct_defaults_to_zero_and_round_trips(self):
+        create_response = self.client.post(
+            "/api/time-templates/",
+            {"node": self.node.id, "name": "Frühdienst", "start_time": "07:00", "end_time": "15:00"},
+        )
+        self.assertEqual(create_response.data["surcharge_pct"], 0)
+
+        pikett_response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Pikett",
+                "start_time": "20:00",
+                "end_time": "22:00",
+                "category": "special",
+                "surcharge_pct": 50,
+            },
+        )
+        self.assertEqual(pikett_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(pikett_response.data["surcharge_pct"], 50)
 
 
 class SplitShiftTests(TestCase):

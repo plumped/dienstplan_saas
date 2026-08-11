@@ -2213,13 +2213,20 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Berechnungen): Normalstunden, Überstunden (Art. 321c OR, über Vertragssoll), Nacht-
     Zeitgutschrift (Art. 17b Abs. 1, regelmässig), Nacht-Lohnzuschlag (Art. 17b Abs. 2,
     gelegentlich, Punkt 17), Sonntagszuschlag (Art. 19 Abs. 3), Ferientage, Krankheitstage,
-    sonstige Absenztage, Feiertage.
+    sonstige Absenztage, Feiertage. **Zusätzlich dynamisch** (seit dem Spezialitäten-Zuschlag
+    weiter oben in Block 2, Abschnitt "Kernfunktionen"): eine Kategorie pro `TimeTemplate` mit
+    `surcharge_pct > 0` (z. B. "Pikett Wochentag"/"Pikett Wochenende" könnten unterschiedliche
+    Lohnart-Codes brauchen) -- die feste `category`-Auswahl unten reicht dafür nicht, `category`
+    müsste für diese Fälle stattdessen ein optionales `special_template`-FK auf `TimeTemplate`
+    bekommen (`null` = eine der festen Kategorien oben, gesetzt = diese eine Spezialität).
 
     **Implementierungsschritte:**
     - Neues Modell `PayrollCategoryMapping` (tenant-gescoped): `category` (feste Auswahl aus der
-      Liste oben), `payroll_code` (Freitext, vom Kunden vergeben), `payroll_label` (Freitext, nur
-      Anzeige), `is_active`. Leer/inaktiv gelassene Kategorien werden beim Export ausgelassen
-      (z. B. falls ein Kunde Sonntagszuschlag bereits anders löst).
+      Liste oben, `null` falls `special_template` gesetzt), `special_template` (optionale FK auf
+      `TimeTemplate`, für den dynamischen Spezialitäten-Zuschlag-Fall oben), `payroll_code`
+      (Freitext, vom Kunden vergeben), `payroll_label` (Freitext, nur Anzeige), `is_active`.
+      Leer/inaktiv gelassene Kategorien werden beim Export ausgelassen (z. B. falls ein Kunde
+      Sonntagszuschlag bereits anders löst).
     - API: `PayrollCategoryMappingViewSet`, admin-only (`IsTenantAdmin`, gleiches Muster wie die
       übrige Tenant-Konfiguration, Block 2 Punkt 14).
     - Migration, Tests.
@@ -2559,6 +2566,36 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Playwright verifiziert (`getBoundingClientRect()` aller Zellen einer Zeile liefert jetzt
     exakt gleiche top/bottom/height-Werte, Screenshot zeigt eine durchgehende, unversetzte
     Border).
+
+    **Spezialitäten-Zuschlag, z. B. Pikett** (2026-08, Nutzer-Feedback: "Spezialitäten Schichttypen
+    können auch zuschlagspflichtig sein, korrekt? wenn jemand Pikett macht, ist dieser
+    zuschlagsberechtigt" / "setz das so um ABER mit der Aufschlüsselung -- Grund, auf der
+    Lohnabrechnung und dem Mapping in Punkt 30 brauchen wir das sowieso fürs Mapping"): neues Feld
+    `TimeTemplate.surcharge_pct` (Migration `0023`, Default 0) -- Lohnzuschlag in % der geplanten
+    Stunden, wirkt bewusst nur bei `category == "special"` (reguläre Dienste laufen bereits über
+    Überzeit- sowie die zeitpunktbasierten Nacht-/Sonntagszuschläge, ein weiterer Prozentsatz dort
+    würde sich überschneiden). Berechnung analog Nacht-/Sonntagszuschlag: `geplante Stunden ×
+    surcharge_pct / 100`, nicht auf der Ist-Zeit (dieselbe Begründung wie bei den bestehenden
+    Zuschlägen -- die Erfassung zeigt nur *wann*, nicht *ob Pikett*). Dabei ein Bugfix nebenbei
+    gefunden und behoben: `Employee.monthly_summary()` schloss Spezialitäten -- anders als
+    `weekly_hours_summary()`/`time_account_summary()` -- bisher nicht von den normalen
+    Ist-/Nacht-/Sonntagsstunden aus; eine Pikett-Zuweisung mit nichtleerer Zeitspanne wäre sonst
+    fälschlich in die normale Ist-Stundenzahl eingeflossen.
+
+    Bewusst **pro Spezialität einzeln aufgeschlüsselt** (`special_surcharge_breakdown`, Liste aus
+    `{template_id, template_name, surcharge_pct, hours, surcharge_hours}`) statt nur eine
+    Gesamtsumme: das künftige Lohnart-Mapping (Punkt 30) braucht pro Spezialität einen eigenen
+    Lohnart-Code, da z. B. "Pikett Wochentag" und "Pikett Wochenende" in der Kundenlohnsoftware
+    unterschiedliche Codes haben können -- eine reine Summe liesse sich später nicht mehr
+    aufteilen. `special_surcharge_hours` bleibt zusätzlich als Gesamtsumme für die
+    Kennzahlen-Tabelle erhalten. `MonthlySummarySerializer`/`TimeTemplateSerializer` entsprechend
+    erweitert. Frontend: `TimeTemplateSettings.jsx` zeigt das Zuschlag-%-Feld nur bei Kategorie
+    "Spezialität" (kein irreführendes Feld bei regulären Diensten, wo es ohnehin wirkungslos wäre)
+    plus einen "Zuschlag X%"-Hinweis in der Tabelle; `MonthlySummaryPanel.jsx` zeigt eine
+    "Spezialitäten-Zuschlag total"-Zeile in der Haupttabelle sowie -- falls vorhanden -- eine
+    zweite Tabelle mit der Aufschlüsselung pro Schichttyp. 8 neue Backend-Tests (Bugfix-Regression,
+    Aufschlüsselung bei einer/mehreren Spezialitäten, Spezialität ohne Zuschlag bleibt aussen vor,
+    Serializer-Roundtrip, API-Response), volle Suite (433 Tests) grün.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

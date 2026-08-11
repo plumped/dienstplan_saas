@@ -667,7 +667,9 @@ class Employee(TenantScopedModel):
         bevorzugt aus TimeRecord, sobald erfasst, sonst aus der Planung
         (ShiftAssignment._shift_hours) als bester verfügbarer Schätzwert
         (README Punkt 13: "Anschluss der Ist-Arbeitszeiterfassung an Block
-        2.6").
+        2.6"). Zusätzlich `special_surcharge_breakdown`: Zuschlagsstunden pro
+        Spezialität mit TimeTemplate.surcharge_pct > 0 (z. B. Pikett), siehe
+        Docstring dort.
 
         Bewusst getrennt von weekly_hours_summary() (Block 1.11, strikt
         Kalenderwoche für den Art.-13-ArG-Zuschlag): hier wird über den
@@ -703,6 +705,8 @@ class Employee(TenantScopedModel):
                 "night_surcharge_hours": 0.0,
                 "sunday_hours": 0.0,
                 "sunday_surcharge_hours": 0.0,
+                "special_surcharge_hours": 0.0,
+                "special_surcharge_breakdown": [],
                 "is_provisional": False,
             }
 
@@ -729,7 +733,37 @@ class Employee(TenantScopedModel):
         night_hours = 0.0
         sunday_hours = 0.0
         is_provisional = False
+        # Nutzer-Feedback (2026-08): "Spezialitäten Schichttypen können auch
+        # zuschlagspflichtig sein, korrekt? wenn jemand Pikett macht zum
+        # Beispiel". Spezialitäten (TimeTemplate.category == SPECIAL) zählen
+        # -- wie in weekly_hours_summary()/time_account_summary() -- nicht zu
+        # Ist-/Nacht-/Sonntagsstunden (additiv, kein eigener Dienst). Vorher
+        # fehlte dieser Ausschluss hier als einzige der drei Summary-Methoden
+        # (Bugfix): eine Pikett-Zuweisung mit nichtleerer Zeitspanne wäre
+        # sonst fälschlich in die normale Ist-Stundenzahl eingeflossen. Wer
+        # Zuschlagsprozent trägt (TimeTemplate.surcharge_pct), wird
+        # stattdessen separat pro Schichttyp aufgeschlüsselt gesammelt --
+        # nicht zu einer Summe zusammengefasst, da das künftige
+        # Lohnart-Mapping (README Punkt 30) pro Spezialität einen eigenen
+        # Lohnart-Code braucht.
+        special_surcharge_totals = {}
         for assignment in assignments:
+            if assignment.template.category == TimeTemplate.Category.SPECIAL:
+                if assignment.template.surcharge_pct:
+                    hours = ShiftAssignment._shift_hours(assignment.date, assignment.template)
+                    entry = special_surcharge_totals.setdefault(
+                        assignment.template_id,
+                        {
+                            "template_id": assignment.template_id,
+                            "template_name": assignment.template.name,
+                            "surcharge_pct": assignment.template.surcharge_pct,
+                            "hours": 0.0,
+                            "surcharge_hours": 0.0,
+                        },
+                    )
+                    entry["hours"] += hours
+                    entry["surcharge_hours"] += hours * assignment.template.surcharge_pct / 100
+                continue
             time_record = getattr(assignment, "time_record", None)
             if time_record is not None:
                 ist_hours += time_record.actual_hours
@@ -747,6 +781,18 @@ class Employee(TenantScopedModel):
             night_hours += assignment.night_hours
             if assignment.is_sunday:
                 sunday_hours += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+
+        special_surcharge_breakdown = [
+            {
+                "template_id": entry["template_id"],
+                "template_name": entry["template_name"],
+                "surcharge_pct": entry["surcharge_pct"],
+                "hours": round(entry["hours"], 2),
+                "surcharge_hours": round(entry["surcharge_hours"], 2),
+            }
+            for entry in sorted(special_surcharge_totals.values(), key=lambda e: e["template_name"])
+        ]
+        special_surcharge_hours = round(sum(e["surcharge_hours"] for e in special_surcharge_breakdown), 2)
 
         ist_hours = round(ist_hours, 2)
         overtime_hours = round(max(0.0, ist_hours - soll_hours), 2)
@@ -778,6 +824,8 @@ class Employee(TenantScopedModel):
             "night_surcharge_hours": night_surcharge_hours,
             "sunday_hours": sunday_hours,
             "sunday_surcharge_hours": sunday_surcharge_hours,
+            "special_surcharge_hours": special_surcharge_hours,
+            "special_surcharge_breakdown": special_surcharge_breakdown,
             "is_provisional": is_provisional,
         }
 
@@ -1102,6 +1150,19 @@ class TimeTemplate(TenantScopedModel):
         default=0,
         help_text="Mindestanzahl gleichzeitig eingeteilter Mitarbeitender an diesem Schichttyp; "
         "0 = keine Mindestbesetzung definiert.",
+    )
+    surcharge_pct = models.PositiveSmallIntegerField(
+        default=0,
+        help_text="Nutzer-Feedback (2026-08): 'Spezialitäten wie Pikett können auch "
+        "zuschlagspflichtig sein'. Lohnzuschlag in % der geplanten Stunden dieses Schichttyps "
+        "(0 = kein Zuschlag) -- wirkt nur bei Kategorie 'Spezialität' (siehe "
+        "Employee.monthly_summary): reguläre Dienste laufen bereits über den Soll/Ist-Vergleich "
+        "(Überzeit) sowie die zeitpunktbasierten Nacht-/Sonntagszuschläge, ein zusätzlicher "
+        "Prozentsatz hier würde sich damit überschneiden. Erscheint pro Schichttyp einzeln "
+        "aufgeschlüsselt in der Monatsauswertung (Block 2.6) -- bewusst nicht zu einer einzigen "
+        "Summe zusammengefasst, da das spätere Lohnart-Mapping (Punkt 30) pro Spezialität einen "
+        "eigenen Lohnart-Code braucht (z. B. 'Pikett Wochentag' und 'Pikett Wochenende' können in "
+        "der Kundenlohnsoftware unterschiedliche Codes haben).",
     )
 
     class Meta:

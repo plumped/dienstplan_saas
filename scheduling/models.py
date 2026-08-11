@@ -5,6 +5,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
+from django.db.models import Q
 from django.utils import timezone
 from simple_history.models import HistoricalRecords
 from treebeard.mp_tree import MP_Node
@@ -535,6 +536,37 @@ class Employee(TenantScopedModel):
                 cursor += timedelta(days=1)
         return weights
 
+    def _monthly_absence_day_breakdown(self, start_date, end_date):
+        """
+        AbsenceType-ID -> genehmigte Absenztage im Zeitraum (Kalendertage,
+        Halbtags-Absenzen als 0.5 gewichtet) -- für den Lohn-Export
+        (Block 2 Punkt 30/31, Employee.payroll_raw_lines()). Anders als
+        _approved_absence_day_weights() (soll-neutrale Tagesgewichtung
+        über ALLE Typen hinweg, überlappende Absenzen auf max. 1.0 gekappt)
+        wird hier PRO Absenztyp gezählt, weil ein Ferientag und ein
+        Krankheitstag payroll-technisch unterschiedliche Lohnarten sind --
+        eine Überschneidung zwischen zwei VERSCHIEDENEN Typen zählt hier
+        also bewusst bei beiden mit, statt gekappt zu werden.
+
+        Kalendertage statt Werktage (wie sick_pay_summary()), nicht Mo-Fr-
+        Werktage wie vacation_balance() -- die Lohn-Rohdaten sollen die
+        tatsächlich beanspruchten Tage zeigen.
+        """
+        if start_date > end_date:
+            return {}
+        absences = Absence.all_objects.filter(
+            employee=self,
+            status=Absence.Status.APPROVED,
+            start_date__lte=end_date,
+            end_date__gte=start_date,
+        )
+        totals = {}
+        for absence in absences:
+            weight = 1.0 if absence.day_portion == Absence.DayPortion.FULL else 0.5
+            days = (min(absence.end_date, end_date) - max(absence.start_date, start_date)).days + 1
+            totals[absence.type_id] = totals.get(absence.type_id, 0.0) + days * weight
+        return totals
+
     def _public_holiday_workdays(self, start_date, end_date):
         """Menge der Feiertage (Tenant.public_holidays) in [start_date, end_date], die auf Mo-Fr fallen."""
         if start_date > end_date:
@@ -875,10 +907,13 @@ class Employee(TenantScopedModel):
                 "is_overtime_settled": False,
                 "night_hours": 0.0,
                 "night_surcharge_hours": 0.0,
+                "occasional_night_hours": 0.0,
+                "occasional_night_surcharge_hours": 0.0,
                 "sunday_hours": 0.0,
                 "sunday_surcharge_hours": 0.0,
                 "special_surcharge_hours": 0.0,
                 "special_surcharge_breakdown": [],
+                "holiday_days": 0,
                 "is_provisional": False,
             }
 
@@ -981,13 +1016,25 @@ class Employee(TenantScopedModel):
         overtime_surcharge_hours = corridor["settled_surcharge_hours"]
 
         night_hours = round(night_hours, 2)
-        # Zeitgutschrift (Art. 17b ArG) nur bei regelmässiger Nachtarbeit --
-        # dieselbe jahresbezogene Schwelle wie night_work_summary(), nicht
-        # neu pro Monat ermittelt, da "regelmässig" sich per Definition auf
-        # das ganze Kalenderjahr bezieht.
+        # Zeitgutschrift (Art. 17b Abs. 1 ArG) nur bei regelmässiger
+        # Nachtarbeit -- dieselbe jahresbezogene Schwelle wie
+        # night_work_summary(), nicht neu pro Monat ermittelt, da
+        # "regelmässig" sich per Definition auf das ganze Kalenderjahr
+        # bezieht. Wer die Schwelle NICHT erreicht, hat stattdessen Anspruch
+        # auf den 25%-Lohnzuschlag (Art. 17b Abs. 2 ArG, Punkt 17) --
+        # occasional_night_hours/occasional_night_surcharge_hours liefern
+        # dafür den monatlichen Rohinput für den Lohn-Export (Block 2 Punkt
+        # 30/31), analog zu night_work_summary()'s jährlicher Variante.
+        # Regelmässig und gelegentlich schliessen sich gegenseitig aus.
         is_regular_night_work = self.night_work_summary(year)["is_regular"]
         night_surcharge_hours = (
             round(night_hours * self.tenant.night_work_surcharge_pct / 100, 2) if is_regular_night_work else 0.0
+        )
+        occasional_night_hours = 0.0 if is_regular_night_work else night_hours
+        occasional_night_surcharge_hours = (
+            0.0
+            if is_regular_night_work
+            else round(night_hours * self.tenant.occasional_night_work_surcharge_pct / 100, 2)
         )
 
         sunday_hours = round(sunday_hours, 2)
@@ -1008,12 +1055,84 @@ class Employee(TenantScopedModel):
             "is_overtime_settled": corridor["is_settled"],
             "night_hours": night_hours,
             "night_surcharge_hours": night_surcharge_hours,
+            "occasional_night_hours": occasional_night_hours,
+            "occasional_night_surcharge_hours": occasional_night_surcharge_hours,
             "sunday_hours": sunday_hours,
             "sunday_surcharge_hours": sunday_surcharge_hours,
             "special_surcharge_hours": special_surcharge_hours,
             "special_surcharge_breakdown": special_surcharge_breakdown,
+            "holiday_days": len(holiday_days),
             "is_provisional": is_provisional,
         }
+
+    def payroll_raw_lines(self, year=None, month=None):
+        """
+        Rohdaten für den Lohn-Export (MVP-Fahrplan Block 2, Punkt 30/31) für
+        einen Kalendermonat: eine Liste von {category, special_template_id,
+        amount, unit}-Zeilen, ungerundet auf Lohnart-Codes -- die
+        Übersetzung passiert bewusst NICHT hier, sondern in der View über
+        PayrollCategoryMapping, damit Employee (scheduling) nicht von einer
+        Konfiguration abhängt, die sich der Kunde jederzeit ändern kann.
+        Zeilen mit amount == 0 werden ausgelassen (kein Bedarf, in der
+        Kundenlohnsoftware eine Nullzeile zu erzeugen).
+
+        Baut auf monthly_summary() (Stunden-Kategorien) und
+        _monthly_absence_day_breakdown() (Tage-Kategorien) auf:
+        - Normalstunden = Ist-Stunden abzüglich der (nur informativen, siehe
+          monthly_summary-Docstring) Überzeit -- entspricht min(Ist, Soll).
+        - Überstunden nur der über den Gleitzeit-Korridor bereits
+          BESTÄTIGTE Anteil (overtime_surcharge_hours), nicht der rohe
+          Ist-Soll-Überschuss (overtime_hours) -- unbestätigte Überzeit ist
+          noch nicht abrechnungsreif (README, Gleitzeit-Entscheidung 2026-08).
+        - Ferien-/Krankheits-/sonstige Absenztage: AbsenceType.
+          deducts_vacation_days/counts_as_sick_leave bestimmen die Kategorie,
+          alles andere fällt in "sonstige Absenztage".
+        - Eine Zeile pro Spezialität mit Zuschlag (special_template_id
+          statt category, siehe PayrollCategoryMapping-Docstring).
+        """
+        summary = self.monthly_summary(year, month)
+        lines = []
+
+        def add(category, amount, unit="hours"):
+            if amount:
+                lines.append({"category": category, "special_template_id": None, "amount": amount, "unit": unit})
+
+        regular_hours = round(summary["ist_hours"] - summary["overtime_hours"], 2)
+        add(PayrollCategoryMapping.Category.REGULAR_HOURS, regular_hours)
+        add(PayrollCategoryMapping.Category.OVERTIME, summary["overtime_surcharge_hours"])
+        add(PayrollCategoryMapping.Category.NIGHT_CREDIT, summary["night_surcharge_hours"])
+        add(PayrollCategoryMapping.Category.NIGHT_SURCHARGE, summary["occasional_night_surcharge_hours"])
+        add(PayrollCategoryMapping.Category.SUNDAY_SURCHARGE, summary["sunday_surcharge_hours"])
+        add(PayrollCategoryMapping.Category.HOLIDAYS, summary["holiday_days"], unit="days")
+
+        absence_days = self._monthly_absence_day_breakdown(summary["month_start"], summary["month_end"])
+        if absence_days:
+            types_by_id = {t.id: t for t in AbsenceType.all_objects.filter(pk__in=absence_days.keys())}
+            vacation_days = sick_days = other_days = 0.0
+            for type_id, days in absence_days.items():
+                absence_type = types_by_id.get(type_id)
+                if absence_type and absence_type.deducts_vacation_days:
+                    vacation_days += days
+                elif absence_type and absence_type.counts_as_sick_leave:
+                    sick_days += days
+                else:
+                    other_days += days
+            add(PayrollCategoryMapping.Category.VACATION_DAYS, round(vacation_days, 2), unit="days")
+            add(PayrollCategoryMapping.Category.SICK_DAYS, round(sick_days, 2), unit="days")
+            add(PayrollCategoryMapping.Category.OTHER_ABSENCE_DAYS, round(other_days, 2), unit="days")
+
+        for entry in summary["special_surcharge_breakdown"]:
+            if entry["surcharge_hours"]:
+                lines.append(
+                    {
+                        "category": None,
+                        "special_template_id": entry["template_id"],
+                        "amount": entry["surcharge_hours"],
+                        "unit": "hours",
+                    }
+                )
+
+        return lines
 
     def _flextime_corridor_status(self, year, month):
         """
@@ -1515,6 +1634,84 @@ class TimeTemplateSegment(TenantScopedModel):
 
     def __str__(self):
         return f"{self.template.name} #{self.order} ({self.start_time}\u2013{self.end_time})"
+
+
+class PayrollCategoryMapping(TenantScopedModel):
+    """
+    MVP-Fahrplan Block 2, Punkt 30: konfigurierbare Zuordnung unserer intern
+    berechneten Zuschlagskategorien (Employee.payroll_raw_lines()) zu den
+    frei vergebenen Lohnart-Codes des jeweiligen Kunden-Lohnsystems. Ohne
+    diese Zuordnung ist der Export (Punkt 31) f\u00fcr den n\u00e4chsten Kunden
+    nutzlos, da z. B. "Nachtzulage" bei jedem Lohnsystem eine andere
+    Lohnart-Nummer hat -- kein einziger verpflichtender CH-Standard daf\u00fcr
+    (anders als ELM f\u00fcr die Beh\u00f6rden-Meldung), siehe README.
+
+    Genau eine Zeile pro fester `category` ODER pro `special_template`
+    (Spezialit\u00e4t mit `TimeTemplate.surcharge_pct > 0`, z. B. "Pikett
+    Wochentag"/"Pikett Wochenende" k\u00f6nnen unterschiedliche Lohnart-Codes
+    brauchen -- die feste category-Auswahl reicht daf\u00fcr nicht). Beides in
+    einem Modell statt zwei getrennten, damit der Export (payroll_raw_lines
+    + View) nur EINE Lookup-Struktur braucht.
+    """
+
+    class Category(models.TextChoices):
+        REGULAR_HOURS = "regular_hours", "Normalstunden"
+        OVERTIME = "overtime", "\u00dcberstunden"
+        NIGHT_CREDIT = "night_credit", "Nacht-Zeitgutschrift (regelm\u00e4ssig)"
+        NIGHT_SURCHARGE = "night_surcharge", "Nacht-Lohnzuschlag (gelegentlich)"
+        SUNDAY_SURCHARGE = "sunday_surcharge", "Sonntagszuschlag"
+        VACATION_DAYS = "vacation_days", "Ferientage"
+        SICK_DAYS = "sick_days", "Krankheitstage"
+        OTHER_ABSENCE_DAYS = "other_absence_days", "Sonstige Absenztage"
+        HOLIDAYS = "holidays", "Feiertage"
+
+    category = models.CharField(max_length=30, choices=Category.choices, null=True, blank=True)
+    special_template = models.ForeignKey(
+        TimeTemplate,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="payroll_mappings",
+        help_text="Nur gesetzt f\u00fcr eine Spezialit\u00e4t mit Zuschlag statt einer festen Kategorie oben "
+        "-- genau eines von category/special_template muss gesetzt sein.",
+    )
+    payroll_code = models.CharField(max_length=50, help_text="Vom Kunden vergebener Lohnart-Code.")
+    payroll_label = models.CharField(max_length=200, blank=True, help_text="Freitext, nur zur Anzeige.")
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Inaktive Zeilen werden beim Export ausgelassen (z. B. falls ein Kunde eine "
+        "Kategorie bereits anders l\u00f6st).",
+    )
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(category__isnull=False, special_template__isnull=True)
+                    | Q(category__isnull=True, special_template__isnull=False)
+                ),
+                name="payrollcategorymapping_exactly_one_of_category_or_template",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "category"],
+                condition=Q(special_template__isnull=True),
+                name="unique_payroll_category_per_tenant",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "special_template"],
+                condition=Q(category__isnull=True),
+                name="unique_payroll_special_template_per_tenant",
+            ),
+        ]
+
+    def __str__(self):
+        label = self.category or (self.special_template.name if self.special_template_id else "?")
+        return f"{label} -> {self.payroll_code}"
+
+    def clean(self):
+        if bool(self.category) == bool(self.special_template_id):
+            raise ValidationError("Genau eines von Kategorie oder Spezialit\u00e4t muss gesetzt sein.")
 
 
 class ShiftAssignment(TenantScopedModel):

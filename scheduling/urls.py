@@ -6,6 +6,7 @@ from .views import (
     EmployeeViewSet,
     MissingTimeRecordViewSet,
     NodeViewSet,
+    PayrollCategoryMappingViewSet,
     PregnancyViewSet,
     ShiftAssignmentViewSet,
     ShiftPreferenceViewSet,
@@ -21,6 +22,7 @@ router.register("skills", SkillViewSet, basename="skill")
 router.register("employees", EmployeeViewSet, basename="employee")
 router.register("time-templates", TimeTemplateViewSet, basename="timetemplate")
 router.register("absence-types", AbsenceTypeViewSet, basename="absencetype")
+router.register("payroll-category-mappings", PayrollCategoryMappingViewSet, basename="payrollcategorymapping")
 router.register("shift-assignments", ShiftAssignmentViewSet, basename="shiftassignment")
 router.register("absences", AbsenceViewSet, basename="absence")
 router.register("pregnancies", PregnancyViewSet, basename="pregnancy")

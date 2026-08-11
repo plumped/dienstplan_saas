@@ -273,6 +273,14 @@ export const api = {
     request(`/absence-types/${id}/`, { method: "PATCH", body: payload }),
   deleteAbsenceType: (id) => request(`/absence-types/${id}/`, { method: "DELETE" }),
 
+  // MVP-Fahrplan Block 2, Punkt 30: Lohnart-Zuordnung, Admin-only fürs
+  // Schreiben (siehe scheduling.views.PayrollCategoryMappingViewSet).
+  getPayrollCategoryMappings: () => requestAllPages("/payroll-category-mappings/"),
+  createPayrollCategoryMapping: (payload) =>
+    request("/payroll-category-mappings/", { method: "POST", body: payload }),
+  updatePayrollCategoryMapping: (id, payload) =>
+    request(`/payroll-category-mappings/${id}/`, { method: "PATCH", body: payload }),
+
   getAbsences: (employeeId) =>
     requestAllPages(employeeId ? `/absences/?employee=${employeeId}` : "/absences/"),
   createAbsence: (payload) =>
@@ -386,4 +394,27 @@ export const api = {
   // `temporary_password` EINMALIG (danach nicht mehr abrufbar).
   createMembership: (payload) => request("/memberships/", { method: "POST", body: payload }),
   updateMembershipRole: (id, role) => request(`/memberships/${id}/`, { method: "PATCH", body: { role } }),
+
+  // MVP-Fahrplan Block 2, Punkt 31: Lohn-Rohdaten-Export. getPayrollExport
+  // liefert die JSON-Vorschau (inkl. Warnliste bei fehlendem Mapping) für
+  // die Einstellungen-Seite; downloadPayrollExportCsv löst stattdessen
+  // einen Datei-Download aus -- erster CSV-Export der App, request() liefert
+  // nur JSON, daher ein eigener fetch-Aufruf mit demselben Auth-Header.
+  getPayrollExport: (month) => request(`/payroll-export/?month=${month}`),
+  downloadPayrollExportCsv: async (month) => {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/payroll-export/?month=${month}&output=csv`, {
+      headers: token ? { Authorization: `Token ${token}` } : {},
+    });
+    if (!res.ok) throw await parseErrorResponse(res);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `lohn-export-${month}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  },
 };

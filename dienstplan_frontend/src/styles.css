@@ -1298,6 +1298,44 @@ thead .col-employee {
   font-variant-numeric: tabular-nums;
 }
 
+/* MVP-Fahrplan Block 2, Punkt 30: Lohnart-Zuordnung (PayrollSettings.jsx) --
+   feste linke Spalte (Kategorie/Spezialität) + Eingabefelder rechts, eine
+   Zeile pro Kategorie bzw. zuschlagspflichtiger Spezialität. */
+.payroll-mapping-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 16px;
+}
+
+.payroll-mapping-table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 520px;
+}
+
+.payroll-mapping-table th,
+.payroll-mapping-table td {
+  padding: 6px 12px 6px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.payroll-mapping-table th {
+  font-weight: 500;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+.payroll-mapping-table td:first-child {
+  font-weight: 500;
+  white-space: normal;
+}
+
+.payroll-mapping-table input {
+  width: 100%;
+  min-width: 100px;
+}
+
 /* Nutzer-Feedback (2026-08): "bei uns gilt Gleitzeit, nur angeordnete
    Überstunden werden effektiv abgerechnet" -- Hinweisbox in der
    Monatsauswertung (MonthlySummaryPanel.jsx), sobald der Jahressaldo die

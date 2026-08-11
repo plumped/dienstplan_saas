@@ -21,6 +21,7 @@ from .models import (
     Employment,
     Node,
     OvertimeSettlement,
+    PayrollCategoryMapping,
     Pregnancy,
     ShiftAssignment,
     ShiftPreference,
@@ -6447,3 +6448,366 @@ class TimeRecordOverviewAPITests(APITestCase):
         self.auth_as(self.planner_user)
         response = self.client.get("/api/me/")
         self.assertEqual(response.data["task_counts"]["time_records"], 1)
+
+
+class PayrollCategoryMappingModelTests(TestCase):
+    """
+    MVP-Fahrplan Block 2, Punkt 30: PayrollCategoryMapping-Constraints
+    (genau eines von category/special_template, Eindeutigkeit pro Tenant).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-pcm")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.special_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Pikett",
+            start_time=time(18, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+            surcharge_pct=20,
+        )
+
+    def test_clean_rejects_both_category_and_special_template_set(self):
+        mapping = PayrollCategoryMapping(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            special_template=self.special_template,
+            payroll_code="100",
+        )
+        with self.assertRaises(ValidationError):
+            mapping.full_clean()
+
+    def test_clean_rejects_neither_set(self):
+        mapping = PayrollCategoryMapping(tenant=self.tenant, payroll_code="100")
+        with self.assertRaises(ValidationError):
+            mapping.full_clean()
+
+    def test_unique_category_per_tenant(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, category=PayrollCategoryMapping.Category.REGULAR_HOURS, payroll_code="100"
+        )
+        with self.assertRaises(IntegrityError):
+            PayrollCategoryMapping.objects.create(
+                tenant=self.tenant, category=PayrollCategoryMapping.Category.REGULAR_HOURS, payroll_code="200"
+            )
+
+    def test_unique_special_template_per_tenant(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, special_template=self.special_template, payroll_code="900"
+        )
+        with self.assertRaises(IntegrityError):
+            PayrollCategoryMapping.objects.create(
+                tenant=self.tenant, special_template=self.special_template, payroll_code="901"
+            )
+
+
+class PayrollCategoryMappingAPITests(APITestCase):
+    """API-Berechtigungen für PayrollCategoryMappingViewSet: Admin-only Schreiben, alle Rollen lesen."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-pcm-api")
+        self.other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-pcm-api")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.special_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Pikett",
+            start_time=time(18, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+            surcharge_pct=20,
+        )
+        self.other_special_template = TimeTemplate.objects.create(
+            tenant=self.other_tenant,
+            node=Node.add_root(name="Station X", tenant=self.other_tenant),
+            name="Pikett B",
+            start_time=time(18, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+            surcharge_pct=20,
+        )
+        self.admin_user = User.objects.create_user(username="pcm-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="pcm-planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_can_create_mapping(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"category": "regular_hours", "payroll_code": "100", "payroll_label": "Normalstunden"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_planner_cannot_write(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/", {"category": "regular_hours", "payroll_code": "100"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_planner_can_read(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, category=PayrollCategoryMapping.Category.REGULAR_HOURS, payroll_code="100"
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/payroll-category-mappings/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_create_rejects_both_category_and_special_template(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"category": "regular_hours", "special_template": self.special_template.id, "payroll_code": "100"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_rejects_special_template_from_other_tenant(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"special_template": self.other_special_template.id, "payroll_code": "100"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class PayrollRawLinesTests(TestCase):
+    """
+    MVP-Fahrplan Block 2, Punkt 30/31: Employee._monthly_absence_day_breakdown()
+    und Employee.payroll_raw_lines() -- Rohdaten für den Lohn-Export, Juni 2026
+    (22 Mo-Fr-Arbeitstage, kein Kanton -- kein Feiertagsabzug, handrechenbar).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-payroll")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 30),
+            break_minutes=30,  # 8h netto
+        )
+        self.special_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Pikett",
+            start_time=time(18, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+            surcharge_pct=20,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="A",
+            employment_pct=100,
+            employment_start_date=date(2026, 6, 1),
+            standard_weekly_hours=40,
+        )
+        self.vacation_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Ferien", deducts_vacation_days=True
+        )
+        self.sick_type = AbsenceType.objects.create(tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True)
+        self.other_type = AbsenceType.objects.create(tenant=self.tenant, name="Sonstiges")
+
+    def _assign(self, day, template=None):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=day, template=template or self.template
+        )
+
+    def _line(self, lines, category=None, special_template_id=None):
+        return next(
+            l for l in lines if l["category"] == category and l["special_template_id"] == special_template_id
+        )
+
+    def test_zero_amount_lines_are_omitted(self):
+        self.assertEqual(self.employee.payroll_raw_lines(2026, 6), [])
+
+    def test_regular_hours_line_excludes_overtime(self):
+        for day in [date(2026, 6, d) for d in range(1, 6)]:  # Mo-Fr, Woche 1 -- 40h, kein Ueberschuss
+            self._assign(day)
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        regular = self._line(lines, category=PayrollCategoryMapping.Category.REGULAR_HOURS)
+        self.assertEqual(regular["amount"], 40.0)
+        self.assertEqual(regular["unit"], "hours")
+
+    def test_settled_overtime_produces_overtime_line(self):
+        for day in [date(2026, 6, d) for d in range(1, 31) if date(2026, 6, d).weekday() < 5]:
+            self._assign(day)
+        for d in (6, 13, 20):  # 3 zusaetzliche Samstage -> 24h Saldo, 4h ueber dem 20h-Korridor
+            self._assign(date(2026, 6, d))
+        self.employee.confirm_overtime_settlement(2026, 6)
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        overtime = self._line(lines, category=PayrollCategoryMapping.Category.OVERTIME)
+        self.assertEqual(overtime["amount"], 1.0)  # 4h * 25% Tenant-Default
+
+    def test_sunday_shift_produces_sunday_surcharge_line(self):
+        self._assign(date(2026, 6, 7))  # Sonntag
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        sunday = self._line(lines, category=PayrollCategoryMapping.Category.SUNDAY_SURCHARGE)
+        self.assertEqual(sunday["amount"], 4.0)  # 8h * 50% Tenant-Default
+
+    def test_absence_days_grouped_by_type(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 2),
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 3),
+            end_date=date(2026, 6, 3),
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 4),
+            end_date=date(2026, 6, 4),
+            type=self.other_type,
+            status=Absence.Status.APPROVED,
+        )
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        vacation = self._line(lines, category=PayrollCategoryMapping.Category.VACATION_DAYS)
+        sick = self._line(lines, category=PayrollCategoryMapping.Category.SICK_DAYS)
+        other = self._line(lines, category=PayrollCategoryMapping.Category.OTHER_ABSENCE_DAYS)
+        self.assertEqual(vacation["amount"], 2)
+        self.assertEqual(sick["amount"], 1)
+        self.assertEqual(other["amount"], 1)
+        self.assertEqual(vacation["unit"], "days")
+
+    def test_pending_absence_not_counted(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 1),
+            type=self.vacation_type,
+            status=Absence.Status.PENDING,
+        )
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        self.assertFalse(any(l["category"] == PayrollCategoryMapping.Category.VACATION_DAYS for l in lines))
+
+    def test_special_surcharge_produces_line_with_special_template_id(self):
+        self._assign(date(2026, 6, 8), template=self.special_template)
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        special = self._line(lines, category=None, special_template_id=self.special_template.id)
+        self.assertEqual(special["amount"], 0.8)  # 4h * 20%
+
+
+class PayrollExportViewTests(APITestCase):
+    """
+    MVP-Fahrplan Block 2, Punkt 31: PayrollExportView -- JSON/CSV-Export,
+    Admin-only, Warnliste bei fehlendem Lohnart-Mapping.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-export")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 30),
+            break_minutes=30,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="A",
+            employment_pct=100,
+            employment_start_date=date(2026, 6, 1),
+            standard_weekly_hours=40,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 6, 1), template=self.template
+        )
+        self.admin_user = User.objects.create_user(username="export-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="export-planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_forbidden_for_planner(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_missing_month_param_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_month_format_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=not-a-month")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unmapped_category_appears_as_warning_not_silently_dropped(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["employees"], [])
+        self.assertIn("Normalstunden: kein Lohnart-Code konfiguriert", response.data["warnings"])
+
+    def test_mapped_category_appears_in_employee_lines(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+            payroll_label="Normalstunden",
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["employees"]), 1)
+        entry = response.data["employees"][0]
+        self.assertEqual(entry["employee_name"], "Anna A")
+        self.assertEqual(entry["lines"], [{"payroll_code": "100", "payroll_label": "Normalstunden", "amount": 8.0, "unit": "hours"}])
+        self.assertEqual(response.data["warnings"], [])
+
+    def test_inactive_mapping_is_ignored(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+            is_active=False,
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertEqual(response.data["employees"], [])
+        self.assertIn("Normalstunden: kein Lohnart-Code konfiguriert", response.data["warnings"])
+
+    def test_csv_output(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+            payroll_label="Normalstunden",
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06&output=csv")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        self.assertIn("attachment", response["Content-Disposition"])
+        content = response.content.decode()
+        self.assertIn("Personalnummer,Name,Lohnart-Code,Bezeichnung,Menge,Einheit,Periode", content)
+        self.assertIn(f"{self.employee.id},Anna A,100,Normalstunden,8.0,hours,2026-06", content)

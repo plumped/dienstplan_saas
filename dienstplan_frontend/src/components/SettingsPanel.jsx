@@ -6,6 +6,7 @@ import EmployeeSettings from "./EmployeeSettings.jsx";
 import MembershipAccessSettings from "./MembershipAccessSettings.jsx";
 import MonthlySummaryPanel from "./MonthlySummaryPanel.jsx";
 import NodeSettings from "./NodeSettings.jsx";
+import PayrollSettings from "./PayrollSettings.jsx";
 import SkillSettings from "./SkillSettings.jsx";
 import TenantSettings from "./TenantSettings.jsx";
 import TimeTemplateSettings from "./TimeTemplateSettings.jsx";
@@ -43,6 +44,15 @@ const MODULES = [
     label: "Monatsauswertung",
     description: "Soll/Ist-Stunden, Überzeit sowie Nacht-/Sonntagszuschlag pro Monat -- Basis für den Lohnlauf.",
     managerOnly: true,
+  },
+  // Block 2 Punkt 30/31: Admin-only wie "Regel-Engine & Zuschläge" (unten)
+  // -- diese Codes steuern direkt die Übergabe an das Lohnsystem des
+  // Kunden, nicht das Tagesgeschäft der Planung.
+  {
+    id: "payrollMapping",
+    label: "Lohnarten",
+    description: "Zuordnung der Zuschlagskategorien zu Lohnart-Codes + CSV-Export der Lohn-Rohdaten (nur Admin).",
+    adminOnly: true,
   },
   // Block 2.14: Admin-only, strenger als die übrigen Module (die auch
   // Planer sehen/bearbeiten dürfen) -- steuert Rechtssicherheit und
@@ -177,6 +187,7 @@ export default function SettingsPanel({ me, onError }) {
         />
       )}
       {module === "payroll" && canManageSchedule(me) && <MonthlySummaryPanel onError={onError} />}
+      {module === "payrollMapping" && isTenantAdmin(me) && <PayrollSettings onError={onError} />}
       {module === "tenant" && isTenantAdmin(me) && <TenantSettings onError={onError} />}
       {module === "access" && isTenantAdmin(me) && <MembershipAccessSettings nodes={nodes} onError={onError} />}
     </div>

@@ -1,8 +1,10 @@
+import csv
 from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.crypto import get_random_string
@@ -25,6 +27,7 @@ from core.notifications import (
 )
 from core.permissions import (
     MANAGER_ROLES,
+    IsTenantAdmin,
     IsTenantManager,
     IsTenantManagerOrHR,
     OwnEmployeeRecordPermission,
@@ -41,6 +44,7 @@ from .models import (
     AbsenceType,
     Employee,
     Node,
+    PayrollCategoryMapping,
     Pregnancy,
     ShiftAssignment,
     ShiftPreference,
@@ -58,6 +62,7 @@ from .serializers import (
     MonthlySummarySerializer,
     NightWorkSummarySerializer,
     NodeSerializer,
+    PayrollCategoryMappingSerializer,
     PregnancySerializer,
     ShiftAssignmentSerializer,
     ShiftPreferenceSerializer,
@@ -583,6 +588,21 @@ class AbsenceTypeViewSet(TenantScopedViewSet):
     permission_classes = [permissions.IsAuthenticated, IsTenantManager]
     queryset = AbsenceType.all_objects.all()
     serializer_class = AbsenceTypeSerializer
+
+
+class PayrollCategoryMappingViewSet(TenantScopedViewSet):
+    """
+    MVP-Fahrplan Block 2, Punkt 30: Verwaltung der Lohnart-Zuordnung (siehe
+    PayrollCategoryMapping-Docstring). Admin-only fürs Schreiben --
+    strenger als das sonst übliche IsTenantManager (Admin+Planer), analog
+    core.views.TenantView: diese Codes steuern direkt die Übergabe an das
+    Lohnsystem des Kunden, nicht das Tagesgeschäft der Planung. Lesen bleibt
+    wie überall für alle Rollen offen (IsTenantAdmin-Docstring).
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsTenantAdmin]
+    queryset = PayrollCategoryMapping.all_objects.all()
+    serializer_class = PayrollCategoryMappingSerializer
 
 
 class TimeTemplateViewSet(TenantScopedViewSet):
@@ -1196,3 +1216,115 @@ class UnderstaffedShiftsView(TenantScopedAPIMixin, APIView):
 
         results.sort(key=lambda r: (r["date"], r["node_name"], r["template_name"]))
         return Response({"has_configured_templates": True, "shortfalls": results})
+
+
+class PayrollExportView(TenantScopedAPIMixin, APIView):
+    """
+    MVP-Fahrplan Block 2, Punkt 31: Lohn-Rohdaten eines Kalendermonats für
+    alle aktiven Mitarbeitenden, übersetzt über PayrollCategoryMapping
+    (Punkt 30) in (Lohnart-Code, Bezeichnung, Menge, Einheit).
+
+    Admin-only -- bewusst NICHT über eine Permission-Klasse mit
+    SAFE_METHODS-Ausnahme (wie IsTenantAdmin, das Lesen für alle Rollen
+    offen lässt, siehe dessen Docstring), sondern ein expliziter Check hier
+    wie bei EmployeeViewSet.monthly_summary: das hier sind fertig
+    übersetzte Lohn-Rohdaten über ALLE Mitarbeitenden hinweg, kein
+    Selbstauskunfts-Endpoint wie balance/night-work.
+
+    ?month=YYYY-MM (Pflicht). ?output=csv liefert einen Datei-Download
+    (Content-Disposition: attachment) statt JSON -- erster CSV-Export der
+    App, siehe README. Bewusst NICHT `?format=csv`: DRF reserviert den
+    Query-Parameter `format` selbst für die Content-Negotiation
+    (URL_FORMAT_OVERRIDE) -- ein unbekannter Wert dort lässt die
+    Content-Negotiation in initial() fehlschlagen, BEVOR get() überhaupt
+    läuft (404 statt der erwarteten CSV-Antwort, empirisch geprüft).
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        membership = request.membership
+        if not membership or membership.role != Membership.Role.ADMIN:
+            raise PermissionDenied("Nur Admin darf den Lohn-Export einsehen.")
+        tenant = request.tenant
+        if tenant is None:
+            raise PermissionDenied("Kein aktiver Tenant.")
+
+        month_param = request.query_params.get("month")
+        if not month_param:
+            raise ValidationError({"month": "Pflichtfeld, erwartet YYYY-MM."})
+        try:
+            year_str, month_str = month_param.split("-")
+            year, month = int(year_str), int(month_str)
+            if not 1 <= month <= 12:
+                raise ValueError
+        except ValueError:
+            raise ValidationError({"month": "Ungültiges Format, erwartet YYYY-MM."})
+
+        mappings = PayrollCategoryMapping.all_objects.filter(tenant=tenant, is_active=True)
+        mapping_by_category = {m.category: m for m in mappings if m.category}
+        mapping_by_template = {m.special_template_id: m for m in mappings if m.special_template_id}
+        special_template_names = {
+            t.id: t.name
+            for t in TimeTemplate.all_objects.filter(tenant=tenant, category=TimeTemplate.Category.SPECIAL)
+        }
+
+        employees = Employee.all_objects.filter(tenant=tenant, is_active=True).order_by("last_name", "first_name")
+        result_employees = []
+        warnings = set()
+        for employee in employees:
+            lines = []
+            for raw in employee.payroll_raw_lines(year, month):
+                if raw["category"]:
+                    mapping = mapping_by_category.get(raw["category"])
+                    label = PayrollCategoryMapping.Category(raw["category"]).label
+                else:
+                    mapping = mapping_by_template.get(raw["special_template_id"])
+                    label = special_template_names.get(raw["special_template_id"], "?")
+                if mapping is None:
+                    warnings.add(f"{label}: kein Lohnart-Code konfiguriert")
+                    continue
+                lines.append(
+                    {
+                        "payroll_code": mapping.payroll_code,
+                        "payroll_label": mapping.payroll_label or label,
+                        "amount": raw["amount"],
+                        "unit": raw["unit"],
+                    }
+                )
+            if lines:
+                result_employees.append(
+                    {
+                        "employee_id": employee.id,
+                        "employee_name": f"{employee.first_name} {employee.last_name}",
+                        "lines": lines,
+                    }
+                )
+
+        if request.query_params.get("output") == "csv":
+            return self._csv_response(year, month, result_employees)
+
+        return Response(
+            {"year": year, "month": month, "employees": result_employees, "warnings": sorted(warnings)}
+        )
+
+    def _csv_response(self, year, month, result_employees):
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="lohn-export-{year}-{month:02d}.csv"'
+        writer = csv.writer(response)
+        writer.writerow(["Personalnummer", "Name", "Lohnart-Code", "Bezeichnung", "Menge", "Einheit", "Periode"])
+        period = f"{year}-{month:02d}"
+        for employee in result_employees:
+            for line in employee["lines"]:
+                writer.writerow(
+                    [
+                        employee["employee_id"],
+                        employee["employee_name"],
+                        line["payroll_code"],
+                        line["payroll_label"],
+                        line["amount"],
+                        line["unit"],
+                        period,
+                    ]
+                )
+        return response

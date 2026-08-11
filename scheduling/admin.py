@@ -11,6 +11,7 @@ from .models import (
     Employment,
     Node,
     OvertimeSettlement,
+    PayrollCategoryMapping,
     Pregnancy,
     ShiftAssignment,
     ShiftPreference,
@@ -103,6 +104,12 @@ class AbsenceAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
 class OvertimeSettlementAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["employee", "year", "month", "hours", "surcharge_hours", "confirmed_at", "tenant"]
     list_filter = ["tenant", "year"]
+
+
+@admin.register(PayrollCategoryMapping)
+class PayrollCategoryMappingAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
+    list_display = ["category", "special_template", "payroll_code", "payroll_label", "is_active", "tenant"]
+    list_filter = ["tenant", "is_active"]
 
 
 @admin.register(Pregnancy)

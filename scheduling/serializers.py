@@ -12,6 +12,7 @@ from .models import (
     Employee,
     Employment,
     Node,
+    PayrollCategoryMapping,
     Pregnancy,
     ShiftAssignment,
     ShiftPreference,
@@ -387,10 +388,13 @@ class MonthlySummarySerializer(serializers.Serializer):
     is_overtime_settled = serializers.BooleanField()
     night_hours = serializers.FloatField()
     night_surcharge_hours = serializers.FloatField()
+    occasional_night_hours = serializers.FloatField()
+    occasional_night_surcharge_hours = serializers.FloatField()
     sunday_hours = serializers.FloatField()
     sunday_surcharge_hours = serializers.FloatField()
     special_surcharge_hours = serializers.FloatField()
     special_surcharge_breakdown = SpecialSurchargeBreakdownSerializer(many=True)
+    holiday_days = serializers.IntegerField()
     is_provisional = serializers.BooleanField()
 
 
@@ -522,6 +526,40 @@ class AbsenceTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = AbsenceType
         fields = ["id", "name", "color", "icon", "deducts_vacation_days", "counts_as_sick_leave"]
+
+
+class PayrollCategoryMappingSerializer(serializers.ModelSerializer):
+    """
+    MVP-Fahrplan Block 2, Punkt 30: Admin-only Verwaltung der Lohnart-
+    Zuordnung (siehe PayrollCategoryMapping-Docstring). `special_template`
+    wird von ModelSerializer automatisch als
+    PrimaryKeyRelatedField(queryset=TimeTemplate._default_manager.all())
+    erzeugt -- scheduling.views.TenantScopedViewSet.initial() setzt die
+    Tenant-ContextVar (anders als core.views.TenantScopedAPIMixin, siehe
+    dessen Docstring), das Default-Queryset ist also bereits korrekt
+    gescoped. Trotzdem eine explizite Prüfung hier, analog
+    core.serializers.MembershipSerializer.validate_scoped_nodes -- explizite
+    Filterung ist die eigentliche Tenant-Grenze, nicht nur die ContextVar.
+    """
+
+    class Meta:
+        model = PayrollCategoryMapping
+        fields = ["id", "category", "special_template", "payroll_code", "payroll_label", "is_active"]
+
+    def validate_special_template(self, value):
+        if value is None:
+            return value
+        tenant = self.context["request"].tenant
+        if value.tenant_id != tenant.id:
+            raise serializers.ValidationError("Ungültige oder fremde Spezialität.")
+        return value
+
+    def validate(self, attrs):
+        category = attrs.get("category", getattr(self.instance, "category", None))
+        special_template = attrs.get("special_template", getattr(self.instance, "special_template", None))
+        if bool(category) == bool(special_template):
+            raise serializers.ValidationError("Genau eines von Kategorie oder Spezialität muss gesetzt sein.")
+        return attrs
 
 
 class AbsenceSerializer(serializers.ModelSerializer):

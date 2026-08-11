@@ -255,17 +255,17 @@ entstanden sind, nicht neu sortiert nach Status):
 | Block | Thema | Status | Aktuell offen |
 |---|---|---|---|
 | 1 | Schweizer Arbeitsgesetz (ArG) | ✅ 16 von 17 Punkten erledigt | Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 (Aufbewahrungspflicht) |
-| 2 | Kernfunktionen Praxisalltag | 27 von 32 Punkten erledigt | Export PDF/Excel (5), Automatisierte Planung (19), Fairness-Punktesystem (20), Lohnart-Mapping (30), CSV-/API-Export (31) |
+| 2 | Kernfunktionen Praxisalltag | 29 von 32 Punkten erledigt | Export PDF/Excel (5), Automatisierte Planung (19), Fairness-Punktesystem (20) |
 | 3 | Onboarding & Self-Signup | Konzept steht, nichts umgesetzt | kompletter Block |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
 | 5 | Datenschutz (revDSG) & Rechtliches | nichts umgesetzt | kompletter Block (AVV, Löschkonzept, Betroffenenrechte) |
 | 6 | Abrechnung (nur falls kommerziell verkauft) | nichts umgesetzt | Zahlungsanbieter, Trial/Limits |
 | 7 | Zeitmanagement | ✅ vollständig umgesetzt | — |
 
-Reihenfolge aktuell: Block 1 ist mit Punkt 16 (Lohnfortzahlung Krankheit) inhaltlich fertig
-(Nutzerentscheid 2026-08: funktionale Vollständigkeit vor Produktionsreife), als Nächstes Block 2
-Punkt 30/31 (Lohn-Export). Block 4/5 (Produktion) bewusst zurückgestellt, bis die Funktionalität
-steht.
+Reihenfolge aktuell: Block 1 ist mit Punkt 16 (Lohnfortzahlung Krankheit) inhaltlich fertig, Block 2
+Punkt 30/31 (Lohn-Export) ebenfalls (Nutzerentscheid 2026-08: "näher am Verkaufsargument" als der
+einfachere Plan-Export aus Punkt 5). Block 4/5 (Produktion) bewusst zurückgestellt, bis die
+Funktionalität steht.
 
 ### 1. Schweizer Arbeitsgesetz (ArG) — Regel-Engine vervollständigen
 
@@ -2318,55 +2318,59 @@ eine zertifizierte Lohnsoftware (Abacus, Sage, SwissSalary, Bexio …) übernimm
 die Behörden-Meldung) — üblich sind CSV-/Excel-Importe mit frei vergebenen "Lohnart"-Codes pro
 Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
 
-30. **Lohnart-Mapping** (noch nicht umgesetzt) — konfigurierbare Zuordnung unserer intern
-    berechneten Zuschlagskategorien zu den frei vergebenen Lohnart-Codes des jeweiligen
-    Kunden-Lohnsystems. Ohne diese Zuordnung ist jeder Export für den nächsten Kunden nutzlos, da
-    z. B. "Nachtzulage" bei jedem Lohnsystem eine andere Lohnart-Nummer hat.
+30. ✅ **Lohnart-Mapping** (2026-08, Nutzer-Entscheidung: "Lohn-Export, das ist näher am
+    Verkaufsargument" -- vor dem einfacheren Plan-PDF-Export aus Punkt 5 priorisiert). Neues
+    tenant-gescoptes Modell `PayrollCategoryMapping`: `category` (feste Auswahl -- Normalstunden,
+    Überstunden, Nacht-Zeitgutschrift/-Lohnzuschlag, Sonntagszuschlag, Ferien-/Krankheits-/
+    sonstige Absenztage, Feiertage) ODER `special_template` (FK auf eine zuschlagspflichtige
+    Spezialität, z. B. "Pikett Wochentag"/"Pikett Wochenende" mit potenziell unterschiedlichen
+    Lohnart-Codes) -- ein DB-`CheckConstraint` erzwingt, dass genau eines der beiden gesetzt ist,
+    zwei partielle `UniqueConstraint`s verhindern doppelte Zuordnungen pro Tenant/Kategorie bzw.
+    pro Tenant/Spezialität. `payroll_code` (Freitext, vom Kunden vergeben), `payroll_label`
+    (Freitext, nur Anzeige), `is_active` (inaktive Zeilen fallen beim Export weg, z. B. falls ein
+    Kunde eine Kategorie bereits anders löst).
 
-    **Kategorien** (ergeben sich aus den bereits vorhandenen bzw. in Punkt 15–17 geplanten
-    Berechnungen): Normalstunden, Überstunden (Art. 321c OR, über Vertragssoll), Nacht-
-    Zeitgutschrift (Art. 17b Abs. 1, regelmässig), Nacht-Lohnzuschlag (Art. 17b Abs. 2,
-    gelegentlich, Punkt 17), Sonntagszuschlag (Art. 19 Abs. 3), Ferientage, Krankheitstage,
-    sonstige Absenztage, Feiertage. **Zusätzlich dynamisch** (seit dem Spezialitäten-Zuschlag
-    weiter oben in Block 2, Abschnitt "Kernfunktionen"): eine Kategorie pro `TimeTemplate` mit
-    `surcharge_pct > 0` (z. B. "Pikett Wochentag"/"Pikett Wochenende" könnten unterschiedliche
-    Lohnart-Codes brauchen) -- die feste `category`-Auswahl unten reicht dafür nicht, `category`
-    müsste für diese Fälle stattdessen ein optionales `special_template`-FK auf `TimeTemplate`
-    bekommen (`null` = eine der festen Kategorien oben, gesetzt = diese eine Spezialität).
+    `PayrollCategoryMappingViewSet` (`scheduling/views.py`), admin-only fürs Schreiben
+    (`IsTenantAdmin`, gleiches Muster wie die übrige Tenant-Konfiguration, Block 2 Punkt 14),
+    Lesen für alle Rollen offen. Frontend: neues 6. Settings-Modul "Lohnarten"
+    (`PayrollSettings.jsx`) -- Tabelle mit fester linker Spalte (die neun festen Kategorien plus
+    eine Zeile pro zuschlagspflichtiger Spezialität) und Eingabefeldern rechts (Code +
+    Bezeichnung); "Speichern" pro Zeile legt beim ersten Mal an, danach aktualisiert es dieselbe
+    Zeile (kein separates Anlegen-Formular nötig).
 
-    **Implementierungsschritte:**
-    - Neues Modell `PayrollCategoryMapping` (tenant-gescoped): `category` (feste Auswahl aus der
-      Liste oben, `null` falls `special_template` gesetzt), `special_template` (optionale FK auf
-      `TimeTemplate`, für den dynamischen Spezialitäten-Zuschlag-Fall oben), `payroll_code`
-      (Freitext, vom Kunden vergeben), `payroll_label` (Freitext, nur Anzeige), `is_active`.
-      Leer/inaktiv gelassene Kategorien werden beim Export ausgelassen (z. B. falls ein Kunde
-      Sonntagszuschlag bereits anders löst).
-    - API: `PayrollCategoryMappingViewSet`, admin-only (`IsTenantAdmin`, gleiches Muster wie die
-      übrige Tenant-Konfiguration, Block 2 Punkt 14).
-    - Migration, Tests.
-    - Frontend: neues 6. Settings-Modul "Lohnarten" — Tabelle mit fester linker Spalte (unsere
-      Kategorien inkl. Tooltip-Erklärung) und Eingabefeldern rechts (Code + Bezeichnung), damit die
-      Zuordnung ohne Vorwissen über unser Datenmodell intuitiv ausfüllbar ist.
+31. ✅ **CSV-Export + API-Endpoint für Lohn-Rohdaten** (2026-08) -- baut auf Punkt 30 auf. Neue
+    Methode `Employee.payroll_raw_lines(year, month)` übersetzt `monthly_summary()` (inkl. der
+    dafür neu ergänzten Felder `occasional_night_surcharge_hours`, analog zur jährlichen
+    `night_work_summary()`-Variante aus Punkt 17, und `holiday_days`) sowie die neue
+    `Employee._monthly_absence_day_breakdown()` (Kalendertage pro Absenztyp im Monat, Halbtags
+    0.5 -- gruppiert nach `AbsenceType.deducts_vacation_days`/`counts_as_sick_leave`, alles andere
+    "sonstige Absenztage") in rohe `{category, special_template_id, amount, unit}`-Zeilen, noch
+    ohne Lohnart-Code -- diese Übersetzung (über `PayrollCategoryMapping`) passiert bewusst erst
+    in der View, damit `Employee` (scheduling) nicht von einer jederzeit änderbaren Kunden-
+    Konfiguration abhängt. Bei den Stunden-Kategorien zählt für Überstunden nur der über den
+    Gleitzeit-Korridor bereits **bestätigte** Anteil (`overtime_surcharge_hours`), nicht der rohe
+    Ist-Soll-Überschuss -- unbestätigte Überzeit ist noch nicht abrechnungsreif (README,
+    Gleitzeit-Entscheidung).
 
-31. **CSV-Export + API-Endpoint für Lohn-Rohdaten** (noch nicht umgesetzt) — baut auf Punkt 30 auf.
-    Liefert pro Mitarbeiter und Abrechnungsperiode die bereits vorhandenen Rohdaten
-    (`monthly_summary()`, `night_work_summary()` inkl. der neuen `occasional_night_hours` aus
-    Punkt 17, `vacation_balance()`-Differenz des Monats), übersetzt über das Mapping aus Punkt 30
-    in (Lohnart-Code, Bezeichnung, Menge, Einheit).
+    Neuer Endpoint `GET /api/payroll-export/?month=YYYY-MM`, Admin-only (bewusst NICHT über
+    `IsTenantAdmin`, das Lesen für alle Rollen offen liesse -- ein expliziter Rollen-Check wie bei
+    `EmployeeViewSet.monthly_summary`, da hier fertig übersetzte Lohn-Rohdaten über ALLE
+    Mitarbeitenden hinweg ausgegeben werden, kein Selbstauskunfts-Endpoint). Kategorien ohne
+    konfiguriertes Mapping werden nicht stillschweigend ausgelassen, sondern als separate
+    Warnliste im Response mitgeliefert ("Normalstunden: kein Lohnart-Code konfiguriert"). CSV-
+    Variante über `?output=csv` (bewusst NICHT `?format=csv` -- DRF reserviert `format` selbst für
+    die Content-Negotiation, ein unbekannter Wert dort liess die Anfrage mit 404 statt der
+    erwarteten CSV-Antwort fehlschlagen, empirisch beim ersten Testlauf gefunden), Spalten:
+    Personalnummer (Employee-ID, kein eigenes Feld dafür nötig), Name, Lohnart-Code, Bezeichnung,
+    Menge, Einheit, Periode.
 
-    **Implementierungsschritte:**
-    - Neuer Endpoint `GET /api/payroll-export/?month=YYYY-MM` (tenant-weit, admin-only,
-      `IsTenantManager`) — JSON-Response, pro Mitarbeiter eine Liste von Zeilen
-      `{payroll_code, payroll_label, amount, unit}`.
-    - Kategorien ohne konfiguriertes Mapping (Punkt 30) werden nicht stillschweigend
-      ausgelassen, sondern als separate Warnliste im Response mitgeliefert ("Nachtzulage: kein
-      Lohnart-Code konfiguriert") — sonst fällt eine vergessene Zuordnung nicht auf.
-    - CSV-Variante desselben Endpoints (`?format=csv` oder eigener Pfad
-      `/api/payroll-export/csv/`), `Content-Disposition: attachment`, Spalten: Personalnummer/
-      Name, Lohnart-Code, Bezeichnung, Menge, Einheit, Periode.
-    - Tests (Serializer/View, insbesondere die Warnliste bei fehlendem Mapping).
-    - Frontend: "Export"-Button im neuen "Lohnarten"-Settings-Modul (Punkt 30), löst den
-      CSV-Download aus (erster CSV-Download-Fluss im Frontend, kein bestehendes Muster dafür).
+    Frontend: `api.downloadPayrollExportCsv()` löst den ersten Datei-Download der App aus (eigener
+    `fetch`-Aufruf mit Auth-Header statt des JSON-`request()`-Helpers, `Blob` + temporärer
+    `<a download>`). Der "CSV herunterladen"-Button im "Lohnarten"-Modul lädt vorher die JSON-
+    Vorschau, um die Warnliste zusätzlich sichtbar im UI anzuzeigen. 23 neue Backend-Tests (Modell-
+    Constraints, API-Berechtigungen inkl. Tenant-Grenze für `special_template`, `payroll_raw_lines`
+    -- Normalstunden/Überstunden/Sonntagszuschlag/Absenztage-Gruppierung/Spezialitäten-Zeilen --,
+    Export-View JSON/CSV/Warnliste/Berechtigungen), volle Suite grün.
 
 32. ✅ **Stammdatenpflege: Mitarbeitenden-Tabelle statt Liste** (2026-08). Nutzer-Feedback: "die
     Stammdatenpflege ist bei 1200 Mitarbeitenden katastrophal -- unsortierte Liste, scrollend

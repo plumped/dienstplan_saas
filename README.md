@@ -255,7 +255,7 @@ entstanden sind, nicht neu sortiert nach Status):
 | Block | Thema | Status | Aktuell offen |
 |---|---|---|---|
 | 1 | Schweizer Arbeitsgesetz (ArG) | ✅ 16 von 17 Punkten erledigt | Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 (Aufbewahrungspflicht) |
-| 2 | Kernfunktionen Praxisalltag | 29 von 32 Punkten erledigt | Export PDF/Excel (5), Automatisierte Planung (19), Fairness-Punktesystem (20) |
+| 2 | Kernfunktionen Praxisalltag | 30 von 32 Punkten erledigt | Automatisierte Planung (19), Fairness-Punktesystem (20) |
 | 3 | Onboarding & Self-Signup | Konzept steht, nichts umgesetzt | kompletter Block |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
 | 5 | Datenschutz (revDSG) & Rechtliches | nichts umgesetzt | kompletter Block (AVV, Löschkonzept, Betroffenenrechte) |
@@ -264,8 +264,10 @@ entstanden sind, nicht neu sortiert nach Status):
 
 Reihenfolge aktuell: Block 1 ist mit Punkt 16 (Lohnfortzahlung Krankheit) inhaltlich fertig, Block 2
 Punkt 30/31 (Lohn-Export) ebenfalls (Nutzerentscheid 2026-08: "näher am Verkaufsargument" als der
-einfachere Plan-Export aus Punkt 5). Block 4/5 (Produktion) bewusst zurückgestellt, bis die
-Funktionalität steht.
+einfachere Plan-Export aus Punkt 5) -- Punkt 5 danach als nächstes nachgezogen. Offen in Block 2
+bleiben nur noch die beiden grossen, für sich zu planenden Vorhaben Automatisierte Planung (19) und
+Fairness-Punktesystem (20). Block 4/5 (Produktion) bewusst zurückgestellt, bis die Funktionalität
+steht.
 
 ### 1. Schweizer Arbeitsgesetz (ArG) — Regel-Engine vervollständigen
 
@@ -692,8 +694,34 @@ Funktionalität steht.
      stationsgescoped war) alle Absenzen tenant-weit, inkl. einer eigenen, unscoped
      Mitarbeitenden-Liste für die Namensauflösung; Mitarbeitende bleiben weiterhin auf die eigene
      Station beschränkt.
-5. **Export** (PDF/Excel) des Monatsplans — für Aushang in der Praxis und Übergabe an externe
-   Lohnbuchhaltung, die selten direkt an die API angebunden ist.
+5. ✅ **Export (PDF/CSV) des Monatsplans** (2026-08) — für Aushang in der Praxis und Übergabe an
+   externe Lohnbuchhaltung, die selten direkt an die API angebunden ist. Bewusst CSV statt Excel
+   für die Datei-Übergabe (öffnet sich in Excel genauso, kein neuer Binärformat-Dependency nötig --
+   gleiche Entscheidung wie beim Lohn-Export, Punkt 31).
+
+   Neue `PlanExportView` (`scheduling/views.py`, `?node=<id>&month=YYYY-MM&output=pdf|csv`,
+   `?output=pdf` ist Default) -- anders als der Lohn-Export (Punkt 31, Admin-only) KEINE eigene
+   Rollen-Einschränkung, sondern derselbe Stations-Scope wie das Planblatt selbst
+   (`_employee_scoped_node_ids`): Mitarbeitende können den Export ihrer eigenen Station(en) genauso
+   ziehen wie Admin/Planer, weil es exakt dieselben Daten sind, die im Planblatt ohnehin sichtbar
+   sind. Eine Zeile pro Mitarbeiter (nicht pro Employment/Team wie im interaktiven Planblatt bei
+   mehreren Teams, siehe Punkt 17) -- für einen Aushang ist eine flache "wer arbeitet wann"-Liste
+   lesbarer als Team-Trennzeilen.
+
+   - **PDF**: `reportlab` (neue, reine Python-Abhängigkeit ohne Systembibliotheken wie
+     WeasyPrint/Cairo). Querformat-Tabelle: eine Zeile pro Mitarbeiter, eine Spalte pro Tag,
+     Zellinhalt aus `TimeTemplate.icon`/`AbsenceType.icon` (Fallback auf die ersten Buchstaben des
+     Namens), mehrere Ereignisse an einem Tag (Split-Shift, Pikett-Zusatz, Absenz) mit "+"
+     zusammengefasst. Wochenenden farblich hervorgehoben, zwei Kopfzeilen (Tag/Wochentag) auf jeder
+     Seite wiederholt (`repeatRows`).
+   - **CSV**: eine Zeile pro Zuweisung/Absenz und Tag (Personalnummer, Name, Datum, Wochentag, Typ,
+     Bezeichnung, Von, Bis) -- flach statt als Gitter, damit eine externe Lohnsoftware die Datei
+     ohne Weiterverarbeitung einlesen kann.
+
+   Frontend: zwei Buttons ("Als PDF exportieren"/"Als CSV exportieren", `api.downloadPlanExport()`)
+   über dem Planblatt-Grid (`PlanGrid.jsx`), für alle Rollen sichtbar (nicht hinter `canManage`
+   versteckt). 10 neue Backend-Tests (Pflichtparameter, Format-Validierung, Stations-Scoping für
+   Admin/Planer/Mitarbeitende, PDF-Content-Type, CSV-Inhalt inkl. Absenzen), volle Suite grün.
 6. ✅ **Monatsauswertung Soll/Ist-Stunden pro Mitarbeiter** (2026-08, inkl. Nacht-/
    Sonntagszuschläge, Überzeit) als Basis für den Lohnlauf -- bewusst getrennt von Block 1.11
    (strikt wöchentlich für den Art.-13-ArG-Zuschlag) und Block 2.7 (laufender Jahressaldo, für

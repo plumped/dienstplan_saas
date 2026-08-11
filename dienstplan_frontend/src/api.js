@@ -417,4 +417,24 @@ export const api = {
     link.remove();
     URL.revokeObjectURL(url);
   },
+
+  // MVP-Fahrplan Block 2, Punkt 5: Planblatt-Export (PDF für Aushang, CSV
+  // für nicht API-angebundene Lohnbuchhaltung) -- gleiches Download-Muster
+  // wie downloadPayrollExportCsv oben, nur mit variablem output/Dateityp.
+  downloadPlanExport: async (nodeId, month, outputFormat) => {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/plan-export/?node=${nodeId}&month=${month}&output=${outputFormat}`, {
+      headers: token ? { Authorization: `Token ${token}` } : {},
+    });
+    if (!res.ok) throw await parseErrorResponse(res);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `plan-export-${month}.${outputFormat}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  },
 };

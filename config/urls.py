@@ -4,7 +4,7 @@ from rest_framework.authtoken.views import obtain_auth_token
 
 from core.admin_views import tenant_switch
 from core.views import ChangePasswordView, MeView, TenantHolidaysView, TenantView
-from scheduling.views import PayrollExportView, UnderstaffedShiftsView
+from scheduling.views import PayrollExportView, PlanExportView, UnderstaffedShiftsView
 
 urlpatterns = [
     # Muss VOR 'admin/' stehen: admin.site.urls fängt sonst alles unter
@@ -27,6 +27,8 @@ urlpatterns = [
     path('api/understaffed-shifts/', UnderstaffedShiftsView.as_view()),
     # README Block 2 Punkt 31: Lohn-Rohdaten-Export, siehe PayrollExportView-Docstring.
     path('api/payroll-export/', PayrollExportView.as_view()),
+    # README Block 2 Punkt 5: Planblatt-Export (PDF/CSV), siehe PlanExportView-Docstring.
+    path('api/plan-export/', PlanExportView.as_view()),
     path('api/auth/token/', obtain_auth_token),
     path('api-auth/', include('rest_framework.urls')),
 ]

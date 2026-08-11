@@ -1385,3 +1385,239 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
                     ]
                 )
         return response
+
+
+_GERMAN_MONTHS = [
+    "",
+    "Januar",
+    "Februar",
+    "März",
+    "April",
+    "Mai",
+    "Juni",
+    "Juli",
+    "August",
+    "September",
+    "Oktober",
+    "November",
+    "Dezember",
+]
+_GERMAN_WEEKDAYS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+
+
+def _shift_short_label(template):
+    return template.icon or template.name[:3].upper()
+
+
+def _absence_short_label(absence_type):
+    return absence_type.icon or absence_type.name[:1].upper()
+
+
+class PlanExportView(TenantScopedAPIMixin, APIView):
+    """
+    MVP-Fahrplan Block 2, Punkt 5: Export des Planblatts (eine Station/ein
+    Team, ein Kalendermonat) als PDF (Aushang in der Praxis) oder CSV
+    (Übergabe an eine nicht API-angebundene Lohnbuchhaltung).
+
+    Sichtbarkeit identisch zum Planblatt selbst (siehe
+    ShiftAssignmentViewSet.get_queryset) -- anders als PayrollExportView
+    (Punkt 31, Admin-only) sind das dieselben Daten, die Mitarbeitende im
+    Planblatt für ihre eigene(n) Station(en) ohnehin schon sehen, deshalb
+    keine eigene Rollen-Einschränkung, nur der bestehende
+    Stations-Scope-Check über `_employee_scoped_node_ids`.
+
+    ?node=<id> und ?month=YYYY-MM sind Pflicht. ?output=pdf (Default) oder
+    ?output=csv -- bewusst NICHT ?format=, siehe PayrollExportView-Docstring
+    zur DRF-Content-Negotiation-Falle mit dem reservierten `format`-Query-
+    Parameter.
+
+    Vereinfachung ggü. dem Planblatt selbst: eine Zeile pro Mitarbeiter
+    (nicht pro Employment/Team wie bei mehreren Teams in einer Station,
+    siehe PlanGrid.jsx-Docstring zu Punkt 17) -- für einen Aushang/Export
+    ist eine flache "wer arbeitet wann"-Liste über alle Zuweisungen der
+    Person hinweg (unabhängig davon, auf welchem Team-Knoten sie liegen)
+    lesbarer als die Team-Trennzeilen der interaktiven Planblatt-Ansicht.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        tenant = request.tenant
+        if tenant is None:
+            raise PermissionDenied("Kein aktiver Tenant.")
+
+        node_param = request.query_params.get("node")
+        if not node_param:
+            raise ValidationError({"node": "Pflichtfeld."})
+        month_param = request.query_params.get("month")
+        if not month_param:
+            raise ValidationError({"month": "Pflichtfeld, erwartet YYYY-MM."})
+        try:
+            year_str, month_str = month_param.split("-")
+            year, month = int(year_str), int(month_str)
+            if not 1 <= month <= 12:
+                raise ValueError
+        except ValueError:
+            raise ValidationError({"month": "Ungültiges Format, erwartet YYYY-MM."})
+
+        target = Node.all_objects.filter(tenant=tenant, pk=node_param).first()
+        if target is None:
+            raise ValidationError({"node": "Unbekannte Station."})
+        scope_ids = [target.id] + [c.id for c in target.get_children()]
+
+        # TenantScopedAPIMixin (core.views) setzt request.employee_profile
+        # bewusst nicht (core darf scheduling nicht importieren, siehe dessen
+        # Docstring) -- anders als bei scheduling.views.TenantScopedViewSet
+        # hier direkt aufgelöst, exakt dieselbe Abfrage.
+        employee_profile = Employee.all_objects.filter(tenant=tenant, user=request.user).first()
+        allowed_ids = _employee_scoped_node_ids(request.membership, employee_profile)
+        if allowed_ids is not None and not (set(scope_ids) & set(allowed_ids)):
+            raise PermissionDenied("Keine Berechtigung für diese Station.")
+
+        month_start = date(year, month, 1)
+        month_end = date(year, month, calendar.monthrange(year, month)[1])
+
+        employees = list(
+            Employee.all_objects.filter(tenant=tenant, is_active=True, nodes__in=scope_ids)
+            .distinct()
+            .order_by("last_name", "first_name")
+        )
+
+        assignments_by_key = {}
+        assignments = (
+            ShiftAssignment.all_objects.filter(
+                tenant=tenant,
+                node_id__in=scope_ids,
+                employee__in=employees,
+                date__gte=month_start,
+                date__lte=month_end,
+            )
+            .select_related("template")
+            .order_by("template__start_time")
+        )
+        for assignment in assignments:
+            assignments_by_key.setdefault((assignment.employee_id, assignment.date), []).append(assignment)
+
+        absences_by_key = {}
+        absences = Absence.all_objects.filter(
+            tenant=tenant,
+            employee__in=employees,
+            status=Absence.Status.APPROVED,
+            start_date__lte=month_end,
+            end_date__gte=month_start,
+        ).select_related("type")
+        for absence in absences:
+            day = max(absence.start_date, month_start)
+            last_day = min(absence.end_date, month_end)
+            while day <= last_day:
+                absences_by_key.setdefault((absence.employee_id, day), []).append(absence)
+                day += timedelta(days=1)
+
+        output = request.query_params.get("output", "pdf")
+        if output == "csv":
+            return self._csv_response(
+                tenant, target, year, month, month_start, month_end, employees, assignments_by_key, absences_by_key
+            )
+        return self._pdf_response(
+            tenant, target, year, month, month_start, month_end, employees, assignments_by_key, absences_by_key
+        )
+
+    def _csv_response(
+        self, tenant, node, year, month, month_start, month_end, employees, assignments_by_key, absences_by_key
+    ):
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="plan-export-{year}-{month:02d}.csv"'
+        writer = csv.writer(response)
+        writer.writerow(["Personalnummer", "Name", "Datum", "Wochentag", "Typ", "Bezeichnung", "Von", "Bis"])
+        day = month_start
+        while day <= month_end:
+            weekday = _GERMAN_WEEKDAYS[day.weekday()]
+            for employee in employees:
+                name = f"{employee.first_name} {employee.last_name}"
+                for assignment in assignments_by_key.get((employee.id, day), []):
+                    writer.writerow(
+                        [
+                            employee.id,
+                            name,
+                            day.isoformat(),
+                            weekday,
+                            "Dienst",
+                            assignment.template.name,
+                            assignment.template.start_time.strftime("%H:%M"),
+                            assignment.template.end_time.strftime("%H:%M"),
+                        ]
+                    )
+                for absence in absences_by_key.get((employee.id, day), []):
+                    label = absence.type.name
+                    if absence.day_portion != Absence.DayPortion.FULL:
+                        label = f"{label} ({absence.get_day_portion_display()})"
+                    writer.writerow([employee.id, name, day.isoformat(), weekday, "Absenz", label, "", ""])
+            day += timedelta(days=1)
+        return response
+
+    def _pdf_response(
+        self, tenant, node, year, month, month_start, month_end, employees, assignments_by_key, absences_by_key
+    ):
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib.units import mm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle
+        from reportlab.lib.styles import getSampleStyleSheet
+        import io
+
+        num_days = month_end.day
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(
+            buffer,
+            pagesize=landscape(A4),
+            leftMargin=10 * mm,
+            rightMargin=10 * mm,
+            topMargin=10 * mm,
+            bottomMargin=10 * mm,
+        )
+        styles = getSampleStyleSheet()
+        title = Paragraph(f"{tenant.name} – {node.name} – {_GERMAN_MONTHS[month]} {year}", styles["Title"])
+
+        header_days = ["Mitarbeiter"] + [str(d) for d in range(1, num_days + 1)]
+        header_weekdays = [""] + [_GERMAN_WEEKDAYS[date(year, month, d).weekday()] for d in range(1, num_days + 1)]
+        rows = [header_days, header_weekdays]
+        weekend_columns = set()
+        for d in range(1, num_days + 1):
+            if date(year, month, d).weekday() >= 5:
+                weekend_columns.add(d)
+
+        for employee in employees:
+            row = [f"{employee.last_name} {employee.first_name}"]
+            for d in range(1, num_days + 1):
+                day = date(year, month, d)
+                parts = [_shift_short_label(a.template) for a in assignments_by_key.get((employee.id, day), [])]
+                for absence in absences_by_key.get((employee.id, day), []):
+                    parts.append(_absence_short_label(absence.type))
+                row.append("+".join(parts))
+            rows.append(row)
+
+        name_col_width = 32 * mm
+        day_col_width = (landscape(A4)[0] - 20 * mm - name_col_width) / num_days
+        col_widths = [name_col_width] + [day_col_width] * num_days
+
+        table = Table(rows, colWidths=col_widths, repeatRows=2)
+        style = [
+            ("FONTSIZE", (0, 0), (-1, -1), 6),
+            ("FONTSIZE", (0, 0), (0, -1), 7),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
+            ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#e2e8f0")),
+            ("FONTNAME", (0, 0), (-1, 1), "Helvetica-Bold"),
+            ("ALIGN", (1, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]
+        for d in weekend_columns:
+            style.append(("BACKGROUND", (d, 2), (d, -1), colors.HexColor("#f1f5f9")))
+        table.setStyle(TableStyle(style))
+
+        doc.build([title, table])
+        pdf_bytes = buffer.getvalue()
+        buffer.close()
+
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="plan-export-{year}-{month:02d}.pdf"'
+        return response

@@ -1185,6 +1185,14 @@ thead .col-employee {
   margin-bottom: 0;
 }
 
+/* MVP-Fahrplan Block 2, Punkt 5: Planblatt-Export -- schmale Button-Leiste
+   direkt über dem Grid, für alle Rollen sichtbar (siehe PlanGrid.jsx). */
+.plan-export-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .panel-form-row {
   display: flex;
   gap: 12px;

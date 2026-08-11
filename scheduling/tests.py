@@ -7085,3 +7085,128 @@ class PayrollExportViewTests(APITestCase):
         content = response.content.decode()
         self.assertIn("Personalnummer,Name,Kostenstelle,Lohnart-Code,Bezeichnung,Menge,Einheit,Periode", content)
         self.assertIn(f"{self.employee.id},Anna A,,100,Normalstunden,8.0,hours,2026-06", content)
+
+
+class PlanExportViewTests(APITestCase):
+    """
+    MVP-Fahrplan Block 2, Punkt 5: PlanExportView -- PDF/CSV-Export des
+    Planblatts. Sichtbarkeit identisch zum Planblatt selbst (Stations-Scope
+    über _employee_scoped_node_ids), keine Admin-Beschränkung wie beim
+    Lohn-Export.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-planexport")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 30),
+            icon="F",
+        )
+        self.absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", icon="U")
+        self.employee1 = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee1.nodes.add(self.node)
+        self.employee2 = Employee.objects.create(
+            tenant=self.tenant, first_name="Bruno", last_name="B", employment_pct=100
+        )
+        self.employee2.nodes.add(self.node)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee1, node=self.node, date=date(2026, 6, 1), template=self.template
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee2,
+            start_date=date(2026, 6, 2),
+            end_date=date(2026, 6, 2),
+            type=self.absence_type,
+            status=Absence.Status.APPROVED,
+        )
+
+        self.admin_user = User.objects.create_user(username="pe-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+        self.planner_user = User.objects.create_user(username="pe-planner", password="pw-not-real-123!")
+        planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        planner_membership.scoped_nodes.add(self.node)
+
+        self.own_employee_user = User.objects.create_user(username="pe-own", password="pw-not-real-123!")
+        Membership.objects.create(user=self.own_employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.employee1.user = self.own_employee_user
+        self.employee1.save(update_fields=["user"])
+
+        self.outsider_user = User.objects.create_user(username="pe-outsider", password="pw-not-real-123!")
+        Membership.objects.create(user=self.outsider_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.outsider = Employee.objects.create(
+            tenant=self.tenant, user=self.outsider_user, first_name="Carla", last_name="C", employment_pct=100
+        )
+        self.outsider.nodes.add(self.other_node)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_missing_node_param_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_missing_month_param_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_month_format_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id, "month": "not-a-month"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unknown_node_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": 999999, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_admin_can_export_any_node(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_planner_forbidden_for_node_outside_scope(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/plan-export/", {"node": self.other_node.id, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_can_export_own_station(self):
+        self.auth_as(self.own_employee_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_employee_forbidden_for_other_station(self):
+        self.auth_as(self.own_employee_user)
+        response = self.client.get("/api/plan-export/", {"node": self.other_node.id, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_pdf_output_default(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_csv_output_includes_shift_and_absence_rows(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id, "month": "2026-06", "output": "csv"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        content = response.content.decode()
+        self.assertIn("Personalnummer,Name,Datum,Wochentag,Typ,Bezeichnung,Von,Bis", content)
+        self.assertIn(f"{self.employee1.id},Anna A,2026-06-01,Mo,Dienst,Frühdienst,08:00,16:30", content)
+        self.assertIn(f"{self.employee2.id},Bruno B,2026-06-02,Di,Absenz,Ferien,,", content)

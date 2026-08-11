@@ -1137,6 +1137,24 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // README Punkt 18: assignmentId statt employeeId+date -- bei mehreren
   // Zuweisungen desselben Tages (Split-Shifts) ist jede unabhängig
   // tauschbar, die frühere Ableitung über employee+date wäre mehrdeutig.
+  // MVP-Fahrplan Block 2, Punkt 5: Planblatt-Export -- für alle Rollen
+  // sichtbar (nicht nur canManage), da Mitarbeitende dasselbe Planblatt für
+  // ihre eigene(n) Station(en) ohnehin schon sehen (siehe
+  // scheduling.views.PlanExportView-Docstring zur Sichtbarkeit).
+  const [exportingFormat, setExportingFormat] = useState(null);
+
+  async function handleExportPlan(outputFormat) {
+    setExportingFormat(outputFormat);
+    try {
+      const monthParam = `${year}-${String(month).padStart(2, "0")}`;
+      await api.downloadPlanExport(nodeId, monthParam, outputFormat);
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setExportingFormat(null);
+    }
+  }
+
   async function handleOfferTrade(assignmentId, targetEmployeeId) {
     try {
       await api.createShiftTradeRequest({
@@ -1164,6 +1182,14 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
 
   return (
     <>
+      <div className="plan-export-bar">
+        <button type="button" onClick={() => handleExportPlan("pdf")} disabled={exportingFormat !== null}>
+          {exportingFormat === "pdf" ? "…" : "Als PDF exportieren"}
+        </button>
+        <button type="button" onClick={() => handleExportPlan("csv")} disabled={exportingFormat !== null}>
+          {exportingFormat === "csv" ? "…" : "Als CSV exportieren"}
+        </button>
+      </div>
       {canManage && (
         <PlacementToolbar
           placementMode={placementMode}

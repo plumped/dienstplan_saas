@@ -29,6 +29,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "night_work_surcharge_pct",
             "night_work_regular_threshold_nights",
             "night_work_permit_confirmed",
+            "occasional_night_work_surcharge_pct",
             "sunday_work_surcharge_pct",
             "canton",
         ]

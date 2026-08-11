@@ -254,13 +254,15 @@ class WeeklyOvertimeSerializer(serializers.Serializer):
 
 
 class NightWorkSummarySerializer(serializers.Serializer):
-    """Read-only: Ergebnis von Employee.night_work_summary (Block 1.5, Art. 17b/17c ArG)."""
+    """Read-only: Ergebnis von Employee.night_work_summary (Block 1.5/1.17, Art. 17b/17c ArG)."""
 
     year = serializers.IntegerField()
     nights_count = serializers.IntegerField()
     night_hours = serializers.FloatField()
     is_regular = serializers.BooleanField()
     surcharge_hours = serializers.FloatField()
+    occasional_night_hours = serializers.FloatField()
+    occasional_night_surcharge_pct = serializers.IntegerField()
     permit_warning = serializers.BooleanField()
     medical_exam_due = serializers.BooleanField()
 

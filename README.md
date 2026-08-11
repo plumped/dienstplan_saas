@@ -254,7 +254,7 @@ entstanden sind, nicht neu sortiert nach Status):
 
 | Block | Thema | Status | Aktuell offen |
 |---|---|---|---|
-| 1 | Schweizer Arbeitsgesetz (ArG) | 14 von 17 Punkten erledigt | Lohnfortzahlung Krankheit (16), gelegentliche Nachtarbeit 25 % (17) — **aktueller Fokus**; Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 |
+| 1 | Schweizer Arbeitsgesetz (ArG) | 15 von 17 Punkten erledigt | Lohnfortzahlung Krankheit (16) — **aktueller Fokus**; Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 |
 | 2 | Kernfunktionen Praxisalltag | 27 von 32 Punkten erledigt | Export PDF/Excel (5), Automatisierte Planung (19), Fairness-Punktesystem (20), Lohnart-Mapping (30), CSV-/API-Export (31) |
 | 3 | Onboarding & Self-Signup | Konzept steht, nichts umgesetzt | kompletter Block |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
@@ -500,8 +500,8 @@ zurückgestellt, bis die Funktionalität steht.
     - Rein informativ (wie die Nachtarbeit-Bewilligungswarnung) — blockiert keine Absenz.
     - API-Endpoint + Serializer, Tests, Frontend-Warnhinweis im Abwesenheiten-Tab.
 
-17. **Gelegentliche Nachtarbeit — 25 % Lohnzuschlag (Art. 17b Abs. 2 ArG)** — nicht abgedeckt
-    (Compliance-Audit 2026-08). Abgedeckt ist bisher nur die Zeitgutschrift für **regelmässige**
+17. ✅ **Gelegentliche Nachtarbeit — 25 % Lohnzuschlag (Art. 17b Abs. 2 ArG)** (2026-08,
+    Compliance-Audit). Abgedeckt war bisher nur die Zeitgutschrift für **regelmässige**
     Nachtarbeit (Art. 17b Abs. 1, siehe Punkt 5 oben). Wer die Regelmässigkeits-Schwelle
     (`night_work_regular_threshold_nights`) nicht erreicht, hat trotzdem Anspruch auf einen
     **25 % Lohnzuschlag** (Geld, keine Zeitgutschrift) auf die geleisteten Nachtstunden.
@@ -509,16 +509,19 @@ zurückgestellt, bis die Funktionalität steht.
     **Wichtige Einschränkung:** die App kennt keinen Stundenlohn/kein Gehalt (bewusst, siehe
     "Grenzziehung Zeitmanagement vs. Lohnbuchhaltung" in Block 2, Punkt 30/31) — sie kann daher
     keinen CHF-Betrag ausrechnen, nur **Stundenzahl + anzuwendenden Prozentsatz** liefern. Das ist
-    genau der Rohinput für die neue Lohnart-Export-Schnittstelle (Block 2, Punkt 30/31) — eine
+    genau der Rohinput für die künftige Lohnart-Export-Schnittstelle (Block 2, Punkt 30/31) — eine
     dritte Zuschlagskategorie neben Nacht-Zeitgutschrift und Sonntagszuschlag.
 
-    **Implementierungsschritte:**
-    - Neues Tenant-Feld `occasional_night_work_surcharge_pct` (Default 25, analog
-      `night_work_surcharge_pct`).
-    - `Employee.night_work_summary()` erweitern: liefert zusätzlich `occasional_night_hours`
-      (>0 nur wenn `not is_regular`) und `occasional_night_surcharge_pct`.
-    - Serializer-Feld, Tests — insbesondere: regelmässig und gelegentlich schliessen sich
-      gegenseitig aus (nie beide gleichzeitig >0 für dieselbe Person/Jahr).
+    Neues Tenant-Feld `occasional_night_work_surcharge_pct` (Default 25, analog
+    `night_work_surcharge_pct`, editierbar in `TenantSettings.jsx` direkt unter der
+    Bewilligungs-Checkbox). `Employee.night_work_summary()` liefert neu zusätzlich zwei Felder:
+    `occasional_night_hours` (die vollen Nachtstunden des Jahres, aber nur `> 0` wenn
+    `not is_regular` -- regelmässig und gelegentlich schliessen sich bewusst gegenseitig aus, nie
+    beide gleichzeitig `> 0` für dieselbe Person/Jahr) und `occasional_night_surcharge_pct` (der
+    Tenant-Prozentsatz, unverändert durchgereicht, kein Produkt daraus -- die App liefert nur
+    Rohinput, keine CHF-Rechnung). `NightWorkSummarySerializer` entsprechend erweitert. 7 neue
+    Backend-Tests (Stunden+Prozentsatz bei gelegentlicher Nachtarbeit, konfigurierbarer
+    Prozentsatz, gegenseitiger Ausschluss, API-Response), volle Suite grün.
 
 ### 2. Fehlende Kernfunktionen für den Praxisalltag
 

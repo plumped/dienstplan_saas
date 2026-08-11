@@ -1688,6 +1688,33 @@ class NightAndSundayWorkTests(APITestCase):
         self.assertEqual(summary["night_hours"], 175.0)  # 25 * 7h
         self.assertEqual(summary["surcharge_hours"], 17.5)  # 10% Zeitgutschrift (Tenant-Default)
 
+    # -- Gelegentliche Nachtarbeit, 25% Lohnzuschlag (Block 1.17, Art. 17b Abs. 2 ArG) --
+
+    def test_occasional_night_work_reports_hours_and_surcharge_pct(self):
+        # Unterhalb der Regelmässigkeits-Schwelle: keine Zeitgutschrift, aber
+        # die vollen Nachtstunden + der Tenant-Prozentsatz als Rohinput für
+        # den (künftigen) Lohn-Export -- die App selbst rechnet kein CHF aus.
+        self._assign_nights(self.employee, 5)
+        summary = self.employee.night_work_summary(2026)
+        self.assertEqual(summary["occasional_night_hours"], 35.0)  # 5 * 7h
+        self.assertEqual(summary["occasional_night_surcharge_pct"], 25)  # Tenant-Default
+
+    def test_occasional_night_surcharge_pct_is_configurable(self):
+        self.tenant.occasional_night_work_surcharge_pct = 30
+        self.tenant.save()
+        self._assign_nights(self.employee, 5)
+        summary = self.employee.night_work_summary(2026)
+        self.assertEqual(summary["occasional_night_surcharge_pct"], 30)
+
+    def test_regular_and_occasional_night_work_are_mutually_exclusive(self):
+        # Bei regelmässiger Nachtarbeit greift die Zeitgutschrift oben --
+        # occasional_night_hours bleibt dann 0, nie beide gleichzeitig >0.
+        self._assign_nights(self.employee, 25)
+        summary = self.employee.night_work_summary(2026)
+        self.assertTrue(summary["is_regular"])
+        self.assertGreater(summary["surcharge_hours"], 0)
+        self.assertEqual(summary["occasional_night_hours"], 0)
+
     def test_permit_warning_when_regular_and_not_confirmed(self):
         self._assign_nights(self.employee, 25)
         summary = self.employee.night_work_summary(2026)
@@ -1733,6 +1760,16 @@ class NightAndSundayWorkTests(APITestCase):
         self.assertEqual(response.data["nights_count"], 25)
         self.assertTrue(response.data["is_regular"])
         self.assertEqual(response.data["surcharge_hours"], 17.5)
+        self.assertEqual(response.data["occasional_night_hours"], 0)
+
+    def test_api_night_work_endpoint_reports_occasional_surcharge(self):
+        self._assign_nights(self.employee, 5)
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/night-work/?year=2026")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["is_regular"])
+        self.assertEqual(response.data["occasional_night_hours"], 35.0)
+        self.assertEqual(response.data["occasional_night_surcharge_pct"], 25)
 
     def test_api_night_work_rejects_invalid_year(self):
         self.auth_as(self.planner_user)

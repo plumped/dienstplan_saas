@@ -328,11 +328,22 @@ class Employee(TenantScopedModel):
         Nachtarbeit-Auswertung für ein Kalenderjahr (MVP-Fahrplan Block 1.5):
         Anzahl Nächte mit Nachtarbeit, ob das als "regelmässig" gilt (ArGV 1
         Art. 31, Tenant.night_work_regular_threshold_nights), die daraus
-        resultierende Zeitgutschrift (Art. 17b ArG) sowie zwei Hinweise für
-        Admin/Planer: fehlende Bewilligungsbestätigung und fällige
-        arbeitsmedizinische Untersuchung (Art. 17c ArG). Rein informativ wie
-        night_hours selbst -- blockiert keine Zuweisung, ist kein
-        Rechtsrat.
+        resultierende Zeitgutschrift (Art. 17b Abs. 1 ArG) sowie zwei
+        Hinweise für Admin/Planer: fehlende Bewilligungsbestätigung und
+        fällige arbeitsmedizinische Untersuchung (Art. 17c ArG). Rein
+        informativ wie night_hours selbst -- blockiert keine Zuweisung, ist
+        kein Rechtsrat.
+
+        Block 1.17 (Compliance-Audit 2026-08): wer die Regelmässigkeits-
+        Schwelle NICHT erreicht, hat trotzdem Anspruch auf einen 25 %
+        Lohnzuschlag (Art. 17b Abs. 2 ArG) -- anders als die Zeitgutschrift
+        oben ist das Geld statt Zeit, die App kennt keinen Stundenlohn und
+        kann daher keinen CHF-Betrag ausrechnen. `occasional_night_hours`/
+        `occasional_night_surcharge_pct` liefern deshalb nur die
+        anzuwendende Stundenzahl + den Prozentsatz als Rohinput für den
+        Lohn-Export (Block 2 Punkt 30/31), nicht das Produkt daraus.
+        Regelmässig und gelegentlich schliessen sich gegenseitig aus:
+        `occasional_night_hours` ist nur bei `not is_regular` > 0.
         """
         year = year or timezone.localdate().year
         assignments = ShiftAssignment.all_objects.filter(employee=self, date__year=year).select_related(
@@ -352,13 +363,16 @@ class Employee(TenantScopedModel):
         surcharge_hours = (
             round(total_night_hours * self.tenant.night_work_surcharge_pct / 100, 2) if is_regular else 0.0
         )
+        rounded_night_hours = round(total_night_hours, 2)
 
         return {
             "year": year,
             "nights_count": nights_count,
-            "night_hours": round(total_night_hours, 2),
+            "night_hours": rounded_night_hours,
             "is_regular": is_regular,
             "surcharge_hours": surcharge_hours,
+            "occasional_night_hours": 0.0 if is_regular else rounded_night_hours,
+            "occasional_night_surcharge_pct": self.tenant.occasional_night_work_surcharge_pct,
             "permit_warning": is_regular and not self.tenant.night_work_permit_confirmed,
             "medical_exam_due": self.night_work_medical_exam_due(is_regular=is_regular),
         }

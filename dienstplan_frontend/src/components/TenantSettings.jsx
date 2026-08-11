@@ -117,6 +117,12 @@ const FIELD_GROUPS = [
         type: "checkbox",
       },
       {
+        key: "occasional_night_work_surcharge_pct",
+        label: "Lohnzuschlag GELEGENTLICHE Nachtarbeit (%)",
+        hint: "Art. 17b Abs. 2 ArG: i. d. R. 25%. Gilt für Nachtstunden unterhalb der Regelmässigkeits-Schwelle "
+          + "oben (Geld statt Zeitgutschrift) -- die App liefert nur Stunden + Prozentsatz, keinen CHF-Betrag.",
+      },
+      {
         key: "sunday_work_surcharge_pct",
         label: "Lohnzuschlag Sonntagsarbeit (%)",
         hint: "Art. 19 Abs. 3 ArG: i. d. R. 50%. Für Dauerbetriebe können Ausnahmen gelten -- ggf. auf 0 setzen.",

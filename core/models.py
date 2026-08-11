@@ -171,6 +171,14 @@ class Tenant(models.Model):
         "Bestätigung erscheint ein Warnhinweis, sobald ein Mitarbeiter regelmässige Nachtarbeit "
         "leistet (siehe Employee.night_work_summary).",
     )
+    occasional_night_work_surcharge_pct = models.PositiveSmallIntegerField(
+        default=25,
+        help_text="Lohnzuschlag auf Nachtstunden bei GELEGENTLICHER Nachtarbeit (unterhalb der "
+        "Regelmässigkeits-Schwelle oben), in Prozent (Art. 17b Abs. 2 ArG: i. d. R. 25%). Anders "
+        "als night_work_surcharge_pct (Zeitgutschrift, Art. 17b Abs. 1) ist das Geld statt Zeit -- "
+        "die App kennt keinen Stundenlohn und rechnet daher keinen CHF-Betrag aus, nur die "
+        "anzuwendende Stundenzahl + diesen Prozentsatz (siehe Employee.night_work_summary).",
+    )
     sunday_work_surcharge_pct = models.PositiveSmallIntegerField(
         default=50,
         help_text="Lohnzuschlag auf Sonntagsstunden in Prozent (Art. 19 Abs. 3 ArG i. V. m. Art. 46 "

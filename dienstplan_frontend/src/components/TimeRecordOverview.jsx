@@ -412,7 +412,7 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                             <td>{r.assignment_employee_name}</td>
                             <td>{r.assignment_node_name}</td>
                             <td>{r.assignment_template_name}</td>
-                            <td>
+                            <td className="time-record-ist-cell">
                               <span className="time-record-ist">
                                 {(effectiveRecordSegments(r) || [])
                                   .map((s) => `${s.actual_start.slice(0, 5)}–${s.actual_end.slice(0, 5)}`)
@@ -422,8 +422,8 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                                 className={`time-deviation-badge ${deviationClass(r.hours_deviation)}`}
                                 title={risky ? "Auffällig -- bitte vor dem Bestätigen prüfen" : undefined}
                               >
-                                {formatHoursDeviation(r.hours_deviation)}
-                                {risky && " ⚠"}
+                                ({formatHoursDeviation(r.hours_deviation)}
+                                {risky && " ⚠"})
                               </span>
                             </td>
                             <td className="settings-table-actions">

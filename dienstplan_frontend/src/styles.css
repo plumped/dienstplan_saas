@@ -1776,15 +1776,21 @@ thead .col-employee {
    für -" -- TimeRecordOverview.jsx zeigt in der "Zu bestätigen"-Tabelle
    die erfassten Zeiten plus eine farbige Stunden-Abweichung (Ist ./. Soll),
    damit ein Planer nicht erst das Korrigieren-Modal öffnen muss, um zu
-   sehen, ob mehr oder weniger als geplant gearbeitet wurde. */
+   sehen, ob mehr oder weniger als geplant gearbeitet wurde. Nutzer-Feedback
+   (2026-08, zweite Runde): "07:00-12:00, 13:00-16:24 (±0 h) nebeneinander"
+   -- Zeiten und Abweichung standen zuvor auf zwei Zeilen untereinander,
+   was in der Tabelle unruhig wirkte; jetzt eine Zeile, Abweichung in
+   Klammern direkt dahinter. */
+.time-record-ist-cell {
+  white-space: nowrap;
+}
+
 .time-record-ist {
-  display: block;
   font-variant-numeric: tabular-nums;
 }
 
 .time-deviation-badge {
-  display: inline-block;
-  margin-top: 2px;
+  margin-left: 6px;
   font-size: 12px;
   font-weight: 600;
   color: var(--ink-muted);

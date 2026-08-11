@@ -2528,6 +2528,12 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     alle ausgewählten Einträge und aktualisiert die Badge-Zahl live, alle Tabellenzellen sind nach
     dem Fix konsistent oben ausgerichtet).
 
+    **UX-Nachbesserung (2026-08, Nutzer-Feedback: "styling passt noch nicht. ich schlage vor mach
+    es so 07:00–12:00, 13:00–16:24 (±0 h) nebeneinander")**: die Ist-Zeit-Spalte stand bisher auf
+    zwei Zeilen (Uhrzeiten, darunter das Abweichungs-Badge) -- jetzt eine Zeile, Abweichung in
+    Klammern direkt dahinter, exakt wie vom Nutzer vorgeschlagen. Mit Playwright verifiziert
+    (Zellentext `07:00–12:00, 13:00–16:24 (±0 h)`, Screenshot bestätigt einzeilige Darstellung).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

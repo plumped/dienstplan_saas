@@ -1108,12 +1108,14 @@ class Employee(TenantScopedModel):
         """
         Rohdaten für den Lohn-Export (MVP-Fahrplan Block 2, Punkt 30/31) für
         einen Kalendermonat: eine Liste von {category, special_template_id,
-        amount, unit}-Zeilen, ungerundet auf Lohnart-Codes -- die
-        Übersetzung passiert bewusst NICHT hier, sondern in der View über
-        PayrollCategoryMapping, damit Employee (scheduling) nicht von einer
-        Konfiguration abhängt, die sich der Kunde jederzeit ändern kann.
-        Zeilen mit amount == 0 werden ausgelassen (kein Bedarf, in der
-        Kundenlohnsoftware eine Nullzeile zu erzeugen).
+        absence_type_id, amount, unit}-Zeilen (genau eines der ersten drei
+        Felder gesetzt, analog PayrollCategoryMapping), ungerundet auf
+        Lohnart-Codes -- die Übersetzung passiert bewusst NICHT hier,
+        sondern in der View über PayrollCategoryMapping, damit Employee
+        (scheduling) nicht von einer Konfiguration abhängt, die sich der
+        Kunde jederzeit ändern kann. Zeilen mit amount == 0 werden
+        ausgelassen (kein Bedarf, in der Kundenlohnsoftware eine Nullzeile
+        zu erzeugen).
 
         Baut auf monthly_summary() (Stunden-Kategorien) und
         _monthly_absence_day_breakdown() (Tage-Kategorien) auf:
@@ -1123,18 +1125,34 @@ class Employee(TenantScopedModel):
           BESTÄTIGTE Anteil (overtime_surcharge_hours), nicht der rohe
           Ist-Soll-Überschuss (overtime_hours) -- unbestätigte Überzeit ist
           noch nicht abrechnungsreif (README, Gleitzeit-Entscheidung 2026-08).
-        - Ferien-/Krankheits-/sonstige Absenztage: AbsenceType.
-          deducts_vacation_days/counts_as_sick_leave bestimmen die Kategorie,
-          alles andere fällt in "sonstige Absenztage".
+        - Ferientage: alle AbsenceTypes mit deducts_vacation_days in einer
+          Zeile (fixe Kategorie -- welcher Typ im Einzelnen deduziert hat,
+          ist für die Lohnbuchhaltung i. d. R. nicht relevant).
+        - Krankheitstage: alle AbsenceTypes mit counts_as_sick_leave,
+          aufgeteilt nach Lohnfortzahlungs-Anspruch, siehe
+          _sick_pay_entitlement_split().
+        - Alle übrigen AbsenceTypes (Nutzer-Feedback 2026-08: "sonstige
+          Absenztage müssten aufgeschlüsselt werden", z. B. Militärdienst
+          braucht einen anderen Lohnart-Code als unbezahlter Urlaub): eine
+          eigene Zeile PRO Typ (absence_type_id statt category, analog zu
+          den Spezialitäten unten) statt eines gemeinsamen Sammel-Topfs.
         - Eine Zeile pro Spezialität mit Zuschlag (special_template_id
           statt category, siehe PayrollCategoryMapping-Docstring).
         """
         summary = self.monthly_summary(year, month)
         lines = []
 
-        def add(category, amount, unit="hours"):
+        def add(category, amount, unit="hours", special_template_id=None, absence_type_id=None):
             if amount:
-                lines.append({"category": category, "special_template_id": None, "amount": amount, "unit": unit})
+                lines.append(
+                    {
+                        "category": category,
+                        "special_template_id": special_template_id,
+                        "absence_type_id": absence_type_id,
+                        "amount": amount,
+                        "unit": unit,
+                    }
+                )
 
         regular_hours = round(summary["ist_hours"] - summary["overtime_hours"], 2)
         add(PayrollCategoryMapping.Category.REGULAR_HOURS, regular_hours)
@@ -1147,7 +1165,7 @@ class Employee(TenantScopedModel):
         absence_days = self._monthly_absence_day_breakdown(summary["month_start"], summary["month_end"])
         if absence_days:
             types_by_id = {t.id: t for t in AbsenceType.all_objects.filter(pk__in=absence_days.keys())}
-            vacation_days = sick_days = other_days = 0.0
+            vacation_days = sick_days = 0.0
             for type_id, days in absence_days.items():
                 absence_type = types_by_id.get(type_id)
                 if absence_type and absence_type.deducts_vacation_days:
@@ -1155,23 +1173,50 @@ class Employee(TenantScopedModel):
                 elif absence_type and absence_type.counts_as_sick_leave:
                     sick_days += days
                 else:
-                    other_days += days
+                    add(None, round(days, 2), unit="days", absence_type_id=type_id)
             add(PayrollCategoryMapping.Category.VACATION_DAYS, round(vacation_days, 2), unit="days")
-            add(PayrollCategoryMapping.Category.SICK_DAYS, round(sick_days, 2), unit="days")
-            add(PayrollCategoryMapping.Category.OTHER_ABSENCE_DAYS, round(other_days, 2), unit="days")
+            paid_sick_days, exhausted_sick_days = self._sick_pay_entitlement_split(
+                round(sick_days, 2), summary["month_start"], summary["month_end"]
+            )
+            add(PayrollCategoryMapping.Category.SICK_DAYS, paid_sick_days, unit="days")
+            add(PayrollCategoryMapping.Category.SICK_DAYS_EXHAUSTED, exhausted_sick_days, unit="days")
 
         for entry in summary["special_surcharge_breakdown"]:
             if entry["surcharge_hours"]:
-                lines.append(
-                    {
-                        "category": None,
-                        "special_template_id": entry["template_id"],
-                        "amount": entry["surcharge_hours"],
-                        "unit": "hours",
-                    }
-                )
+                add(None, entry["surcharge_hours"], special_template_id=entry["template_id"])
 
         return lines
+
+    def _sick_pay_entitlement_split(self, sick_days_this_month, month_start, month_end):
+        """
+        Splittet die Krankheitstage eines Monats in "mit Lohnfortzahlung"
+        und "Anspruch erschöpft" (Nutzer-Feedback 2026-08: "Sick-Pay-Skala
+        einbauen"), nur aussagekräftig für sick_pay_model=SCALE -- beim
+        Taggeldversicherungs-Modell rechnet die App bewusst keine
+        Wartefrist pro Krankheitsfall aus (siehe sick_pay_summary()-
+        Docstring, Grenzziehung Zeitmanagement vs. Lohnbuchhaltung), dort
+        bleibt es bei einer einzigen Zeile.
+
+        Bekannte Vereinfachung: der Anspruch wird anhand des Dienstjahr-
+        Fensters zum MONATSENDE bestimmt (wie sick_pay_summary()). Fällt
+        der Dienstjahr-Wechsel mitten in den Monat, zählen "vor diesem
+        Monat verbrauchte Tage" nur die Tage innerhalb des so bestimmten
+        Fensters -- ein in der Praxis seltener Randfall.
+        """
+        tenant = self.tenant
+        if tenant.sick_pay_model != Tenant.SickPayModel.SCALE or not sick_days_this_month:
+            return sick_days_this_month, 0.0
+        window_start, _window_end, service_year_number = self._current_service_year_window(month_end)
+        entitlement_days = _SICK_PAY_SCALE_FUNCTIONS[tenant.sick_pay_scale](service_year_number) * 7
+        before_month = self._monthly_absence_day_breakdown(window_start, month_start - timedelta(days=1))
+        types_by_id = {t.id: t for t in AbsenceType.all_objects.filter(pk__in=before_month.keys())}
+        used_before_month = sum(
+            days for type_id, days in before_month.items() if types_by_id.get(type_id) and types_by_id[type_id].counts_as_sick_leave
+        )
+        remaining_before_month = max(0.0, entitlement_days - used_before_month)
+        paid_days = round(min(sick_days_this_month, remaining_before_month), 2)
+        exhausted_days = round(sick_days_this_month - paid_days, 2)
+        return paid_days, exhausted_days
 
     def _flextime_corridor_status(self, year, month):
         """
@@ -1688,9 +1733,13 @@ class PayrollCategoryMapping(TenantScopedModel):
     Genau eine Zeile pro fester `category` ODER pro `special_template`
     (Spezialit\u00e4t mit `TimeTemplate.surcharge_pct > 0`, z. B. "Pikett
     Wochentag"/"Pikett Wochenende" k\u00f6nnen unterschiedliche Lohnart-Codes
-    brauchen -- die feste category-Auswahl reicht daf\u00fcr nicht). Beides in
-    einem Modell statt zwei getrennten, damit der Export (payroll_raw_lines
-    + View) nur EINE Lookup-Struktur braucht.
+    brauchen -- die feste category-Auswahl reicht daf\u00fcr nicht) ODER pro
+    `absence_type` (Nutzer-Feedback 2026-08: "sonstige Absenztage m\u00fcssten
+    aufgeschl\u00fcsselt werden" -- z. B. Milit\u00e4rdienst braucht einen anderen
+    Lohnart-Code als unbezahlter Urlaub, beide fielen vorher unter dieselbe
+    feste OTHER_ABSENCE_DAYS-Kategorie). Alle drei in einem Modell statt
+    getrennten, damit der Export (payroll_raw_lines + View) nur EINE
+    Lookup-Struktur braucht.
     """
 
     class Category(models.TextChoices):
@@ -1701,7 +1750,7 @@ class PayrollCategoryMapping(TenantScopedModel):
         SUNDAY_SURCHARGE = "sunday_surcharge", "Sonntagszuschlag"
         VACATION_DAYS = "vacation_days", "Ferientage"
         SICK_DAYS = "sick_days", "Krankheitstage"
-        OTHER_ABSENCE_DAYS = "other_absence_days", "Sonstige Absenztage"
+        SICK_DAYS_EXHAUSTED = "sick_days_exhausted", "Krankheitstage (Anspruch ersch\u00f6pft)"
         HOLIDAYS = "holidays", "Feiertage"
 
     category = models.CharField(max_length=30, choices=Category.choices, null=True, blank=True)
@@ -1712,7 +1761,17 @@ class PayrollCategoryMapping(TenantScopedModel):
         blank=True,
         related_name="payroll_mappings",
         help_text="Nur gesetzt f\u00fcr eine Spezialit\u00e4t mit Zuschlag statt einer festen Kategorie oben "
-        "-- genau eines von category/special_template muss gesetzt sein.",
+        "-- genau eines von category/special_template/absence_type muss gesetzt sein.",
+    )
+    absence_type = models.ForeignKey(
+        AbsenceType,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="payroll_mappings",
+        help_text="Nur gesetzt f\u00fcr eine Absenzart, die weder Ferien- noch Krankheits-Anspruch "
+        "abzieht (z. B. Milit\u00e4rdienst, unbezahlter Urlaub) -- genau eines von "
+        "category/special_template/absence_type muss gesetzt sein.",
     )
     payroll_code = models.CharField(max_length=50, help_text="Vom Kunden vergebener Lohnart-Code.")
     payroll_label = models.CharField(max_length=200, blank=True, help_text="Freitext, nur zur Anzeige.")
@@ -1727,30 +1786,46 @@ class PayrollCategoryMapping(TenantScopedModel):
         constraints = [
             models.CheckConstraint(
                 condition=(
-                    Q(category__isnull=False, special_template__isnull=True)
-                    | Q(category__isnull=True, special_template__isnull=False)
+                    Q(category__isnull=False, special_template__isnull=True, absence_type__isnull=True)
+                    | Q(category__isnull=True, special_template__isnull=False, absence_type__isnull=True)
+                    | Q(category__isnull=True, special_template__isnull=True, absence_type__isnull=False)
                 ),
-                name="payrollcategorymapping_exactly_one_of_category_or_template",
+                name="payrollcategorymapping_exactly_one_of_category_or_template_or_absence_type",
             ),
             models.UniqueConstraint(
                 fields=["tenant", "category"],
-                condition=Q(special_template__isnull=True),
+                condition=Q(special_template__isnull=True, absence_type__isnull=True),
                 name="unique_payroll_category_per_tenant",
             ),
             models.UniqueConstraint(
                 fields=["tenant", "special_template"],
-                condition=Q(category__isnull=True),
+                condition=Q(category__isnull=True, absence_type__isnull=True),
                 name="unique_payroll_special_template_per_tenant",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "absence_type"],
+                condition=Q(category__isnull=True, special_template__isnull=True),
+                name="unique_payroll_absence_type_per_tenant",
             ),
         ]
 
     def __str__(self):
-        label = self.category or (self.special_template.name if self.special_template_id else "?")
+        if self.category:
+            label = self.category
+        elif self.special_template_id:
+            label = self.special_template.name
+        elif self.absence_type_id:
+            label = self.absence_type.name
+        else:
+            label = "?"
         return f"{label} -> {self.payroll_code}"
 
     def clean(self):
-        if bool(self.category) == bool(self.special_template_id):
-            raise ValidationError("Genau eines von Kategorie oder Spezialit\u00e4t muss gesetzt sein.")
+        set_count = sum(bool(v) for v in (self.category, self.special_template_id, self.absence_type_id))
+        if set_count != 1:
+            raise ValidationError(
+                "Genau eines von Kategorie, Spezialit\u00e4t oder Absenzart muss gesetzt sein."
+            )
 
 
 class ShiftAssignment(TenantScopedModel):

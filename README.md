@@ -2391,6 +2391,30 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Berechtigungen, Kostenstellen-Vererbung entlang der Stationshierarchie, Eindeutigkeits-Logik
     bei mehreren Stationen), volle Suite grün.
 
+    **Nachbesserung 2 (2026-08, Frage "wo sind Pikettzulagen etc.?"):** Pikett & Co. waren bereits
+    über `special_template` abgedeckt (dynamisch, siehe oben) -- zwei echte Lücken kamen dabei aber
+    zutage und wurden behoben:
+    - **Sonstige Absenztage aufgeschlüsselt**: die feste Kategorie `OTHER_ABSENCE_DAYS` ist entfallen.
+      `PayrollCategoryMapping` bekam ein drittes exklusives Ziel `absence_type` (FK auf
+      `AbsenceType`, analog `special_template`) -- jede Absenzart ohne Ferien-/Krankheits-Flag (z. B.
+      Militärdienst, unbezahlter Urlaub) bekommt jetzt eine eigene Export-Zeile mit eigenem
+      Lohnart-Code statt in einem gemeinsamen "Sonstiges"-Topf zu landen. UI: eigene Tabellenzeile
+      pro Absenzart in Einstellungen → Lohnarten, analog den Spezialitäten.
+    - **Sick-Pay-Skala im Export**: `Employee.payroll_raw_lines()` teilt Krankheitstage bei
+      `Tenant.sick_pay_model = SCALE` jetzt in `SICK_DAYS` ("mit Lohnfortzahlung") und die neue
+      Kategorie `SICK_DAYS_EXHAUSTED` ("Anspruch erschöpft") auf, anhand des zu Monatsbeginn bereits
+      verbrauchten Anspruchs im laufenden Dienstjahr (`_sick_pay_entitlement_split()`, siehe
+      Docstring für die bekannte Randfall-Vereinfachung bei Dienstjahr-Wechsel mitten im Monat). Beim
+      Taggeldversicherungs-Modell bleibt es bei einer Zeile (die App rechnet bewusst keine
+      Wartefrist pro Krankheitsfall aus, Grenzziehung Zeitmanagement vs. Lohnbuchhaltung). Der
+      Export liefert zusätzlich pro Mitarbeiter mit Krankheitstagen einen `sick_pay_context`
+      (Modell, Skala, Anspruch, verbleibender Anspruch, Wartefrist) als Kontext für die
+      Lohnbuchhaltung -- nicht Teil der CSV-Zeilen, nur der JSON-Vorschau.
+
+    Insgesamt 12 weitere Backend-Tests (Modell-Constraints für `absence_type`, API-Berechtigungen,
+    Aufschlüsselung mehrerer Absenzarten, Sick-Pay-Split unter beiden Modellen, Export-Warnungen/
+    -Kontext), volle Suite grün.
+
 32. ✅ **Stammdatenpflege: Mitarbeitenden-Tabelle statt Liste** (2026-08). Nutzer-Feedback: "die
     Stammdatenpflege ist bei 1200 Mitarbeitenden katastrophal -- unsortierte Liste, scrollend
     suchen, Bearbeiten klicken, Werte anpassen". `EmployeeViewSet` bekam `filter_backends`

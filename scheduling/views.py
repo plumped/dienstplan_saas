@@ -1,3 +1,4 @@
+import calendar
 import csv
 from datetime import date, timedelta
 
@@ -1273,27 +1274,43 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
         mappings = list(PayrollCategoryMapping.all_objects.filter(tenant=tenant))
         active_by_category = {m.category: m for m in mappings if m.category and m.is_active}
         active_by_template = {m.special_template_id: m for m in mappings if m.special_template_id and m.is_active}
+        active_by_absence_type = {m.absence_type_id: m for m in mappings if m.absence_type_id and m.is_active}
         configured_categories = {m.category for m in mappings if m.category}
         configured_templates = {m.special_template_id for m in mappings if m.special_template_id}
+        configured_absence_types = {m.absence_type_id for m in mappings if m.absence_type_id}
         special_template_names = {
             t.id: t.name
             for t in TimeTemplate.all_objects.filter(tenant=tenant, category=TimeTemplate.Category.SPECIAL)
         }
+        absence_type_names = {t.id: t.name for t in AbsenceType.all_objects.filter(tenant=tenant)}
+
+        sick_categories = {
+            PayrollCategoryMapping.Category.SICK_DAYS,
+            PayrollCategoryMapping.Category.SICK_DAYS_EXHAUSTED,
+        }
+        month_end = date(year, month, calendar.monthrange(year, month)[1])
 
         employees = Employee.all_objects.filter(tenant=tenant, is_active=True).order_by("last_name", "first_name")
         result_employees = []
         warnings = set()
         for employee in employees:
             lines = []
+            has_sick_days = False
             for raw in employee.payroll_raw_lines(year, month):
                 if raw["category"]:
+                    if raw["category"] in sick_categories:
+                        has_sick_days = True
                     mapping = active_by_category.get(raw["category"])
                     label = PayrollCategoryMapping.Category(raw["category"]).label
                     is_configured = raw["category"] in configured_categories
-                else:
+                elif raw["special_template_id"]:
                     mapping = active_by_template.get(raw["special_template_id"])
                     label = special_template_names.get(raw["special_template_id"], "?")
                     is_configured = raw["special_template_id"] in configured_templates
+                else:
+                    mapping = active_by_absence_type.get(raw["absence_type_id"])
+                    label = absence_type_names.get(raw["absence_type_id"], "?")
+                    is_configured = raw["absence_type_id"] in configured_absence_types
                 if mapping is None:
                     if not is_configured:
                         warnings.add(f"{label}: kein Lohnart-Code konfiguriert")
@@ -1317,6 +1334,14 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
                         # mehrdeutig oder nirgends konfiguriert.
                         "cost_center": employee.effective_cost_center(),
                         "lines": lines,
+                        # Nachbesserung 2026-08 ("Sick-Pay-Skala einbauen"):
+                        # nur gesetzt, wenn dieser Monat Krankheitstage
+                        # enthält -- Kontext für die Lohnbuchhaltung, WARUM
+                        # SICK_DAYS/SICK_DAYS_EXHAUSTED so aufgeteilt wurden
+                        # (Employee.sick_pay_summary(), Punkt 16).
+                        "sick_pay_context": (
+                            self._sick_pay_context(employee, month_end) if has_sick_days else None
+                        ),
                     }
                 )
 
@@ -1326,6 +1351,16 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
         return Response(
             {"year": year, "month": month, "employees": result_employees, "warnings": sorted(warnings)}
         )
+
+    def _sick_pay_context(self, employee, month_end):
+        summary = employee.sick_pay_summary(reference_date=month_end)
+        return {
+            "model": summary["model"],
+            "scale": summary["scale"],
+            "entitlement_days": summary["entitlement_days"],
+            "remaining_days": summary["remaining_days"],
+            "waiting_days": summary["waiting_days"],
+        }
 
     def _csv_response(self, year, month, result_employees):
         response = HttpResponse(content_type="text/csv")

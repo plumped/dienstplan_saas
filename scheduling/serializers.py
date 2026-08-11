@@ -553,7 +553,7 @@ class PayrollCategoryMappingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = PayrollCategoryMapping
-        fields = ["id", "category", "special_template", "payroll_code", "payroll_label", "is_active"]
+        fields = ["id", "category", "special_template", "absence_type", "payroll_code", "payroll_label", "is_active"]
 
     def validate_special_template(self, value):
         if value is None:
@@ -563,11 +563,22 @@ class PayrollCategoryMappingSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Ungültige oder fremde Spezialität.")
         return value
 
+    def validate_absence_type(self, value):
+        if value is None:
+            return value
+        tenant = self.context["request"].tenant
+        if value.tenant_id != tenant.id:
+            raise serializers.ValidationError("Ungültige oder fremde Absenzart.")
+        return value
+
     def validate(self, attrs):
         category = attrs.get("category", getattr(self.instance, "category", None))
         special_template = attrs.get("special_template", getattr(self.instance, "special_template", None))
-        if bool(category) == bool(special_template):
-            raise serializers.ValidationError("Genau eines von Kategorie oder Spezialität muss gesetzt sein.")
+        absence_type = attrs.get("absence_type", getattr(self.instance, "absence_type", None))
+        if sum(bool(v) for v in (category, special_template, absence_type)) != 1:
+            raise serializers.ValidationError(
+                "Genau eines von Kategorie, Spezialität oder Absenzart muss gesetzt sein."
+            )
         return attrs
 
 

@@ -108,7 +108,15 @@ class OvertimeSettlementAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
 
 @admin.register(PayrollCategoryMapping)
 class PayrollCategoryMappingAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
-    list_display = ["category", "special_template", "payroll_code", "payroll_label", "is_active", "tenant"]
+    list_display = [
+        "category",
+        "special_template",
+        "absence_type",
+        "payroll_code",
+        "payroll_label",
+        "is_active",
+        "tenant",
+    ]
     list_filter = ["tenant", "is_active"]
 
 

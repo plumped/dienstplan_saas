@@ -6468,12 +6468,23 @@ class PayrollCategoryMappingModelTests(TestCase):
             category=TimeTemplate.Category.SPECIAL,
             surcharge_pct=20,
         )
+        self.absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
 
     def test_clean_rejects_both_category_and_special_template_set(self):
         mapping = PayrollCategoryMapping(
             tenant=self.tenant,
             category=PayrollCategoryMapping.Category.REGULAR_HOURS,
             special_template=self.special_template,
+            payroll_code="100",
+        )
+        with self.assertRaises(ValidationError):
+            mapping.full_clean()
+
+    def test_clean_rejects_category_and_absence_type_both_set(self):
+        mapping = PayrollCategoryMapping(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            absence_type=self.absence_type,
             payroll_code="100",
         )
         with self.assertRaises(ValidationError):
@@ -6502,6 +6513,15 @@ class PayrollCategoryMappingModelTests(TestCase):
                 tenant=self.tenant, special_template=self.special_template, payroll_code="901"
             )
 
+    def test_unique_absence_type_per_tenant(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, absence_type=self.absence_type, payroll_code="700"
+        )
+        with self.assertRaises(IntegrityError):
+            PayrollCategoryMapping.objects.create(
+                tenant=self.tenant, absence_type=self.absence_type, payroll_code="701"
+            )
+
 
 class PayrollCategoryMappingAPITests(APITestCase):
     """API-Berechtigungen für PayrollCategoryMappingViewSet: Admin-only Schreiben, alle Rollen lesen."""
@@ -6528,6 +6548,8 @@ class PayrollCategoryMappingAPITests(APITestCase):
             category=TimeTemplate.Category.SPECIAL,
             surcharge_pct=20,
         )
+        self.absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+        self.other_absence_type = AbsenceType.objects.create(tenant=self.other_tenant, name="Militärdienst B")
         self.admin_user = User.objects.create_user(username="pcm-admin", password="pw-not-real-123!")
         Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
         self.planner_user = User.objects.create_user(username="pcm-planner", password="pw-not-real-123!")
@@ -6574,6 +6596,30 @@ class PayrollCategoryMappingAPITests(APITestCase):
         response = self.client.post(
             "/api/payroll-category-mappings/",
             {"special_template": self.other_special_template.id, "payroll_code": "100"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_admin_can_create_absence_type_mapping(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"absence_type": self.absence_type.id, "payroll_code": "700", "payroll_label": "Militärdienst"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_create_rejects_category_and_absence_type_both_set(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"category": "regular_hours", "absence_type": self.absence_type.id, "payroll_code": "100"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_rejects_absence_type_from_other_tenant(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"absence_type": self.other_absence_type.id, "payroll_code": "100"},
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -6624,9 +6670,13 @@ class PayrollRawLinesTests(TestCase):
             tenant=self.tenant, employee=self.employee, node=self.node, date=day, template=template or self.template
         )
 
-    def _line(self, lines, category=None, special_template_id=None):
+    def _line(self, lines, category=None, special_template_id=None, absence_type_id=None):
         return next(
-            l for l in lines if l["category"] == category and l["special_template_id"] == special_template_id
+            l
+            for l in lines
+            if l["category"] == category
+            and l["special_template_id"] == special_template_id
+            and l["absence_type_id"] == absence_type_id
         )
 
     def test_zero_amount_lines_are_omitted(self):
@@ -6684,11 +6734,86 @@ class PayrollRawLinesTests(TestCase):
         lines = self.employee.payroll_raw_lines(2026, 6)
         vacation = self._line(lines, category=PayrollCategoryMapping.Category.VACATION_DAYS)
         sick = self._line(lines, category=PayrollCategoryMapping.Category.SICK_DAYS)
-        other = self._line(lines, category=PayrollCategoryMapping.Category.OTHER_ABSENCE_DAYS)
+        other = self._line(lines, category=None, absence_type_id=self.other_type.id)
         self.assertEqual(vacation["amount"], 2)
         self.assertEqual(sick["amount"], 1)
         self.assertEqual(other["amount"], 1)
         self.assertEqual(vacation["unit"], "days")
+
+    def test_other_absence_types_get_separate_lines(self):
+        # Nutzer-Feedback (2026-08): "sonstige Absenztage müssten
+        # aufgeschlüsselt werden" -- Militärdienst und unbezahlter Urlaub
+        # brauchen unterschiedliche Lohnart-Codes, dürfen also nicht in
+        # einer gemeinsamen Zeile landen.
+        military_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 4),
+            end_date=date(2026, 6, 4),
+            type=self.other_type,
+            status=Absence.Status.APPROVED,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 8),
+            end_date=date(2026, 6, 9),
+            type=military_type,
+            status=Absence.Status.APPROVED,
+        )
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        other = self._line(lines, category=None, absence_type_id=self.other_type.id)
+        military = self._line(lines, category=None, absence_type_id=military_type.id)
+        self.assertEqual(other["amount"], 1)
+        self.assertEqual(military["amount"], 2)
+        self.assertEqual(military["unit"], "days")
+
+    def test_sick_days_split_by_entitlement_under_scale_model(self):
+        # Basler Skala, 1. Dienstjahr = 21 Tage Anspruch (siehe
+        # _basel_scale_weeks). employment_start_date=2026-01-01, also deckt
+        # das Dienstjahr-Fenster den gesamten Kalenderjahr-Rest 2026 ab.
+        self.employee.employment_start_date = date(2026, 1, 1)
+        self.employee.save(update_fields=["employment_start_date"])
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 5, 1),
+            end_date=date(2026, 5, 20),  # 20 Tage, vor Juni verbraucht
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 5),  # 5 Tage im Juni, nur noch 1 Tag Anspruch übrig
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        paid = self._line(lines, category=PayrollCategoryMapping.Category.SICK_DAYS)
+        exhausted = self._line(lines, category=PayrollCategoryMapping.Category.SICK_DAYS_EXHAUSTED)
+        self.assertEqual(paid["amount"], 1)
+        self.assertEqual(exhausted["amount"], 4)
+
+    def test_sick_days_not_split_under_insurance_model(self):
+        self.tenant.sick_pay_model = Tenant.SickPayModel.DAILY_ALLOWANCE_INSURANCE
+        self.tenant.save(update_fields=["sick_pay_model"])
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 25),  # 25 Tage -- würde die Skala längst übersteigen
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        sick = self._line(lines, category=PayrollCategoryMapping.Category.SICK_DAYS)
+        self.assertEqual(sick["amount"], 25)
+        self.assertFalse(
+            any(l["category"] == PayrollCategoryMapping.Category.SICK_DAYS_EXHAUSTED for l in lines)
+        )
 
     def test_pending_absence_not_counted(self):
         Absence.objects.create(
@@ -6864,6 +6989,86 @@ class PayrollExportViewTests(APITestCase):
         self.auth_as(self.admin_user)
         response = self.client.get("/api/payroll-export/?month=2026-06")
         self.assertEqual(response.data["employees"][0]["cost_center"], "KST-100")
+
+    def test_absence_type_mapping_appears_in_employee_lines(self):
+        military_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 11),
+            type=military_type,
+            status=Absence.Status.APPROVED,
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, absence_type=military_type, payroll_code="700", payroll_label="Militärdienst"
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        lines = response.data["employees"][0]["lines"]
+        self.assertIn(
+            {"payroll_code": "700", "payroll_label": "Militärdienst", "amount": 2.0, "unit": "days"}, lines
+        )
+        self.assertEqual(response.data["warnings"], [])
+
+    def test_unmapped_absence_type_produces_warning(self):
+        military_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 10),
+            type=military_type,
+            status=Absence.Status.APPROVED,
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertIn("Militärdienst: kein Lohnart-Code konfiguriert", response.data["warnings"])
+
+    def test_sick_pay_context_present_when_sick_days_exist(self):
+        sick_type = AbsenceType.objects.create(tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 15),
+            end_date=date(2026, 6, 15),
+            type=sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, category=PayrollCategoryMapping.Category.SICK_DAYS, payroll_code="200"
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        context = response.data["employees"][0]["sick_pay_context"]
+        self.assertEqual(context["model"], Tenant.SickPayModel.SCALE)
+        self.assertEqual(context["scale"], Tenant.SickPayScale.BASEL)
+        self.assertEqual(context["entitlement_days"], 21)
+
+    def test_sick_pay_context_absent_without_sick_days(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertIsNone(response.data["employees"][0]["sick_pay_context"])
 
     def test_csv_output(self):
         PayrollCategoryMapping.objects.create(

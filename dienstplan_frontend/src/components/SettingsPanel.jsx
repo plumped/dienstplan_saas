@@ -24,7 +24,9 @@ const MODULES = [
   {
     id: "employees",
     label: "Mitarbeitende",
-    description: "Stammdaten, Stationen/Skills-Zuordnung, individuelle Wochenstunden- und Ferien-Overrides.",
+    description:
+      "Stammdaten, Stationen/Skills-Zuordnung, individuelle Wochenstunden- und Ferien-Overrides -- inkl. " +
+      "Login-Zugang und Rolle, falls die Person die App selbst nutzt.",
   },
   {
     id: "nodes",
@@ -51,15 +53,17 @@ const MODULES = [
     description: "Ruhezeit, Höchstarbeitszeit, Überzeit-/Nacht-/Sonntagszuschläge, Ferienanspruch (nur Admin).",
     adminOnly: true,
   },
-  // Nutzer-Feedback (2026-08): "kann man [Planer] Stationen zuweisen?" +
-  // "Applikationsmanager legt den Benutzer direkt an, nicht per Mail
-  // einladen" -- Admin-only, analog "tenant" oben: Konten anlegen, Rollen
-  // vergeben, und (für Planer/HR) steuern, wer welche Stationen sieht
-  // (Membership.scoped_nodes).
+  // Nutzer-Feedback (2026-08): "Es gibt nun Tab Mitarbeitende, Tab Mitglieder
+  // und Zugriff [...] Das muss doch intuitiver gelöst werden?" -- Login-
+  // Zugang für Personen MIT Mitarbeiterprofil ist in "Mitarbeitende"
+  // gewandert (ein Ort, ein Formular pro Person). Diese Kachel bleibt nur
+  // für den seltenen Sonderfall: ein Konto OHNE Mitarbeiterprofil (z. B.
+  // externe IT-Administration). Bewusst ans Ende der Liste, weil kein
+  // Alltagsweg mehr.
   {
     id: "access",
-    label: "Mitglieder & Zugriff",
-    description: "Konten anlegen, Rollen vergeben, Stationssicht von Planer/HR einschränken.",
+    label: "Konten ohne Mitarbeiterprofil",
+    description: "Seltener Sonderfall: Login-Konten, die zu keiner Person unter Mitarbeitende gehören.",
     adminOnly: true,
   },
 ];

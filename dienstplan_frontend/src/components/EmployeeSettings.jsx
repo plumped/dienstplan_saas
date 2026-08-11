@@ -1,9 +1,32 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
-import { isTenantAdmin } from "../roles.js";
+import { isTenantAdmin, ROLE_LABELS, ROLE_OPTIONS } from "../roles.js";
 import BalanceBadge from "./BalanceBadge.jsx";
 import EmploymentEditor from "./EmploymentEditor.jsx";
+import NodeScopeEditor, { toggleNodeSelection } from "./NodeScopeEditor.jsx";
 import PregnancyEditor from "./PregnancyEditor.jsx";
+
+// Nutzer-Feedback (2026-08): "warum soll ich Freitext-Benutzernamen
+// vergeben?" -- statt der Admin muss sich einen ausdenken, wird er aus den
+// bereits eingegebenen Namen vorgeschlagen (editierbar, siehe
+// newUsernameTouched-Flag unten). Rein clientseitig, keine Eindeutigkeits-
+// Prüfung hier -- die passiert serverseitig (EmployeeAccessSetupSerializer.
+// validate_username) und zeigt sich als Feldfehler, falls der Vorschlag
+// bereits vergeben ist.
+function suggestUsername(firstName, lastName) {
+  const normalize = (s) =>
+    s
+      .trim()
+      .toLowerCase()
+      .replace(/ä/g, "ae")
+      .replace(/ö/g, "oe")
+      .replace(/ü/g, "ue")
+      .replace(/ß/g, "ss")
+      .replace(/[^a-z0-9]+/g, "");
+  const first = normalize(firstName);
+  const last = normalize(lastName);
+  return first && last ? `${first}.${last}` : "";
+}
 
 // Nutzer-Feedback (2026-08): "die Stammdatenpflege ist bei vielen
 // Mitarbeitenden katastrophal -- unsortierte Liste, alles scrollend suchen".
@@ -39,6 +62,15 @@ function emptyForm() {
     overtime_balance_carryover_hours: 0,
     vacation_days_per_year: "",
     last_night_work_medical_exam_date: "",
+    // Login-Zugang (Nutzer-Feedback 2026-08, siehe Komponenten-Kommentar
+    // unten): existingUsername/membership_id beschreiben einen bereits
+    // bestehenden Account, hasLogin/newUsername/role die NEUANLAGE.
+    hasLogin: false,
+    existingUsername: null,
+    membership_id: null,
+    newUsername: "",
+    newUsernameTouched: false,
+    role: "employee",
   };
 }
 
@@ -66,6 +98,12 @@ function toFormValues(employee) {
     overtime_balance_carryover_hours: employee.overtime_balance_carryover_hours ?? 0,
     vacation_days_per_year: employee.vacation_days_per_year ?? "",
     last_night_work_medical_exam_date: employee.last_night_work_medical_exam_date ?? "",
+    hasLogin: Boolean(employee.username),
+    existingUsername: employee.username || null,
+    membership_id: employee.membership_id || null,
+    newUsername: "",
+    newUsernameTouched: false,
+    role: employee.role || "employee",
   };
 }
 
@@ -92,6 +130,16 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
   // erwarten". Jetzt ein Modal, das nur beim expliziten "+ Neuer
   // Mitarbeiter"/"Bearbeiten" erscheint und die Tabelle wieder freigibt.
   const [formOpen, setFormOpen] = useState(false);
+
+  // Login-Zugang (Nutzer-Feedback 2026-08: "Es gibt nun Tab Mitarbeitende,
+  // Tab Mitglieder und Zugriff [...] Das muss doch intuitiver gelöst
+  // werden?" -- ein Ort, ein Formular pro Person statt zwei getrennter
+  // Tabs). scopedNodeIds nur relevant, solange form.role planner/hr ist;
+  // newCredentials zeigt das Temp-Passwort nach Erstanlage EINMALIG.
+  const [scopedNodeIds, setScopedNodeIds] = useState(new Set());
+  const [roleChanging, setRoleChanging] = useState(false);
+  const [scopedNodesSaving, setScopedNodesSaving] = useState(false);
+  const [newCredentials, setNewCredentials] = useState(null);
 
   // Modal per Escape schliessen -- Standard-Erwartung an einen Dialog.
   useEffect(() => {
@@ -167,6 +215,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
   function startEditing(employee) {
     setEditingId(employee.id);
     setForm(toFormValues(employee));
+    setScopedNodeIds(new Set(employee.scoped_nodes ?? []));
     setFieldErrors({});
     setFormOpen(true);
   }
@@ -174,6 +223,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
   function startCreating() {
     setEditingId(null);
     setForm(emptyForm());
+    setScopedNodeIds(new Set());
     setFieldErrors({});
     setFormOpen(true);
   }
@@ -190,10 +240,74 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
     };
   }
 
+  // Vor- und Nachname aktualisieren UND (solange der Benutzername nicht
+  // manuell angefasst wurde) den Vorschlag nachziehen -- siehe
+  // suggestUsername()-Kommentar oben.
+  function updateNameField(key) {
+    return (e) => {
+      const value = e.target.value;
+      setForm((prev) => {
+        const next = { ...prev, [key]: value };
+        if (!prev.newUsernameTouched) {
+          next.newUsername = suggestUsername(
+            key === "first_name" ? value : prev.first_name,
+            key === "last_name" ? value : prev.last_name
+          );
+        }
+        return next;
+      });
+      setFieldErrors((prev) => (prev[key] ? { ...prev, [key]: undefined } : prev));
+    };
+  }
+
+  // Rollenwechsel für eine Person, die bereits einen Account hat -- sofort
+  // wirksam (kein zusätzlicher "Speichern"-Klick nötig), analog zum
+  // bisherigen Verhalten in MembershipAccessSettings.jsx.
+  async function handleRoleChange(role) {
+    if (!form.membership_id || role === form.role) return;
+    setRoleChanging(true);
+    try {
+      const updated = await api.updateMembershipRole(form.membership_id, role);
+      setForm((prev) => ({ ...prev, role: updated.role }));
+      setTableData((prev) => ({
+        ...prev,
+        results: prev.results.map((e) => (e.id === editingId ? { ...e, role: updated.role } : e)),
+      }));
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setRoleChanging(false);
+    }
+  }
+
+  async function handleScopedNodesSave() {
+    if (!form.membership_id) return;
+    setScopedNodesSaving(true);
+    try {
+      const updated = await api.updateMembershipScopedNodes(form.membership_id, [...scopedNodeIds]);
+      setTableData((prev) => ({
+        ...prev,
+        results: prev.results.map((e) => (e.id === editingId ? { ...e, scoped_nodes: updated.scoped_nodes } : e)),
+      }));
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setScopedNodesSaving(false);
+    }
+  }
+
   async function handleSubmit(event) {
     event.preventDefault();
     if (!form.first_name.trim() || !form.last_name.trim()) {
       onError("Vor- und Nachname sind Pflichtfelder.");
+      return;
+    }
+    // Login-Zugang nur für eine Person OHNE bestehenden Account relevant --
+    // eine bereits bestehende Verknüpfung wird über handleRoleChange/
+    // handleScopedNodesSave sofort gespeichert, nicht über diesen Button.
+    const settingUpNewAccess = form.hasLogin && !form.existingUsername;
+    if (settingUpNewAccess && !form.newUsername.trim()) {
+      onError("Benutzername ist ein Pflichtfeld, wenn ein Zugang eingerichtet wird.");
       return;
     }
     const payload = {
@@ -214,10 +328,21 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
     setSaving(true);
     setFieldErrors({});
     try {
-      if (editingId) {
-        await api.updateEmployee(editingId, payload);
-      } else {
-        await api.createEmployee(payload);
+      const savedEmployee = editingId
+        ? await api.updateEmployee(editingId, payload)
+        : await api.createEmployee(payload);
+      // Nutzer-Feedback (2026-08): "ein Klick auf Speichern -> Employee +
+      // User + Membership + Verknüpfung entstehen zusammen" -- aus Sicht des
+      // Admins EIN Formular/EIN Klick, technisch zwei Requests: die Employee
+      // muss zuerst existieren (ihre ID wird für setup-access gebraucht),
+      // bei einer Neuanlage ist die also erst nach dem ersten Request
+      // bekannt.
+      if (settingUpNewAccess) {
+        const access = await api.setupEmployeeAccess(savedEmployee.id, {
+          username: form.newUsername.trim(),
+          role: form.role,
+        });
+        setNewCredentials({ username: access.username, password: access.temporary_password });
       }
       reloadCurrentPage();
       closeForm();
@@ -304,6 +429,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                       </th>
                     ))}
                     <th>Station(en)</th>
+                    <th>Zugang</th>
                     <th />
                   </tr>
                 </thead>
@@ -325,6 +451,13 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                         )}
                       </td>
                       <td>{nodeNames(emp.nodes)}</td>
+                      <td>
+                        {emp.username ? (
+                          <span className="entry-note entry-note--chip">{ROLE_LABELS[emp.role] ?? emp.role}</span>
+                        ) : (
+                          <span className="entry-note">— kein Zugang</span>
+                        )}
+                      </td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <span className="settings-table-actions">
                           <BalanceBadge employeeId={emp.id} />
@@ -384,12 +517,12 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
           <div className="panel-form-row">
             <label>
               Vorname
-              <input type="text" value={form.first_name} onChange={updateField("first_name")} required />
+              <input type="text" value={form.first_name} onChange={updateNameField("first_name")} required />
               {fieldError("first_name")}
             </label>
             <label>
               Nachname
-              <input type="text" value={form.last_name} onChange={updateField("last_name")} required />
+              <input type="text" value={form.last_name} onChange={updateNameField("last_name")} required />
               {fieldError("last_name")}
             </label>
           </div>
@@ -436,6 +569,101 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
             {fieldError("skills")}
           </label>
         </fieldset>
+
+        {isTenantAdmin(me) && (
+          <fieldset className="panel-form-group">
+            <h3>Login-Zugang</h3>
+            {form.existingUsername ? (
+              <>
+                <p className="panel-hint">
+                  Benutzername: <strong>{form.existingUsername}</strong> -- Rolle jederzeit über das Dropdown
+                  änderbar, wirkt sofort.
+                </p>
+                <label>
+                  Rolle
+                  <select
+                    value={form.role}
+                    disabled={roleChanging}
+                    onChange={(e) => handleRoleChange(e.target.value)}
+                  >
+                    {ROLE_OPTIONS.map((role) => (
+                      <option key={role} value={role}>
+                        {ROLE_LABELS[role]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {(form.role === "planner" || form.role === "hr") && (
+                  <div>
+                    <p className="panel-hint">
+                      Sichtbare Stationen für diese Person -- nichts ausgewählt = keine Einschränkung (alle
+                      Stationen sichtbar).
+                    </p>
+                    <NodeScopeEditor
+                      nodes={nodes}
+                      selectedNodeIds={scopedNodeIds}
+                      onToggle={(node) => setScopedNodeIds((prev) => toggleNodeSelection(prev, node, nodes))}
+                    />
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      onClick={handleScopedNodesSave}
+                      disabled={scopedNodesSaving}
+                    >
+                      {scopedNodesSaving ? "Speichert …" : "Stationssicht speichern"}
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={form.hasLogin}
+                    onChange={(e) => setForm((prev) => ({ ...prev, hasLogin: e.target.checked }))}
+                  />
+                  Zugang aktiv (Person kann sich einloggen)
+                </label>
+                {form.hasLogin && (
+                  <>
+                    <div className="panel-form-row">
+                      <label>
+                        Benutzername
+                        <input
+                          type="text"
+                          value={form.newUsername}
+                          onChange={(e) =>
+                            setForm((prev) => ({ ...prev, newUsername: e.target.value, newUsernameTouched: true }))
+                          }
+                          required={form.hasLogin}
+                        />
+                        {fieldError("username")}
+                      </label>
+                      <label>
+                        Rolle
+                        <select
+                          value={form.role}
+                          onChange={(e) => setForm((prev) => ({ ...prev, role: e.target.value }))}
+                        >
+                          {ROLE_OPTIONS.map((role) => (
+                            <option key={role} value={role}>
+                              {ROLE_LABELS[role]}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <p className="panel-hint">
+                      Ein Temp-Passwort wird nach dem Speichern einmalig angezeigt -- beim ersten Login muss es
+                      geändert werden.
+                    </p>
+                  </>
+                )}
+              </>
+            )}
+          </fieldset>
+        )}
 
         <fieldset className="panel-form-group">
           <h3>Anstellungen (Teams)</h3>
@@ -573,6 +801,33 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {newCredentials && (
+        <div className="modal-overlay" onClick={() => setNewCredentials(null)}>
+          <div className="panel-form modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Zugang eingerichtet</h2>
+            </div>
+            <div className="modal-body">
+              <p className="panel-hint">
+                Dieses Passwort wird nur jetzt angezeigt -- bitte an {newCredentials.username} weitergeben
+                (z. B. mündlich oder auf Papier). Beim ersten Login muss es geändert werden.
+              </p>
+              <p>
+                <strong>Benutzername:</strong> {newCredentials.username}
+              </p>
+              <p>
+                <strong>Temp-Passwort:</strong> <code>{newCredentials.password}</code>
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button type="button" onClick={() => setNewCredentials(null)}>
+                Verstanden, schliessen
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

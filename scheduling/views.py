@@ -1,9 +1,11 @@
 from datetime import date, timedelta
 
+from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Count
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.crypto import get_random_string
 from rest_framework import filters, permissions, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -50,6 +52,7 @@ from .models import (
 from .serializers import (
     AbsenceSerializer,
     AbsenceTypeSerializer,
+    EmployeeAccessSetupSerializer,
     EmployeeBalanceSerializer,
     EmployeeSerializer,
     MonthlySummarySerializer,
@@ -64,6 +67,8 @@ from .serializers import (
     TimeTemplateSerializer,
     WeeklyOvertimeSerializer,
 )
+
+User = get_user_model()
 
 
 class TenantScopedViewSet(viewsets.ModelViewSet):
@@ -492,6 +497,57 @@ class EmployeeViewSet(TenantScopedViewSet):
         except ValueError as exc:
             raise ValidationError(str(exc))
         return Response(MonthlySummarySerializer(employee.monthly_summary(year, month)).data)
+
+    @action(detail=True, methods=["post"], url_path="setup-access")
+    def setup_access(self, request, pk=None):
+        """
+        Login-Zugang für eine bestehende Employee einrichten (Nutzer-Feedback
+        2026-08: "Es gibt nun Tab Mitarbeitende, Tab Mitglieder und Zugriff
+        [...] Das muss doch intuitiver gelöst werden?" -- ein Ort, ein
+        Formular pro Person, statt Employee (scheduling) und User/Membership
+        (core) getrennt zu verwalten). Legt User + Membership in einem Zug an
+        und verknüpft `employee.user`, analog zu core.serializers.
+        MembershipCreateSerializer (Direktanlage statt E-Mail-Einladung,
+        Temp-Passwort wird EINMALIG zurückgegeben), nur eben ausgehend von
+        einer bereits bestehenden Employee statt einem freistehenden
+        Membership-Datensatz.
+
+        Admin-only wie jede Rollen-/Kontoverwaltung in dieser App (siehe
+        core.views.MembershipViewSet) -- bewusst strenger als die sonstige
+        IsTenantManager-Berechtigung (Admin+Planer) dieses ViewSets.
+        """
+        if request.membership.role != Membership.Role.ADMIN:
+            raise PermissionDenied("Nur Admin darf Login-Zugänge einrichten.")
+        employee = self.get_object()
+        if employee.user_id:
+            raise ValidationError(
+                {"username": "Diese Person hat bereits einen Zugang -- Rolle stattdessen über "
+                 "PATCH /api/memberships/<id>/ ändern."}
+            )
+        serializer = EmployeeAccessSetupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        temp_password = get_random_string(12)
+        user = User.objects.create_user(
+            username=serializer.validated_data["username"],
+            password=temp_password,
+            first_name=employee.first_name,
+            last_name=employee.last_name,
+            must_change_password=True,
+        )
+        membership = Membership.objects.create(
+            user=user, tenant=request.tenant, role=serializer.validated_data["role"]
+        )
+        employee.user = user
+        employee.save(update_fields=["user"])
+        return Response(
+            {
+                "username": user.username,
+                "temporary_password": temp_password,
+                "role": membership.role,
+                "membership_id": membership.id,
+            },
+            status=201,
+        )
 
 
 class AbsenceTypeViewSet(TenantScopedViewSet):

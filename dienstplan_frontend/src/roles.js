@@ -5,6 +5,10 @@ export const ROLE_LABELS = {
   hr: "HR",
 };
 
+// Für Rollen-Dropdowns (EmployeeSettings.jsx, MembershipAccessSettings.jsx)
+// -- an einer Stelle gepflegt statt in beiden Komponenten dupliziert.
+export const ROLE_OPTIONS = ["admin", "planner", "hr", "employee"];
+
 // Deckt sich mit core.permissions.MANAGER_ROLES im Backend -- das Frontend
 // blendet damit nur Bedienelemente aus, die der Server ohnehin mit 403
 // ablehnen würde (siehe core/permissions.py).

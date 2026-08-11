@@ -1,46 +1,30 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
-import { ROLE_LABELS } from "../roles.js";
-
-const ROLE_OPTIONS = ["admin", "planner", "hr", "employee"];
-
-function isDescendantOf(node, ancestor) {
-  return node.id !== ancestor.id && node.path.startsWith(ancestor.path);
-}
+import NodeScopeEditor, { toggleNodeSelection } from "./NodeScopeEditor.jsx";
+import { ROLE_LABELS, ROLE_OPTIONS } from "../roles.js";
 
 function emptyCreateForm() {
-  return { username: "", first_name: "", last_name: "", role: "employee" };
+  return { username: "", first_name: "", last_name: "", role: "admin" };
 }
 
-// Nutzer-Feedback (2026-08): "Ist das state of the art mit Mailversand? [...]
-// Applikationsmanager wird den Benutzer anlegen und nicht per Mail einladen
-// -- was ist am effizientesten und intuitivsten?" -- bewusst KEIN
-// E-Mail-Einladungs-Flow (README Block 2.1/3.4): Admin legt ein Konto direkt
-// mit Benutzername + Rolle an, ein Temp-Passwort wird EINMALIG angezeigt
-// (danach nicht mehr abrufbar) und mündlich/auf Papier weitergegeben --
-// analog zu etablierten Schichtplanungs-Tools für Personal ohne durchgängig
-// gepflegte Firmen-Mail (Deputy, When I Work, Planday).
-//
-// Nutzer-Feedback (2026-08): "Natürlich gibt es in einer Klinik Planer mit
-// unterschiedlichen Zuständigkeiten! Nur Admin darf immer alles sehen." --
-// Admin-only Verwaltung von Membership.scoped_nodes (unterer Abschnitt,
-// unverändert nur für Planer/HR).
-//
-// Nutzer-Feedback (2026-08): "Warum sehe ich Peter Meier (Mitarbeiter) unter
-// Planer-/HR-Zugriff?" -- Admin (immer uneingeschränkt) und Mitarbeitende
-// (eigener Mechanismus über Employee.nodes/Employment, siehe
-// EmployeeSettings.jsx) gehören in den Stations-Abschnitt nicht hinein, nur
-// was tatsächlich zugewiesen werden kann -- die Rollen-Übersicht oben zeigt
-// dagegen bewusst ALLE Mitgliedschaften.
+// Nutzer-Feedback (2026-08): "Es gibt nun Tab Mitarbeitende, Tab Mitglieder
+// und Zugriff [...] Das muss doch intuitiver gelöst werden? [...] mach ein
+// konkretes Konzept" -- der frühere "Mitglieder"-Tab ist aufgelöst: Login-
+// Zugang für eine Person MIT Mitarbeiterprofil wird jetzt direkt in
+// EmployeeSettings.jsx verwaltet (ein Ort, ein Formular pro Person). Dieser
+// Tab bleibt nur noch für den seltenen Sonderfall übrig -- ein Konto OHNE
+// Mitarbeiterprofil (z. B. externe IT-Administration, die nie auf dem
+// Dienstplan erscheint). Kriterium dafür: `employee_name` ist leer (siehe
+// core.serializers.MembershipSerializer.get_employee_name) -- eine Person
+// mit Mitarbeiterprofil taucht hier also gar nicht mehr auf, selbst wenn sie
+// Planer/HR/Admin ist.
 export default function MembershipAccessSettings({ nodes, onError }) {
   const [memberships, setMemberships] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [selectedNodeIds, setSelectedNodeIds] = useState(new Set());
   const [saving, setSaving] = useState(false);
 
-  // Direktanlage neuer Mitgliedschaften.
   const [createFormOpen, setCreateFormOpen] = useState(false);
   const [createForm, setCreateForm] = useState(emptyCreateForm());
   const [createFieldErrors, setCreateFieldErrors] = useState({});
@@ -61,16 +45,11 @@ export default function MembershipAccessSettings({ nodes, onError }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const sortedMemberships = useMemo(
+  const orphanMemberships = useMemo(
     () =>
-      [...memberships].sort((a, b) =>
-        (a.employee_name || a.username).localeCompare(b.employee_name || b.username)
-      ),
-    [memberships]
-  );
-
-  const assignableMemberships = useMemo(
-    () => memberships.filter((m) => m.role === "planner" || m.role === "hr"),
+      memberships
+        .filter((m) => !m.employee_name)
+        .sort((a, b) => a.username.localeCompare(b.username)),
     [memberships]
   );
 
@@ -117,14 +96,6 @@ export default function MembershipAccessSettings({ nodes, onError }) {
     }
   }
 
-  const filteredMemberships = useMemo(() => {
-    const needle = filter.trim().toLowerCase();
-    if (!needle) return assignableMemberships;
-    return assignableMemberships.filter((m) =>
-      [m.employee_name, m.username, m.email].filter(Boolean).some((v) => v.toLowerCase().includes(needle))
-    );
-  }, [assignableMemberships, filter]);
-
   function nodeName(id) {
     return nodes.find((n) => n.id === id)?.name ?? `#${id}`;
   }
@@ -136,30 +107,6 @@ export default function MembershipAccessSettings({ nodes, onError }) {
 
   function closeEditing() {
     setEditingId(null);
-  }
-
-  // Nutzer-Feedback (2026-08): "Wähle ich einen Hauptknoten sind auch die
-  // Unterknoten markiert, wähle ich nur einen Kindknoten ist nur dieser
-  // markiert" -- so funktioniert die Einschränkung serverseitig bereits
-  // (get_descendants() in _employee_scoped_node_ids), die Checkbox-Liste
-  // muss das nur noch sichtbar machen: eine markierte Station checkt
-  // automatisch alle Unterstationen mit an (dort ausgegraut, weil implizit),
-  // und macht bereits einzeln markierte Unterstationen redundant.
-  function toggleNode(node) {
-    setSelectedNodeIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(node.id)) {
-        next.delete(node.id);
-        return next;
-      }
-      next.add(node.id);
-      for (const id of next) {
-        if (id === node.id) continue;
-        const other = nodes.find((n) => n.id === id);
-        if (other && isDescendantOf(other, node)) next.delete(id);
-      }
-      return next;
-    });
   }
 
   async function handleSave() {
@@ -183,25 +130,36 @@ export default function MembershipAccessSettings({ nodes, onError }) {
     <div className="side-panel">
       <div className="panel-list panel-list--full">
         <div className="panel-list-header">
-          <h2>Mitglieder</h2>
+          <h2>Konten ohne Mitarbeiterprofil</h2>
           <button type="button" onClick={() => setCreateFormOpen(true)}>
-            + Mitglied hinzufügen
+            + Konto hinzufügen
           </button>
         </div>
         <p className="panel-hint">
-          Konten werden direkt angelegt, nicht per E-Mail eingeladen -- ein Temp-Passwort wird nach dem
-          Anlegen einmalig angezeigt. Rolle jederzeit über das Dropdown änderbar; mindestens eine
-          Admin-Mitgliedschaft muss je Mandant erhalten bleiben.
+          Seltener Sonderfall: ein Login-Konto, das zu KEINER Person unter "Mitarbeitende" gehört (z. B.
+          externe IT-Administration). Für Mitarbeitende mit eigenem Profil wird der Login-Zugang direkt in
+          deren Bearbeiten-Formular unter "Mitarbeitende" eingerichtet/verwaltet.
         </p>
-        {!sortedMemberships.length ? (
-          <p className="empty-state">Keine Mitgliedschaften vorhanden.</p>
+        {!orphanMemberships.length ? (
+          <p className="empty-state">Keine Konten ohne Mitarbeiterprofil vorhanden.</p>
         ) : (
           <ul className="entry-list">
-            {sortedMemberships.map((m) => (
+            {orphanMemberships.map((m) => (
               <li key={m.id} className="entry-list-item">
                 <span className="entry-main">
-                  <strong>{m.employee_name || m.username}</strong>
-                  <span className="entry-note"> · {m.username}</span>
+                  <strong>{m.username}</strong>
+                  <div>
+                    {(m.role === "planner" || m.role === "hr") &&
+                      (!m.scoped_nodes.length ? (
+                        <span className="entry-note">Alle Stationen (keine Einschränkung)</span>
+                      ) : (
+                        m.scoped_nodes.map((id) => (
+                          <span key={id} className="entry-note entry-note--chip">
+                            {nodeName(id)}
+                          </span>
+                        ))
+                      ))}
+                  </div>
                 </span>
                 <span className="entry-actions">
                   <select
@@ -215,6 +173,11 @@ export default function MembershipAccessSettings({ nodes, onError }) {
                       </option>
                     ))}
                   </select>
+                  {(m.role === "planner" || m.role === "hr") && (
+                    <button type="button" className="btn-ghost" onClick={() => startEditing(m)}>
+                      Stationen
+                    </button>
+                  )}
                 </span>
               </li>
             ))}
@@ -230,7 +193,7 @@ export default function MembershipAccessSettings({ nodes, onError }) {
             onSubmit={handleCreateSubmit}
           >
             <div className="modal-header">
-              <h2>Mitglied hinzufügen</h2>
+              <h2>Konto ohne Mitarbeiterprofil hinzufügen</h2>
               <button
                 type="button"
                 className="modal-close"
@@ -320,62 +283,11 @@ export default function MembershipAccessSettings({ nodes, onError }) {
         </div>
       )}
 
-      <div className="panel-list panel-list--full">
-        <h2>Planer-/HR-Zugriff</h2>
-        <p className="panel-hint">
-          Ohne Zuweisung sieht ein Planer/HR weiterhin alle Stationen des Tenants (bisheriges Verhalten) --
-          erst eine explizite Auswahl hier schränkt die Sicht ein (inkl. aller Unterstationen). Admin ist
-          davon nie betroffen und sieht immer alles; Mitarbeitende werden separat unter "Mitarbeitende"
-          ihrer Station zugeordnet.
-        </p>
-        {assignableMemberships.length > 8 && (
-          <input
-            type="search"
-            className="panel-list-filter"
-            placeholder="Name/E-Mail filtern …"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          />
-        )}
-        {!assignableMemberships.length ? (
-          <p className="empty-state">Keine Planer- oder HR-Mitgliedschaften vorhanden.</p>
-        ) : !filteredMemberships.length ? (
-          <p className="empty-state">Keine Treffer.</p>
-        ) : (
-          <ul className="entry-list">
-            {filteredMemberships.map((m) => (
-              <li key={m.id} className="entry-list-item">
-                <span className="entry-main">
-                  <strong>{m.employee_name || m.username}</strong>
-                  <span className="entry-note"> · {ROLE_LABELS[m.role] ?? m.role}</span>
-                  <div>
-                    {!m.scoped_nodes.length ? (
-                      <span className="entry-note">Alle Stationen (keine Einschränkung)</span>
-                    ) : (
-                      m.scoped_nodes.map((id) => (
-                        <span key={id} className="entry-note entry-note--chip">
-                          {nodeName(id)}
-                        </span>
-                      ))
-                    )}
-                  </div>
-                </span>
-                <span className="entry-actions">
-                  <button type="button" className="btn-ghost" onClick={() => startEditing(m)}>
-                    Bearbeiten
-                  </button>
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
       {editingMembership && (
         <div className="modal-overlay" onClick={closeEditing}>
           <div className="panel-form modal-dialog node-scope-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>Stationen für {editingMembership.employee_name || editingMembership.username}</h2>
+              <h2>Stationen für {editingMembership.username}</h2>
               <button type="button" className="modal-close" onClick={closeEditing} aria-label="Schliessen">
                 ×
               </button>
@@ -386,30 +298,11 @@ export default function MembershipAccessSettings({ nodes, onError }) {
                 markiert automatisch alle Unterstationen mit -- die lassen sich dann nicht mehr einzeln
                 abwählen, solange die Hauptstation ausgewählt ist.
               </p>
-              <ul className="node-tree-select">
-                {nodes.map((n) => {
-                  const isExplicit = selectedNodeIds.has(n.id);
-                  const impliedBy = !isExplicit
-                    ? nodes.find((a) => selectedNodeIds.has(a.id) && isDescendantOf(n, a))
-                    : null;
-                  return (
-                    <li key={n.id} style={{ paddingLeft: `${Math.max(n.depth - 1, 0) * 20}px` }}>
-                      <label className={impliedBy ? "is-implied" : undefined}>
-                        <input
-                          type="checkbox"
-                          checked={isExplicit || Boolean(impliedBy)}
-                          disabled={Boolean(impliedBy)}
-                          onChange={() => toggleNode(n)}
-                        />
-                        <span className="node-tree-select-name">{n.name}</span>
-                        {impliedBy && (
-                          <span className="node-tree-select-hint">inkl. über {impliedBy.name}</span>
-                        )}
-                      </label>
-                    </li>
-                  );
-                })}
-              </ul>
+              <NodeScopeEditor
+                nodes={nodes}
+                selectedNodeIds={selectedNodeIds}
+                onToggle={(node) => setSelectedNodeIds((prev) => toggleNodeSelection(prev, node, nodes))}
+              />
             </div>
             <div className="modal-footer">
               <button type="button" className="btn-ghost" onClick={closeEditing}>

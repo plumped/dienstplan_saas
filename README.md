@@ -548,9 +548,9 @@ zurückgestellt, bis die Funktionalität steht.
      `role`-Feld in `MembershipSerializer` nicht mehr read-only) -- inkl. zweier Schutzmechanismen
      in `MembershipViewSet.perform_update`: mindestens eine Admin-Mitgliedschaft muss je Mandant
      erhalten bleiben, und Admin-Rolle + `scoped_nodes`-Einschränkung schliessen sich weiterhin
-     gegenseitig aus. `MembershipAccessSettings.jsx` (Settings-Kachel jetzt "Mitglieder &
-     Zugriff" statt "Planer-/HR-Zugriff") zeigt dafür eine neue "Mitglieder"-Sektion oberhalb
-     der bestehenden Stations-Einschränkung.
+     gegenseitig aus. (Die dabei zuerst eingeführte eigene "Mitglieder"-Sektion in
+     `MembershipAccessSettings.jsx` wurde direkt im Anschluss wieder aufgelöst, siehe nächster
+     Punkt.)
    - Beim Testen aufgefallener, unabhängiger Bug mitgefixt: DRF wrappt einen einzelnen
      String-Wert innerhalb eines `ValidationError`-Dicts NICHT automatisch in eine Liste (nur
      der Top-Level-Fall tut das) -- `api.js` liest Feldfehler aber konsequent als `[0]` (erwartet
@@ -563,6 +563,46 @@ zurückgestellt, bis die Funktionalität steht.
      ausgeschlossen, aber via Fixture-Laden entstanden) liess `PATCH .../role` mit einem
      nackten HTTP 500 abstürzen, statt eine verständliche Fehlermeldung zu zeigen --
      `MembershipViewSet.perform_update` prüft das jetzt vorab und liefert eine klare 400-Antwort.
+   - ✅ **Konsolidierung: ein Ort pro Person statt getrennter Tabs** (2026-08, direkter
+     Folgetag): Nutzer-Feedback auf die obige erste Version: *"Hä aber das ist ja null
+     intuitiv. Was genau sind 'Mitglieder'? [...] Es gibt nun Tab Mitarbeitende, Tab Mitglieder
+     und Zugriff. Das muss doch intuitiver gelöst werden? Es gibt Employees(Scheduling) und
+     Memberships(Core) plus dann auch noch Benutzer(Core). Das ganze wirkt völlig
+     ineffizient."* -- berechtigter Einwand: das Datenmodell (Employee/User/Membership
+     getrennt, aus gutem Grund -- nicht jede Person braucht einen Login) war 1:1 in zwei
+     getrennte Tabs durchgereicht, OHNE dass `Employee.user` beim Anlegen über die UI je
+     verknüpft wurde. Konzept (vom Nutzer bestätigt: *"Ja bitte! Das ist viel intuitiver!"*,
+     inkl. der Ergänzung, die bestehende Stationszuständigkeits-Bearbeitung für Planer/HR ins
+     Konzept aufzunehmen):
+     - **Ein Formular pro Person** (`EmployeeSettings.jsx`): "Mitarbeiter anlegen/bearbeiten"
+       hat jetzt eine "Login-Zugang"-Sektion (Admin-only). Ohne bestehenden Account: Checkbox
+       "Zugang aktiv" + Benutzername (automatisch aus Vor-/Nachname vorgeschlagen,
+       z. B. "Anna Berger" → `anna.berger`, editierbar -- Nutzer-Feedback: *"warum soll ich
+       Freitext-Benutzernamen vergeben?"*) + Rolle. Mit bestehendem Account: Benutzername
+       (fix), Rolle-Dropdown (wirkt sofort), und -- die Ergänzung aus der Nachfrage -- bei
+       Rolle Planer/HR zusätzlich die Stations-Sichtbarkeits-Auswahl (`scoped_nodes`) direkt
+       hier, mit eigenem "Stationssicht speichern"-Button.
+     - **Neuer kombinierter Endpoint**: `POST /api/employees/<id>/setup-access/`
+       (`EmployeeViewSet.setup_access`, Admin-only) legt User + Membership in einem Zug an und
+       verknüpft `employee.user` -- vorher blieb dieses Feld über die API immer leer.
+       `EmployeeSerializer` bekam vier neue Read-only-Felder (`username`, `role`,
+       `membership_id`, `scoped_nodes`), damit der Account-Status direkt am
+       Mitarbeitenden-Datensatz sichtbar ist. Aus Nutzersicht ein Klick/ein Formular; technisch
+       zwei Requests bei einer Neuanlage (die Employee-ID wird erst nach dem ersten Request für
+       den zweiten gebraucht).
+     - **`MembershipAccessSettings.jsx` bleibt nur noch für den seltenen Sonderfall** übrig:
+       ein Login-Konto OHNE Mitarbeiterprofil (z. B. externe IT-Administration, nie auf dem
+       Dienstplan). Filterkriterium wechselte von "Rolle ist Planer/HR" auf "kein verknüpftes
+       Mitarbeiterprofil" (`!employee_name`), Settings-Kachel entsprechend umbenannt zu "Konten
+       ohne Mitarbeiterprofil" und ans Ende der Modul-Liste verschoben (kein Alltagsweg mehr).
+       Die Stations-Checkbox-Baum-Logik wurde dafür in eine gemeinsame `NodeScopeEditor.jsx`
+       (+ `toggleNodeSelection()`) extrahiert, seit beide Orte (Mitarbeitende UND Konten ohne
+       Profil) sie jetzt brauchen.
+     - Mit Playwright gegen echte Testheim-Daten verifiziert: Neuanlage mit Zugang in einem
+       Formular (Benutzername-Vorschlag `tessa.muster` korrekt übernommen), nachträgliche
+       Rollenänderung + Stationszuordnung an einer bestehenden Person, und die Bestätigung,
+       dass eine Person MIT Mitarbeiterprofil in "Konten ohne Mitarbeiterprofil" nicht mehr
+       auftaucht.
 2. ✅ **Rollenbewusste Oberfläche**: `GET /api/me/` + `src/roles.js` steuern, was das Frontend
    zeigt -- Admin/Planer die volle Bearbeitungs-Oberfläche, Mitarbeitende eine read-only Ansicht
    mit Selbstbedienung für eigene Absenzen/eigenen Diensttausch, HR nur Lesezugriff (siehe
@@ -2491,7 +2531,11 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     **Frontend**: Neues Settings-Modul "Planer-/HR-Zugriff" (`MembershipAccessSettings.jsx`,
     admin-only wie "Regel-Engine & Zuschläge") -- Liste aller Mitgliedschaften, "Bearbeiten" öffnet
     ein Modal mit einer eingerückten Checkbox-Liste aller Stationen (gleiche Einrückung wie das
-    Stations-Dropdown in `TimeTemplateSettings.jsx`). Neue `TimeRecordOverview.jsx` ersetzt für
+    Stations-Dropdown in `TimeTemplateSettings.jsx`). *(Stand zum Zeitpunkt dieses Eintrags --
+    Modul, Filter und Kachel-Name wurden später zweimal überarbeitet, siehe Block 2, Punkt 1 für
+    den aktuellen Stand: Rollen-/Zugriffsverwaltung liegt inzwischen bei "Mitarbeitende", diese
+    Kachel heisst "Konten ohne Mitarbeiterprofil" und filtert auf fehlendes Mitarbeiterprofil statt
+    auf Rolle.)* Neue `TimeRecordOverview.jsx` ersetzt für
     Admin/Planer/HR (`canViewScheduleReports()`, neu in `roles.js` -- deckt sich mit
     `MANAGER_AND_HR_ROLES`) den bisherigen, auf eine Station begrenzten Zeiterfassung-Tab: zwei
     per Segmented-Control umschaltbare Tabellen ("Zu bestätigen"/"Noch nicht erfasst") im
@@ -2710,10 +2754,12 @@ Setup-Wizard statt direkt in den Django-Admin.
    alles auf einer langen Formularseite abzufragen.
 4. **Konten für weitere Mitarbeitende anlegen** — inzwischen NICHT mehr per E-Mail-Einladung
    geplant (Grundsatzentscheid revidiert, siehe Punkt 6): Block 2.1 hat mit
-   `MembershipAccessSettings.jsx`/`MembershipCreateSerializer` bereits eine Direktanlage
-   (Username + Rolle + einmalig angezeigtes Temp-Passwort, erzwungener Wechsel beim ersten
-   Login) für den laufenden Betrieb umgesetzt. Für Block 3 bleibt offen: dieselbe Direktanlage
-   in den Setup-Wizard (Punkt 3) integrieren, statt sie separat in "Einstellungen" zu suchen.
+   `EmployeeViewSet.setup_access`/`EmployeeSettings.jsx` (Direktanlage direkt im
+   Mitarbeiter-Formular, siehe dort für die Historie inkl. der zwischenzeitlich wieder
+   verworfenen separaten "Mitglieder"-Ansicht) bereits eine Direktanlage (Username + Rolle +
+   einmalig angezeigtes Temp-Passwort, erzwungener Wechsel beim ersten Login) für den laufenden
+   Betrieb umgesetzt. Für Block 3 bleibt offen: dieselbe Direktanlage in den Setup-Wizard
+   (Punkt 3) integrieren, statt sie separat in "Einstellungen" zu suchen.
 5. **Passwort-Reset bei vergessenem Passwort** — aktuell nicht vorhanden, nur der erzwungene
    Wechsel eines bekannten Temp-Passworts (Punkt 6) sowie `POST /api/auth/token/` mit bekanntem
    Passwort. Ohne E-Mail-Infrastruktur (bewusster Verzicht, siehe Punkt 6) müsste das über den

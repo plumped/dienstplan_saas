@@ -1,6 +1,10 @@
+from django.contrib.auth import get_user_model
+from django.contrib.auth.validators import UnicodeUsernameValidator
 from rest_framework import serializers
 
 from core.models import Membership
+
+User = get_user_model()
 
 from .models import (
     Absence,
@@ -133,6 +137,20 @@ class EmployeeSerializer(serializers.ModelSerializer):
     nodes = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
     employments = EmploymentSerializer(many=True, required=False)
 
+    # Nutzer-Feedback (2026-08): "Es gibt nun Tab Mitarbeitende, Tab
+    # Mitglieder und Zugriff [...] Das muss doch intuitiver gelöst werden?"
+    # -- Login-Zugang (User+Membership, core-App) ist jetzt direkt am
+    # Mitarbeitenden-Datensatz sichtbar/editierbar (EmployeeSettings.jsx)
+    # statt in einem eigenen Tab. Diese vier Felder sind rein lesend (der
+    # Schreibweg läuft über EmployeeViewSet.setup_access für die Erstanlage
+    # bzw. weiterhin core.views.MembershipViewSet für Rollenwechsel/
+    # scoped_nodes, siehe deren Docstrings) -- alle `None`/leer, solange
+    # `employee.user` nicht gesetzt ist (Mitarbeiter ohne Login).
+    username = serializers.SerializerMethodField()
+    role = serializers.SerializerMethodField()
+    membership_id = serializers.SerializerMethodField()
+    scoped_nodes = serializers.SerializerMethodField()
+
     class Meta:
         model = Employee
         fields = [
@@ -151,7 +169,38 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "overtime_balance_carryover_hours",
             "vacation_days_per_year",
             "last_night_work_medical_exam_date",
+            "username",
+            "role",
+            "membership_id",
+            "scoped_nodes",
         ]
+
+    def _membership(self, obj):
+        # Ein Lookup pro Objekt genügt für alle vier Felder -- da
+        # EmployeeSerializer bislang nicht mit `select_related`/Prefetch auf
+        # `user`/Membership optimiert ist (Stammdaten-Tabelle lädt ohnehin
+        # serverseitig paginiert, siehe EmployeeViewSet-Docstring), ist ein
+        # zusätzlicher Query pro Zeile hier kein neues Problem, nur eines,
+        # das schon vorher für `user` selbst bestand.
+        if not obj.user_id:
+            return None
+        tenant = self.context["request"].tenant
+        return Membership.objects.filter(user_id=obj.user_id, tenant=tenant).first()
+
+    def get_username(self, obj):
+        return obj.user.username if obj.user_id else None
+
+    def get_role(self, obj):
+        membership = self._membership(obj)
+        return membership.role if membership else None
+
+    def get_membership_id(self, obj):
+        membership = self._membership(obj)
+        return membership.id if membership else None
+
+    def get_scoped_nodes(self, obj):
+        membership = self._membership(obj)
+        return list(membership.scoped_nodes.values_list("id", flat=True)) if membership else []
 
     def create(self, validated_data):
         # Bugfix: `skills` (ManyToManyField) darf nicht als Konstruktor-Kwarg
@@ -205,6 +254,28 @@ class EmployeeSerializer(serializers.ModelSerializer):
             for e in employments_data
         )
         instance.nodes.set(node_ids)
+
+
+class EmployeeAccessSetupSerializer(serializers.Serializer):
+    """
+    Validierung für EmployeeViewSet.setup_access (POST .../setup-access/) --
+    Direktanlage eines Login-Zugangs für eine bereits bestehende Employee
+    (Nutzer-Feedback 2026-08: "ein Ort, ein Formular pro Person" statt eines
+    separaten "Mitglieder"-Tabs). Nur Validierung hier, keine eigene
+    create()/save() -- die eigentliche Anlage (User+Membership+Verknüpfung)
+    passiert in der View, weil sie zwei fremde Modelle (core.User/
+    core.Membership) UND das Employee-Objekt selbst anfasst, was für einen
+    einzelnen ModelSerializer keine saubere Zuständigkeit wäre.
+    """
+
+    username = serializers.CharField(max_length=150)
+    role = serializers.ChoiceField(choices=Membership.Role.choices)
+
+    def validate_username(self, value):
+        UnicodeUsernameValidator()(value)
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("Dieser Benutzername ist bereits vergeben.")
+        return value
 
 
 class EmployeeBalanceSerializer(serializers.Serializer):

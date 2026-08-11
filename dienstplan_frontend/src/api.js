@@ -199,6 +199,13 @@ export const api = {
     request(`/employees/${id}/monthly-summary/?year=${year}&month=${month}`),
   settleOvertime: (id, year, month) =>
     request(`/employees/${id}/settle-overtime/`, { method: "POST", body: { year, month } }),
+  // Nutzer-Feedback (2026-08): "Es gibt nun Tab Mitarbeitende, Tab Mitglieder
+  // und Zugriff [...] Das muss doch intuitiver gelöst werden?" -- Login-
+  // Zugang wird direkt am Mitarbeitenden-Datensatz eingerichtet statt in
+  // einem separaten Tab, siehe scheduling.views.EmployeeViewSet.setup_access.
+  // Response enthält `temporary_password` EINMALIG (danach nicht mehr
+  // abrufbar), analog zu createMembership() unten.
+  setupEmployeeAccess: (id, payload) => request(`/employees/${id}/setup-access/`, { method: "POST", body: payload }),
 
   getTimeTemplates: () => requestAllPages("/time-templates/"),
   // Stammdatenpflege (Nutzer-Feedback 2026-08): gleiches Muster wie

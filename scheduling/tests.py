@@ -3809,6 +3809,122 @@ class EmployeeSerializerEmploymentSyncTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class EmployeeAccessSetupTests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "Es gibt nun Tab Mitarbeitende, Tab Mitglieder
+    und Zugriff [...] Das muss doch intuitiver gelöst werden?" -- Login-
+    Zugang wird jetzt direkt am Employee-Datensatz eingerichtet
+    (EmployeeViewSet.setup_access) statt in einem separaten Tab, siehe
+    EmployeeSerializer für die dazu neu exponierten Felder.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-access")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="Berger", employment_pct=100
+        )
+        self.admin_user = User.objects.create_user(username="admin-access", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="planner-access", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_employee_without_login_exposes_empty_access_fields(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["username"])
+        self.assertIsNone(response.data["role"])
+        self.assertIsNone(response.data["membership_id"])
+        self.assertEqual(response.data["scoped_nodes"], [])
+
+    def test_admin_can_setup_access(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "anna.berger", "role": "employee"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(response.data["temporary_password"])
+        self.assertEqual(response.data["username"], "anna.berger")
+
+        self.employee.refresh_from_db()
+        self.assertIsNotNone(self.employee.user_id)
+        self.assertTrue(self.employee.user.must_change_password)
+        self.assertTrue(self.employee.user.check_password(response.data["temporary_password"]))
+
+        membership = Membership.objects.get(user=self.employee.user)
+        self.assertEqual(membership.role, Membership.Role.EMPLOYEE)
+        self.assertEqual(response.data["membership_id"], membership.id)
+
+        # Die neuen Felder auf EmployeeSerializer zeigen den frisch
+        # verknüpften Account jetzt auch beim Lesen.
+        detail = self.client.get(f"/api/employees/{self.employee.id}/")
+        self.assertEqual(detail.data["username"], "anna.berger")
+        self.assertEqual(detail.data["role"], "employee")
+        self.assertEqual(detail.data["membership_id"], membership.id)
+
+    def test_setup_access_fills_user_name_from_employee(self):
+        self.auth_as(self.admin_user)
+        self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "anna.berger2", "role": "employee"},
+            format="json",
+        )
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.user.first_name, "Anna")
+        self.assertEqual(self.employee.user.last_name, "Berger")
+
+    def test_setup_access_rejects_duplicate_username(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "admin-access", "role": "employee"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_setup_access_rejects_when_employee_already_has_login(self):
+        self.auth_as(self.admin_user)
+        self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "anna.berger3", "role": "employee"},
+            format="json",
+        )
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "someone-else", "role": "employee"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_planner_cannot_setup_access(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "anna.berger4", "role": "employee"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_with_planner_role_exposes_scoped_nodes(self):
+        self.auth_as(self.admin_user)
+        node = Node.add_root(name="Station A", tenant=self.tenant)
+        setup = self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "anna.berger5", "role": "planner"},
+            format="json",
+        )
+        membership_id = setup.data["membership_id"]
+        self.client.patch(f"/api/memberships/{membership_id}/", {"scoped_nodes": [node.id]}, format="json")
+        detail = self.client.get(f"/api/employees/{self.employee.id}/")
+        self.assertEqual(detail.data["scoped_nodes"], [node.id])
+
+
 class EmployeeSkillsM2MTests(APITestCase):
     """
     Bugfix: Employee.skills (ManyToManyField) darf nie direkt per

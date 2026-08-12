@@ -611,10 +611,62 @@ class MembershipViewSetTests(APITestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_cannot_delete_membership_via_endpoint(self):
+    def test_admin_can_delete_orphan_membership(self):
+        # Nutzer-Feedback (2026-08): "Konten ohne Mitarbeiterprofil sollten
+        # ebenfalls eine Löschfunktion haben" -- löscht den User (nicht nur
+        # die Membership), siehe MembershipViewSet.perform_destroy.
         self.auth_as(self.admin_user)
-        delete_response = self.client.delete(f"/api/memberships/{self.planner_membership.id}/")
-        self.assertEqual(delete_response.status_code, 405)
+        response = self.client.delete(f"/api/memberships/{self.planner_membership.id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Membership.objects.filter(pk=self.planner_membership.pk).exists())
+        self.assertFalse(User.objects.filter(pk=self.planner_user.pk).exists())
+
+    def test_non_admin_cannot_delete_membership(self):
+        self.auth_as(self.planner_user)
+        response = self.client.delete(f"/api/memberships/{self.employee_user.memberships.get().id}/")
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Membership.objects.filter(user=self.employee_user).exists())
+
+    def test_cannot_delete_membership_with_employee_profile(self):
+        employee_user = User.objects.create_user(username="bob", password="pw-not-real-123!")
+        membership = Membership.objects.create(user=employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        Employee.objects.create(
+            tenant=self.tenant, first_name="Bob", last_name="Baumeister", user=employee_user, employment_pct=100
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.delete(f"/api/memberships/{membership.id}/")
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(User.objects.filter(pk=employee_user.pk).exists())
+
+    def test_cannot_delete_own_membership(self):
+        self.auth_as(self.admin_user)
+        response = self.client.delete(f"/api/memberships/{self.admin_membership.id}/")
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(User.objects.filter(pk=self.admin_user.pk).exists())
+
+    def test_cannot_delete_last_admin_membership(self):
+        second_admin_user = User.objects.create_user(username="admin2", password="pw-not-real-123!")
+        second_admin_membership = Membership.objects.create(
+            user=second_admin_user, tenant=self.tenant, role=Membership.Role.ADMIN
+        )
+        self.auth_as(self.admin_user)
+        # admin_user löscht admin2 -- danach bliebe nur noch admin_user selbst
+        # übrig, das ist erlaubt (kein Selbstlösch-Konflikt hier).
+        response = self.client.delete(f"/api/memberships/{second_admin_membership.id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(User.objects.filter(pk=second_admin_user.pk).exists())
+
+    def test_cannot_delete_staff_membership(self):
+        staff_user = User.objects.create_user(username="staff-with-membership2", password="pw-not-real-123!")
+        Membership.objects.bulk_create(
+            [Membership(user=staff_user, tenant=self.tenant, role=Membership.Role.ADMIN)]
+        )
+        User.objects.filter(pk=staff_user.pk).update(is_staff=True)
+        staff_membership = Membership.objects.get(user=staff_user)
+        self.auth_as(self.admin_user)
+        response = self.client.delete(f"/api/memberships/{staff_membership.id}/")
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(User.objects.filter(pk=staff_user.pk).exists())
 
     def test_admin_can_create_membership_with_generated_password(self):
         # Nutzer-Feedback (2026-08): "Applikationsmanager wird den Benutzer

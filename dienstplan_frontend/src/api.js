@@ -430,6 +430,10 @@ export const api = {
   // `temporary_password` EINMALIG (danach nicht mehr abrufbar).
   createMembership: (payload) => request("/memberships/", { method: "POST", body: payload }),
   updateMembershipRole: (id, role) => request(`/memberships/${id}/`, { method: "PATCH", body: { role } }),
+  // Nutzer-Feedback (2026-08): "Konten ohne Mitarbeiterprofil sollten
+  // ebenfalls eine Löschfunktion haben" -- nur für den Sonderfall ohne
+  // Mitarbeiterprofil, siehe MembershipViewSet.perform_destroy.
+  deleteMembership: (id) => request(`/memberships/${id}/`, { method: "DELETE" }),
 
   // MVP-Fahrplan Block 2, Punkt 31: Lohn-Rohdaten-Export. getPayrollExport
   // liefert die JSON-Vorschau (inkl. Warnliste bei fehlendem Mapping) für

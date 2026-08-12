@@ -3010,6 +3010,24 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     `margin-bottom: 16px` plus `border-bottom`, damit Aktion und Liste sichtbar getrennt sind statt
     ineinander zu verschwimmen.
 
+    **Löschfunktion (2026-08, Nutzer-Feedback: "Konten ohne Mitarbeiterprofil sollten ebenfalls eine
+    löschfunktion haben")**: `MembershipViewSet` erlaubt jetzt `DELETE` (vorher explizit
+    ausgeschlossen). `perform_destroy` löscht den `User` (nicht nur die Membership), sonst bliebe ein
+    verwaister Login-Account ohne jede Mitgliedschaft übrig -- die `Membership` verschwindet über die
+    CASCADE-FK automatisch mit. Bewusst nur für den Sonderfall OHNE Mitarbeiterprofil erlaubt: ein
+    Konto MIT Mitarbeiterprofil über diesen Weg zu löschen würde `User.delete()` via
+    `Employee.user` (OneToOneField, `on_delete=CASCADE`) das Mitarbeiterprofil samt Historie
+    mitreissen -- für Mitarbeitende mit Profil bleibt die "Aktiv"-Checkbox in `EmployeeSettings.jsx`
+    die vorgesehene Deaktivierung (entfernt nur die Sichtbarkeit im Planblatt, nicht den Login --
+    `Employee.is_active` und `User.is_active` sind unabhängige Felder). Vier Sicherheitschecks vor dem
+    Löschen: Konto mit Mitarbeiterprofil, `is_staff`/`is_superuser`-Konto, eigener Account, letzte
+    Admin-Mitgliedschaft eines Mandanten -- alle vier per `ValidationError` (400) abgefangen statt
+    einer harten 500/403. Frontend: neuer "Löschen"-Button (`.btn-ghost.btn-danger-ghost`) je
+    Kontenzeile mit `window.confirm()`-Bestätigung (gleiches Muster wie
+    `PregnancyEditor.jsx`). Backend-Tests decken alle vier Sperren plus den Erfolgsfall ab, volle
+    Suite (586 Tests) grün. Mit Playwright verifiziert: Löschen entfernt das Konto sofort aus der
+    Liste, der Leerzustand "Keine Konten ohne Mitarbeiterprofil vorhanden." erscheint korrekt.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

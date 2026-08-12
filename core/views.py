@@ -244,13 +244,23 @@ class MembershipViewSet(TenantScopedAPIMixin, viewsets.ModelViewSet):
     und nicht per Mail einladen -- was ist am effizientesten und
     intuitivsten?" -- Admin darf hier inzwischen auch neue Mitgliedschaften
     anlegen (POST, siehe MembershipCreateSerializer) und die Rolle
-    bestehender ändern (PATCH `role`, siehe MembershipSerializer). Bewusst
-    weiterhin kein DELETE: Deaktivierung/Entfernen eines Kontos ist ein
-    eigenes, heikleres Thema (u. a. was mit bestehenden Zuweisungen/
-    Historie passiert) -- ausserhalb des Rahmens dieser Änderung.
+    bestehender ändern (PATCH `role`, siehe MembershipSerializer).
+
+    Nutzer-Feedback (2026-08): "Konten ohne Mitarbeiterprofil sollten
+    ebenfalls eine Löschfunktion haben" -- DELETE jetzt erlaubt, aber bewusst
+    nur für Konten OHNE Mitarbeiterprofil (siehe perform_destroy): ein Konto
+    MIT Mitarbeiterprofil über diesen Weg zu löschen würde User.delete() via
+    Employee.user (OneToOneField, on_delete=CASCADE) das Mitarbeiterprofil
+    samt dessen Historie mitreissen -- das ist eine andere, folgenreichere
+    Operation als das hier gemeinte "seltener Sonderfall ohne Profil"
+    (MembershipAccessSettings.jsx-Docstring). Für Mitarbeitende mit Profil
+    bleibt Employee.is_active (EmployeeSettings.jsx-Checkbox "Aktiv") die
+    vorgesehene Deaktivierung -- die entfernt nur die Sichtbarkeit im
+    Planblatt, nicht den Login (Employee.is_active und User.is_active sind
+    unabhängige Felder, siehe scheduling.models.Employee).
     """
 
-    http_method_names = ["get", "post", "head", "options", "patch"]
+    http_method_names = ["get", "post", "head", "options", "patch", "delete"]
     permission_classes = [IsAuthenticated, IsTenantAdmin]
 
     def get_serializer_class(self):
@@ -312,6 +322,31 @@ class MembershipViewSet(TenantScopedAPIMixin, viewsets.ModelViewSet):
                 )
 
         serializer.save()
+
+    def perform_destroy(self, instance):
+        # Nutzer-Feedback (2026-08): "Konten ohne Mitarbeiterprofil sollten
+        # ebenfalls eine Löschfunktion haben" -- gelöscht wird der User
+        # (nicht nur die Membership), sonst bliebe ein verwaister Login-
+        # Account ohne jede Mitgliedschaft übrig. User.delete() reisst über
+        # die CASCADE-FK automatisch auch die Membership selbst mit.
+        if hasattr(instance.user, "employee_profile"):
+            raise ValidationError(
+                "Konten mit Mitarbeiterprofil können hier nicht gelöscht werden -- "
+                "dafür bei „Mitarbeitende“ die Aktiv-Checkbox verwenden."
+            )
+        if instance.user.is_staff or instance.user.is_superuser:
+            raise ValidationError("Dieser Account hat Django-Admin-Zugriff -- kann hier nicht gelöscht werden.")
+        if instance.user_id == self.request.user.id:
+            raise ValidationError("Der eigene Account kann hier nicht gelöscht werden.")
+        if instance.role == Membership.Role.ADMIN:
+            other_admins_exist = (
+                Membership.objects.filter(tenant=instance.tenant, role=Membership.Role.ADMIN)
+                .exclude(pk=instance.pk)
+                .exists()
+            )
+            if not other_admins_exist:
+                raise ValidationError("Es muss mindestens eine Admin-Mitgliedschaft je Mandant erhalten bleiben.")
+        instance.user.delete()
 
 
 class TenantHolidaysView(TenantScopedAPIMixin, APIView):

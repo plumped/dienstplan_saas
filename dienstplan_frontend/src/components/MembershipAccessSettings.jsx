@@ -96,6 +96,21 @@ export default function MembershipAccessSettings({ nodes, onError }) {
     }
   }
 
+  async function handleDelete(membership) {
+    if (
+      !window.confirm(
+        `Konto "${membership.username}" wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.`
+      )
+    )
+      return;
+    try {
+      await api.deleteMembership(membership.id);
+      setMemberships((prev) => prev.filter((m) => m.id !== membership.id));
+    } catch (e) {
+      onError(e.message);
+    }
+  }
+
   function nodeName(id) {
     return nodes.find((n) => n.id === id)?.name ?? `#${id}`;
   }
@@ -178,6 +193,13 @@ export default function MembershipAccessSettings({ nodes, onError }) {
                       Stationen
                     </button>
                   )}
+                  <button
+                    type="button"
+                    className="btn-ghost btn-danger-ghost"
+                    onClick={() => handleDelete(m)}
+                  >
+                    Löschen
+                  </button>
                 </span>
               </li>
             ))}

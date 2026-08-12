@@ -3069,11 +3069,11 @@ thead .col-employee {
   z-index: 0;
   pointer-events: none;
   background-image:
-    linear-gradient(color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px),
-    linear-gradient(90deg, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: linear-gradient(to bottom, black, black 55%, transparent 92%);
-  -webkit-mask-image: linear-gradient(to bottom, black, black 55%, transparent 92%);
+    linear-gradient(color-mix(in srgb, var(--border) 18%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 18%, transparent) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: linear-gradient(to bottom, black, black 35%, transparent 75%);
+  -webkit-mask-image: linear-gradient(to bottom, black, black 35%, transparent 75%);
 }
 
 .landing-nav {
@@ -3383,6 +3383,161 @@ thead .col-employee {
   line-height: 1.55;
 }
 
+.landing-showcase {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 96px auto 0;
+  padding: 0 32px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 64px;
+}
+
+.landing-showcase--reverse .landing-showcase-copy {
+  order: 2;
+}
+
+.landing-showcase--reverse .landing-showcase-frame {
+  order: 1;
+}
+
+.landing-showcase-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.landing-showcase-eyebrow {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+
+.landing-showcase-copy h2 {
+  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-weight: 500;
+  font-size: clamp(22px, 2.6vw, 28px);
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.landing-showcase-copy p {
+  margin: 0;
+  max-width: 460px;
+  color: var(--ink-muted);
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+.landing-showcase-points {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.landing-showcase-points li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+.landing-showcase-points li::before {
+  content: "";
+  flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+.landing-showcase-frame {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.landing-showcase-frame-bar {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.landing-showcase-frame-bar span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.landing-showcase-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.landing-checklist {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 96px auto 0;
+  padding: 48px 32px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.landing-checklist h2 {
+  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-weight: 500;
+  font-size: clamp(20px, 2.4vw, 24px);
+  letter-spacing: -0.01em;
+  margin-bottom: 24px;
+}
+
+.landing-checklist-grid {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px 32px;
+}
+
+.landing-checklist-grid li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13.5px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.landing-checklist-check {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 5px;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
 .landing-cta-band {
   position: relative;
   z-index: 1;
@@ -3488,6 +3643,21 @@ thead .col-employee {
   .landing-stat:first-child {
     border-top: none;
     padding-top: 0;
+  }
+
+  .landing-showcase,
+  .landing-showcase--reverse {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+
+  .landing-showcase--reverse .landing-showcase-copy,
+  .landing-showcase--reverse .landing-showcase-frame {
+    order: initial;
+  }
+
+  .landing-checklist-grid {
+    grid-template-columns: 1fr;
   }
 }
 

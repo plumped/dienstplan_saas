@@ -1,3 +1,6 @@
+import screenshotPlanblatt from "../assets/landing/screenshot-planblatt.png";
+import screenshotSettings from "../assets/landing/screenshot-settings.png";
+
 // README Block 3 (Onboarding & Mandantenfähigkeit): erster Bildschirm für
 // ausgeloggte Besucher, bevorzugt statt direkt der Login-Maske -- wer noch
 // kein Konto hat, sieht zuerst, worum es geht, statt vor einem leeren
@@ -15,6 +18,16 @@
 // Tenant-Default-Werte (core.models.Tenant.minimum_rest_hours/
 // maximum_weekly_hours/default_vacation_days_per_year) statt erfundener
 // Marketing-Zahlen oder fiktiver Kundenlogos/Testimonials.
+//
+// Nutzer-Feedback (2026-08, Folgerunde): "das Grid ist viel zu stark
+// sichtbar, zudem braucht es viel mehr Content was das Ding kann,
+// printscreens etc." -- Punktraster-Deckkraft reduziert (styles.css), und
+// zwei ECHTE Screenshots ergänzt (Playwright gegen den laufenden Dev-
+// Server, eingeloggt als Demo-Tenant "Testheim", Saldo-Badge/-Spalte per
+// CSS ausgeblendet, weil die Demo-Salden unrealistisch sind und nichts
+// über das Feature aussagen -- siehe assets/landing/). Dazu eine
+// Checkliste mit weiteren, tatsächlich vorhandenen Funktionen (siehe
+// README) statt erfundener Zusatzclaims.
 const FEATURES = [
   {
     title: "ArG-konforme Prüfung",
@@ -43,6 +56,37 @@ const STATS = [
   { value: "45h", label: "Höchstarbeitszeit pro Woche im Blick" },
   { value: "20", label: "Ferientage/Jahr als Startwert, pro Mitarbeiter anpassbar" },
 ];
+
+const CHECKLIST = [
+  "Diensttausch mit Planer-Freigabe statt Zuruf auf dem Gang",
+  "Jahresplan pro Mitarbeitendem inklusive Split-Shifts",
+  "Planblatt als PDF oder CSV exportieren",
+  "Lohnarten-Zuordnung direkt für den Lohn-Export",
+  "Fairness-Punktesystem für unpopuläre Schichten",
+  "Feiertagskalender je Kanton, mit lokalen Ausnahmen",
+  "CSV-Mitarbeiterimport beim Einrichten",
+  "Kostenstellen pro Station, vererbt an Mitarbeitende",
+  "Rollen mit passgenauen Rechten: Admin, Planer, HR, Mitarbeitende",
+];
+
+function CheckIcon() {
+  return (
+    <svg
+      className="landing-checklist-check"
+      width="11"
+      height="11"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 12.5l5 5L20 6" />
+    </svg>
+  );
+}
 
 function FeatureIcon({ name }) {
   const common = {
@@ -178,6 +222,31 @@ export default function LandingPage({ onStart, onLogin }) {
         ))}
       </section>
 
+      <section className="landing-showcase">
+        <div className="landing-showcase-copy">
+          <p className="landing-showcase-eyebrow">Planblatt</p>
+          <h2>Alles auf einen Blick planen</h2>
+          <p>
+            Farbcodierte Dienste, Mehrfachauswahl zum schnellen Stempeln und automatische
+            Konflikthinweise direkt in der Zelle -- statt Excel-Formeln, die bei jedem
+            Personalwechsel neu gepflegt werden müssen.
+          </p>
+          <ul className="landing-showcase-points">
+            <li>Drag &amp; Drop sowie Mehrfachauswahl zum schnellen Stempeln</li>
+            <li>Automatische Prüfung gegen ArG-Regeln direkt in der Zelle</li>
+            <li>Laufender Saldo pro Mitarbeitendem, live nachgeführt</li>
+          </ul>
+        </div>
+        <div className="landing-showcase-frame">
+          <div className="landing-showcase-frame-bar">
+            <span />
+            <span />
+            <span />
+          </div>
+          <img src={screenshotPlanblatt} alt="Planblatt mit Schichtplanung, farbcodierten Diensten und automatischen Konflikthinweisen" />
+        </div>
+      </section>
+
       <section className="landing-feature-grid">
         {FEATURES.map((feature) => (
           <div className="landing-feature-tile" key={feature.title}>
@@ -188,6 +257,43 @@ export default function LandingPage({ onStart, onLogin }) {
             <p>{feature.text}</p>
           </div>
         ))}
+      </section>
+
+      <section className="landing-showcase landing-showcase--reverse">
+        <div className="landing-showcase-copy">
+          <p className="landing-showcase-eyebrow">Einstellungen</p>
+          <h2>Vollständig konfigurierbar, ohne Support-Ticket</h2>
+          <p>
+            Schichttypen, Absenzarten, Stationen, Skills, Lohnarten und die Regel-Engine lassen
+            sich direkt im System pflegen -- von der Person, die den Betrieb tatsächlich kennt,
+            nicht per E-Mail an einen Anbieter.
+          </p>
+          <ul className="landing-showcase-points">
+            <li>Schichttypen, Absenzarten und Stationen frei definierbar</li>
+            <li>Lohnarten-Zuordnung direkt für den Lohn-Export</li>
+            <li>Regel-Engine mit Ruhezeit-, Höchstarbeitszeit- und Zuschlagseinstellungen</li>
+          </ul>
+        </div>
+        <div className="landing-showcase-frame">
+          <div className="landing-showcase-frame-bar">
+            <span />
+            <span />
+            <span />
+          </div>
+          <img src={screenshotSettings} alt="Einstellungsübersicht mit Modulen für Schichttypen, Absenzarten, Mitarbeitende, Stationen, Skills, Lohnarten und Regel-Engine" />
+        </div>
+      </section>
+
+      <section className="landing-checklist">
+        <h2>Und ausserdem</h2>
+        <ul className="landing-checklist-grid">
+          {CHECKLIST.map((item) => (
+            <li key={item}>
+              <CheckIcon />
+              {item}
+            </li>
+          ))}
+        </ul>
       </section>
 
       <section className="landing-cta-band">

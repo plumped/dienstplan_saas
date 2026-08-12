@@ -644,6 +644,38 @@ class EmployeeViewSet(TenantScopedViewSet):
             status=201,
         )
 
+    @action(detail=True, methods=["post"])
+    def deactivate(self, request, pk=None):
+        """
+        Nutzer-Feedback (2026-08): "ein Deaktivieren Button [...] deaktiviert
+        diesen inklusive seines Logins! Wenn einer Austritt aus dem
+        Unternehmen muss das Handlebar sein" -- die bisherige "Aktiv"-
+        Checkbox (is_active) betrifft bewusst nur die Planblatt-Sichtbarkeit,
+        nicht den Login (siehe Employee.is_active-Feld), das ist bei einem
+        tatsächlichen Austritt zu wenig. Diese Action setzt zusätzlich
+        `user.is_active = False`, falls ein Login-Zugang existiert -- ein
+        Mitarbeiter ohne Zugang (employee.user_id ist None) wird nur über
+        Employee.is_active deaktiviert, da es keinen Login gibt, der zu
+        sperren wäre. Gleiche automatische Wirkung erzielt der management
+        command deactivate_expired_employees, sobald Employee.termination_date
+        erreicht ist -- diese Action ist die sofortige, manuelle Variante
+        davon (z. B. für einen fristlosen Austritt ohne Vorlauf).
+
+        Admin-only wie jede Kontoverwaltung, die den Login-Zugang anfasst
+        (siehe setup_access-Docstring) -- bewusst strenger als die sonstige
+        IsTenantManager-Berechtigung dieses ViewSets.
+        """
+        if request.membership.role != Membership.Role.ADMIN:
+            raise PermissionDenied("Nur Admin darf Mitarbeitende deaktivieren.")
+        employee = self.get_object()
+        employee.is_active = False
+        employee.save(update_fields=["is_active"])
+        if employee.user_id:
+            employee.user.is_active = False
+            employee.user.save(update_fields=["is_active"])
+        serializer = self.get_serializer(employee)
+        return Response(serializer.data)
+
 
 class AbsenceTypeViewSet(TenantScopedViewSet):
     """

@@ -55,6 +55,7 @@ function emptyForm() {
     birth_date: "",
     employment_pct: 100,
     employment_start_date: new Date().toISOString().slice(0, 10),
+    termination_date: "",
     employments: [],
     skills: [],
     is_active: true,
@@ -82,6 +83,7 @@ function toFormValues(employee) {
     birth_date: employee.birth_date ?? "",
     employment_pct: employee.employment_pct,
     employment_start_date: employee.employment_start_date,
+    termination_date: employee.termination_date ?? "",
     // README Punkt 17: employments statt nodes -- siehe EmploymentEditor.jsx.
     // node/pensum_pct/title/is_team_lead werden 1:1 aus der API übernommen,
     // die id lassen wir bewusst weg (wird beim Speichern ohnehin komplett
@@ -141,6 +143,11 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
   const [roleChanging, setRoleChanging] = useState(false);
   const [scopedNodesSaving, setScopedNodesSaving] = useState(false);
   const [newCredentials, setNewCredentials] = useState(null);
+  // Nutzer-Feedback (2026-08): "ein Deaktivieren Button [...] deaktiviert
+  // diesen inklusive seines Logins! Wenn einer Austritt aus dem Unternehmen
+  // muss das Handlebar sein" -- eigener Ladezustand pro Zeile, damit ein
+  // Doppelklick während des Requests keinen zweiten auslöst.
+  const [deactivatingId, setDeactivatingId] = useState(null);
 
   // Modal per Escape schliessen -- Standard-Erwartung an einen Dialog.
   useEffect(() => {
@@ -342,6 +349,30 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
     }
   }
 
+  // Nutzer-Feedback (2026-08): "ein Deaktivieren Button [...] deaktiviert
+  // diesen inklusive seines Logins! Wenn einer Austritt aus dem Unternehmen
+  // muss das Handlebar sein" -- anders als die "Aktiv"-Checkbox im Formular
+  // (die nur die Planblatt-Sichtbarkeit steuert) sperrt diese Aktion
+  // zusätzlich den Login, siehe EmployeeViewSet.deactivate.
+  async function handleDeactivate(employee) {
+    if (
+      !window.confirm(
+        `${employee.first_name} ${employee.last_name} wirklich deaktivieren? Der Login-Zugang wird dabei ` +
+          "ebenfalls gesperrt. Diese Aktion lässt sich hier nicht rückgängig machen."
+      )
+    )
+      return;
+    setDeactivatingId(employee.id);
+    try {
+      await api.deactivateEmployee(employee.id);
+      reloadCurrentPage();
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setDeactivatingId(null);
+    }
+  }
+
   async function handleSubmit(event) {
     event.preventDefault();
     if (!form.first_name.trim() || !form.last_name.trim()) {
@@ -362,6 +393,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
       birth_date: form.birth_date || null,
       employment_pct: Number(form.employment_pct),
       employment_start_date: form.employment_start_date,
+      termination_date: form.termination_date || null,
       employments: form.employments,
       skills: form.skills,
       is_active: form.is_active,
@@ -511,6 +543,16 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                           <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
                             Bearbeiten
                           </button>
+                          {emp.is_active && (
+                            <button
+                              type="button"
+                              className="btn-ghost btn-danger-ghost"
+                              disabled={deactivatingId === emp.id}
+                              onClick={() => handleDeactivate(emp)}
+                            >
+                              {deactivatingId === emp.id ? "Wird deaktiviert …" : "Deaktivieren"}
+                            </button>
+                          )}
                         </span>
                       </td>
                     </tr>
@@ -779,6 +821,15 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
               als Soll noch als Ist, auch wenn sie im laufenden Kalenderjahr liegen.
             </span>
             {fieldError("employment_start_date")}
+          </label>
+          <label>
+            Austrittsdatum
+            <input type="date" value={form.termination_date} onChange={updateField("termination_date")} />
+            <span className="panel-hint">
+              Optional. Sobald dieses Datum erreicht ist, wird die Person automatisch deaktiviert -- inkl.
+              Login-Sperre, falls ein Zugang besteht (gleiche Wirkung wie der "Deaktivieren"-Button).
+            </span>
+            {fieldError("termination_date")}
           </label>
           <div className="panel-form-row">
             <label>

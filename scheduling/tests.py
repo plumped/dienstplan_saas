@@ -2,6 +2,7 @@ from datetime import date, time, timedelta
 
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.management import call_command
 from django.core.exceptions import ValidationError
 from django.db import connection
 from django.db.migrations.executor import MigrationExecutor
@@ -4120,6 +4121,166 @@ class EmployeeAccessSetupTests(APITestCase):
         self.client.patch(f"/api/memberships/{membership_id}/", {"scoped_nodes": [node.id]}, format="json")
         detail = self.client.get(f"/api/employees/{self.employee.id}/")
         self.assertEqual(detail.data["scoped_nodes"], [node.id])
+
+
+class EmployeeDeactivateTests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "ein Deaktivieren Button [...] deaktiviert
+    diesen inklusive seines Logins! Wenn einer Austritt aus dem Unternehmen
+    muss das Handlebar sein" -- EmployeeViewSet.deactivate.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-deactivate")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="Berger", employment_pct=100
+        )
+        self.employee_user = User.objects.create_user(username="anna-deact", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.employee.user = self.employee_user
+        self.employee.save(update_fields=["user"])
+
+        self.admin_user = User.objects.create_user(username="admin-deact", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="planner-deact", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_can_deactivate_employee_with_login(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.employee_user.refresh_from_db()
+        self.assertFalse(self.employee.is_active)
+        self.assertFalse(self.employee_user.is_active)
+
+    def test_deactivate_employee_without_login_only_touches_is_active(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Tom", last_name="Frei", employment_pct=100
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/employees/{employee.id}/deactivate/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        employee.refresh_from_db()
+        self.assertFalse(employee.is_active)
+
+    def test_planner_cannot_deactivate_employee(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.employee_user.refresh_from_db()
+        self.assertTrue(self.employee_user.is_active)
+
+    def test_deactivated_employee_login_is_blocked(self):
+        # Regressionstest für den eigentlichen Kern des Features: nicht nur
+        # der Datenbank-Flag, sondern der tatsächliche Login-Endpunkt muss
+        # den Zugang verweigern.
+        self.auth_as(self.admin_user)
+        self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        self.client.credentials()
+        response = self.client.post(
+            "/api/auth/token/", {"username": "anna-deact", "password": "pw-not-real-123!"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class DeactivateExpiredEmployeesCommandTests(TestCase):
+    """
+    Nutzer-Feedback (2026-08): "ein Mitarbeiter braucht auch ein
+    Austrittsdatum. Wird dieses Erreicht wird automatisch inaktiviert und
+    login gesperrt" -- management command deactivate_expired_employees.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-termination")
+
+    def test_deactivates_employee_with_past_termination_date(self):
+        user = User.objects.create_user(username="past-exit", password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            user=user,
+            termination_date=date.today() - timedelta(days=1),
+        )
+        call_command("deactivate_expired_employees")
+        employee.refresh_from_db()
+        user.refresh_from_db()
+        self.assertFalse(employee.is_active)
+        self.assertFalse(user.is_active)
+
+    def test_deactivates_employee_with_termination_date_today(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="Huber",
+            employment_pct=100,
+            termination_date=date.today(),
+        )
+        call_command("deactivate_expired_employees")
+        employee.refresh_from_db()
+        self.assertFalse(employee.is_active)
+
+    def test_leaves_future_termination_date_untouched(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Tom",
+            last_name="Frei",
+            employment_pct=100,
+            termination_date=date.today() + timedelta(days=1),
+        )
+        call_command("deactivate_expired_employees")
+        employee.refresh_from_db()
+        self.assertTrue(employee.is_active)
+
+    def test_leaves_employee_without_termination_date_untouched(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=100
+        )
+        call_command("deactivate_expired_employees")
+        employee.refresh_from_db()
+        self.assertTrue(employee.is_active)
+
+    def test_runs_across_multiple_tenants(self):
+        other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-termination")
+        employee_a = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=1),
+        )
+        employee_b = Employee.objects.create(
+            tenant=other_tenant,
+            first_name="Rosa",
+            last_name="Fernandez",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=1),
+        )
+        call_command("deactivate_expired_employees")
+        employee_a.refresh_from_db()
+        employee_b.refresh_from_db()
+        self.assertFalse(employee_a.is_active)
+        self.assertFalse(employee_b.is_active)
+
+    def test_idempotent_on_second_run(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=1),
+        )
+        call_command("deactivate_expired_employees")
+        call_command("deactivate_expired_employees")
+        employee.refresh_from_db()
+        self.assertFalse(employee.is_active)
 
 
 class EmployeeSkillsM2MTests(APITestCase):

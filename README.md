@@ -3028,6 +3028,36 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Suite (586 Tests) grün. Mit Playwright verifiziert: Löschen entfernt das Konto sofort aus der
     Liste, der Leerzustand "Keine Konten ohne Mitarbeiterprofil vorhanden." erscheint korrekt.
 
+    **Mitarbeiter deaktivieren inkl. Login-Sperre + Austrittsdatum (2026-08, Nutzer-Feedback: "ein
+    Deaktivieren Button [...] deaktiviert diesen inklusive seines Logins! Wenn einer Austritt aus dem
+    Unternehmen muss das Handlebar sein [...] ein Mitarbeiter braucht auch ein Austrittsdatum")**: die
+    bestehende "Aktiv"-Checkbox betrifft bewusst nur `Employee.is_active` (Planblatt-Sichtbarkeit),
+    für einen tatsächlichen Austritt reicht das nicht -- neuer `Employee.termination_date`
+    (optional) plus zwei neue Wege, die dieselbe Wirkung erzielen: sofort per Klick oder automatisch
+    zum Stichtag.
+    - **Sofort**: `EmployeeViewSet.deactivate` (POST `.../deactivate/`, Admin-only wie jede
+      Kontoverwaltung, die den Login anfasst -- vgl. `setup_access`) setzt `Employee.is_active = False`
+      und, falls ein Login-Zugang existiert, zusätzlich `user.is_active = False`. Frontend: neuer
+      "Deaktivieren"-Button je Zeile in der Mitarbeitenden-Tabelle (nur sichtbar, solange die Person
+      noch aktiv ist), mit `window.confirm()`-Bestätigung.
+    - **Automatisch zum Austrittsdatum**: neues Feld "Austrittsdatum" im Bearbeiten-Formular
+      (`Employee.termination_date`, optional). Ein neuer management command
+      `deactivate_expired_employees` (gedacht für einen täglichen Cronjob, z. B. 00:05 Uhr) sucht
+      tenant-übergreifend (`Employee.all_objects`, da ausserhalb eines Requests kein "aktueller
+      Tenant" in der ContextVar existiert) nach noch aktiven Employees mit erreichtem/verstrichenem
+      Austrittsdatum und wendet dieselbe Deaktivierungs-Logik an wie der manuelle Button -- idempotent,
+      ein zweiter Lauf am selben Tag ändert nichts mehr.
+    - Beide Wege sind bewusst dieselbe Operation (Employee.is_active + ggf. user.is_active), nur
+      unterschiedlich ausgelöst -- kein Duplikat-Code, der auseinanderlaufen könnte.
+    - Backend-Tests: `EmployeeDeactivateTests` (Admin kann deaktivieren inkl. Login-Sperre, Planer
+      darf nicht, Konto ohne Login wird nur über `is_active` deaktiviert, ein Login-Versuch nach der
+      Deaktivierung schlägt tatsächlich am Token-Endpoint fehl -- nicht nur der DB-Flag wird geprüft)
+      und `DeactivateExpiredEmployeesCommandTests` (Stichtag heute/vergangen wird deaktiviert,
+      zukünftiges Datum bleibt unangetastet, kein Datum bleibt unangetastet, mandantenübergreifender
+      Lauf, Idempotenz). Volle Suite (596 Tests) grün. Mit Playwright verifiziert: "Austrittsdatum"-
+      Feld im Formular, "Deaktivieren"-Button pro Zeile, nach Bestätigung erscheint "INAKTIV" im
+      Status, Login-Zugang (`user.is_active`) tatsächlich gesperrt.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

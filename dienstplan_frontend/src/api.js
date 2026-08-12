@@ -215,6 +215,10 @@ export const api = {
   // Response enthält `temporary_password` EINMALIG (danach nicht mehr
   // abrufbar), analog zu createMembership() unten.
   setupEmployeeAccess: (id, payload) => request(`/employees/${id}/setup-access/`, { method: "POST", body: payload }),
+  // Nutzer-Feedback (2026-08): "ein Deaktivieren Button [...] deaktiviert
+  // diesen inklusive seines Logins!" -- siehe
+  // scheduling.views.EmployeeViewSet.deactivate.
+  deactivateEmployee: (id) => request(`/employees/${id}/deactivate/`, { method: "POST", affectsBalance: true }),
 
   getTimeTemplates: () => requestAllPages("/time-templates/"),
   // Stammdatenpflege (Nutzer-Feedback 2026-08): gleiches Muster wie

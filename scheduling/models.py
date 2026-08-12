@@ -213,6 +213,14 @@ class Employee(TenantScopedModel):
     nodes = models.ManyToManyField(Node, related_name="employees", blank=True)
     skills = models.ManyToManyField(Skill, related_name="employees", blank=True)
     is_active = models.BooleanField(default=True)
+    termination_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Austrittsdatum. Sobald dieses Datum erreicht ist, deaktiviert der "
+        "management command deactivate_expired_employees automatisch is_active und -- falls "
+        "vorhanden -- den Login-Zugang (user.is_active), siehe EmployeeViewSet.deactivate für die "
+        "sofortige, manuelle Variante desselben Vorgangs.",
+    )
 
     # Personalkategorie-Override (MVP-Fahrplan Block 1.14): innerhalb eines
     # Spitals gelten je nach Funktion oft unterschiedliche Wochenstunden-Werte

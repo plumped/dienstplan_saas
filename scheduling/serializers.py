@@ -170,6 +170,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "birth_date",
             "employment_pct",
             "employment_start_date",
+            "termination_date",
             "nodes",
             "employments",
             "skills",

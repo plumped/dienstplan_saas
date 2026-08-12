@@ -2892,6 +2892,58 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     die Hinweisbox mit 7h Überschuss, Bestätigen setzt den Zuschlag auf 1.75h (25%) und bleibt nach
     Neuladen der Seite bestehen.
 
+37. ✅ **Abwesenheiten & Diensttausch: gleiches stationsübergreifendes Muster wie Zeiterfassung**
+    (2026-08, Nutzer-Feedback: "Ich finde der Tab Abwesenheiten und der Tab Diensttausch sollten
+    gleich aufgebaut sein wie Zeiterfassung"). Baut auf Punkt 36 auf, überträgt dasselbe Muster
+    1:1.
+
+    **Backend**: `AbsenceViewSet`/`ShiftTradeRequestViewSet` erhalten `?search=`/`?ordering=`/
+    `?node=` (DRF `SearchFilter`/`OrderingFilter`) sowie dasselbe Stations-Scoping über
+    `_employee_scoped_node_ids()` wie `TimeRecordViewSet` -- schliesst eine Lücke: Planer/HR mit
+    `Membership.scoped_nodes` sahen bei Abwesenheiten/Diensttausch bisher trotzdem den ganzen
+    Tenant. Bei Absenzen (`Employee.nodes` ist M2M) zusätzlich ein Sonderfall: eigene Absenzen
+    bleiben immer sichtbar/verwaltbar, auch ohne zugeordnete Station -- sonst hätten
+    `approve()`/`reject()`/`delete()` auf die eigene Absenz 404 statt 403 geliefert (DRF prüft
+    Objektberechtigungen erst nach dem Queryset-Filter). Bei Diensttausch ein analoger Sonderfall
+    für Zielperson/anbietende Person, sonst könnte eine ausserhalb der eigenen Station adressierte
+    Anfrage nicht mehr gesehen/angenommen werden. `AbsenceSerializer`/`ShiftTradeRequestSerializer`
+    um denormalisierte Anzeige-Felder erweitert (Mitarbeitername, Stationen-Text,
+    Schichttyp-Farbe/-Name etc.), analog `TimeRecordSerializer` -- vermeidet N+1-artige
+    Detail-Lookups im Frontend. `core/views.py::_task_counts` zieht dieselbe Scoping-Logik für die
+    `absences`/`trades`-Zähler nach (vorher tenant-weit, inkonsistent zur neuen gescopten
+    Übersicht).
+
+    **Frontend**: Neue `AbsenceOverview.jsx`/`TradeRequestOverview.jsx` (Admin/Planer/HR,
+    `canViewScheduleReports()`) ersetzen den bisherigen, stationsgebundenen Tab durch dasselbe
+    `settings-table`-Muster wie `TimeRecordOverview.jsx`: Segmented-Control ("Zu genehmigen"/
+    "Alle" bzw. "Offen"/"Alle"), Suche, Stationsfilter, Sortierung, Pagination,
+    stationsübergreifend. Bei Abwesenheiten zusätzlich Checkbox-Spalte + Massenaktion
+    "Ausgewählte genehmigen" (keine Risiko-Ausschluss-Logik wie bei Zeiterfassung nötig, da es
+    kein Abweichungsmass gibt); bei Diensttausch bewusst keine Massenaktion, weil die richtige
+    Zeilenaktion vom Betrachter abhängt (Admin/Planer: Freigeben/Ablehnen; Zielperson: Annehmen/
+    Ablehnen; anbietende Person: Zurückziehen -- dieselbe Logik wie zuvor in
+    `TradeRequestPanel.jsx`). "+ Absenz erfassen" öffnet ein Modal mit neu extrahiertem
+    `AbsenceForm.jsx` (aus `AbsencePanel.jsx` herausgelöst, von beiden Komponenten
+    wiederverwendet). `AbsencePanel.jsx`/`TradeRequestPanel.jsx` bleiben unverändert für die
+    Mitarbeiter-Rolle (Self-Service, stationsgebunden) -- `AbsencePanel.jsx` dabei vereinfacht:
+    keine `canManage`-Verzweigung und kein tenant-weiter `allEmployeesById`-Workaround mehr, da
+    beides nur wegen des vorher fehlenden Backend-Scopings nötig war.
+
+    24 neue Backend-Tests (Suche/Sortierung/Filter/Scoping für beide Ressourcen,
+    Serializer-Feldassertions inkl. `target_assignment=None`-Fall, Regressionstest für den
+    Diensttausch-Mitarbeiter-Sonderfall), plus zwei Regressionsfixes bei bestehenden
+    Berechtigungstests, die durch das neue Scoping aufgedeckt wurden (ein Mitarbeiter ohne eigene
+    Stationszuordnung hätte sonst 404 statt 403 auf die eigene Absenz erhalten -- behoben über
+    denselben Eigentümer-Sonderfall wie beim Diensttausch). Volle Suite (581 Tests) grün. Mit
+    Playwright gegen echte Testheim-Daten für alle vier Rollen verifiziert: Admin sieht beide Tabs
+    stationsübergreifend mit echten Zeilen (Segmented-Control, Sortierung, Aktionen), gescopter
+    Planer sieht nur die eigene Station, HR sieht dieselbe Übersicht rein lesend (keine Erfassen-/
+    Genehmigen-Buttons -- dabei einen bei der Implementierung selbst gefundenen
+    Berechtigungs-Mismatch behoben: HR erreicht die Übersicht über `canViewScheduleReports`, aber
+    `MANAGER_ROLES` schliesst HR von Schreibaktionen aus, das Frontend blendete diese Buttons
+    anfangs nicht konsequent für HR aus), Mitarbeiter behält die unveränderte
+    Self-Service-Ansicht.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

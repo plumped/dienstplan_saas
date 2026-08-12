@@ -291,6 +291,21 @@ export const api = {
 
   getAbsences: (employeeId) =>
     requestAllPages(employeeId ? `/absences/?employee=${employeeId}` : "/absences/"),
+  // Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+  // aufgebaut sein wie Zeiterfassung" -- gleiches Muster wie
+  // searchTimeRecords() oben: eine gefilterte/sortierte Einzelseite
+  // (DRF-Envelope), stationsübergreifend (Scoping passiert serverseitig
+  // über AbsenceViewSet), für AbsenceOverview.jsx.
+  searchAbsences: ({ status, node, search, ordering, page } = {}) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (node) params.set("node", node);
+    if (search) params.set("search", search);
+    if (ordering) params.set("ordering", ordering);
+    if (page) params.set("page", page);
+    const qs = params.toString();
+    return request(`/absences/${qs ? `?${qs}` : ""}`);
+  },
   createAbsence: (payload) =>
     request("/absences/", { method: "POST", body: payload, affectsBalance: true, affectsTasks: true }),
   deleteAbsence: (id) => request(`/absences/${id}/`, { method: "DELETE", affectsBalance: true }),
@@ -311,6 +326,19 @@ export const api = {
   deletePregnancy: (id) => request(`/pregnancies/${id}/`, { method: "DELETE" }),
 
   getShiftTradeRequests: () => requestAllPages("/shift-trade-requests/"),
+  // Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+  // aufgebaut sein wie Zeiterfassung" -- gleiches Muster wie
+  // searchTimeRecords()/searchAbsences() oben, für TradeRequestOverview.jsx.
+  searchShiftTradeRequests: ({ open, node, search, ordering, page } = {}) => {
+    const params = new URLSearchParams();
+    if (open) params.set("open", "true");
+    if (node) params.set("node", node);
+    if (search) params.set("search", search);
+    if (ordering) params.set("ordering", ordering);
+    if (page) params.set("page", page);
+    const qs = params.toString();
+    return request(`/shift-trade-requests/${qs ? `?${qs}` : ""}`);
+  },
   createShiftTradeRequest: (payload) =>
     request("/shift-trade-requests/", { method: "POST", body: payload, affectsTasks: true }),
   acceptShiftTradeRequest: (id) =>

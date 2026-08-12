@@ -613,13 +613,50 @@ class PayrollCategoryMappingSerializer(serializers.ModelSerializer):
 
 
 class AbsenceSerializer(serializers.ModelSerializer):
+    # Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+    # aufgebaut sein wie Zeiterfassung" -- die stationsübergreifende
+    # AbsenceOverview.jsx zeigt Mitarbeiter/Station(en)/Art direkt in der
+    # Zeile, ohne pro Zeile einen zusätzlichen Request (gleiches Muster wie
+    # TimeRecordSerializer.assignment_employee_name).
+    employee_name = serializers.SerializerMethodField()
+    # Ein Employee kann mehreren Stationen zugeordnet sein (Team-Anstellungen,
+    # README Punkt 17) -- anders als bei ShiftAssignment/TimeRecord gibt es
+    # keinen einzelnen Stations-FK, deshalb ein einfacher, kommagetrennter
+    # Text statt eines einzelnen Felds (analog nodeNames() in
+    # EmployeeSettings.jsx), NICHT sortierbar (kein eindeutiger Sortierwert).
+    employee_node_names = serializers.SerializerMethodField()
+    type_name = serializers.CharField(source="type.name", read_only=True)
+    type_color = serializers.CharField(source="type.color", read_only=True)
+    type_icon = serializers.CharField(source="type.icon", read_only=True)
+
     class Meta:
         model = Absence
-        fields = ["id", "employee", "start_date", "end_date", "day_portion", "type", "status", "note"]
+        fields = [
+            "id",
+            "employee",
+            "employee_name",
+            "employee_node_names",
+            "start_date",
+            "end_date",
+            "day_portion",
+            "type",
+            "type_name",
+            "type_color",
+            "type_icon",
+            "status",
+            "note",
+        ]
         # status wird nicht direkt gesetzt, sondern über perform_create
         # (Admin/Planer -> sofort APPROVED, sonst PENDING) bzw. die
         # approve/reject-Actions (siehe AbsenceViewSet, Block 2.3).
         read_only_fields = ["status"]
+
+    def get_employee_name(self, obj):
+        return f"{obj.employee.first_name} {obj.employee.last_name}"
+
+    def get_employee_node_names(self, obj):
+        names = [n.name for n in obj.employee.nodes.all()]
+        return ", ".join(names) if names else "—"
 
     def validate(self, attrs):
         instance = self.instance or Absence()
@@ -834,19 +871,73 @@ class ShiftTradeRequestSerializer(serializers.ModelSerializer):
         queryset=ShiftAssignment.all_objects.all(), required=False, allow_null=True
     )
 
+    # Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+    # aufgebaut sein wie Zeiterfassung" -- die stationsübergreifende
+    # TradeRequestOverview.jsx zeigt Personen/Station/Schicht direkt in der
+    # Zeile (gleiches Muster wie TimeRecordSerializer.assignment_*).
+    requester_employee_id = serializers.IntegerField(source="requester_assignment.employee_id", read_only=True)
+    requester_employee_name = serializers.SerializerMethodField()
+    requester_node_id = serializers.IntegerField(source="requester_assignment.node_id", read_only=True)
+    requester_node_name = serializers.CharField(source="requester_assignment.node.name", read_only=True)
+    requester_date = serializers.DateField(source="requester_assignment.date", read_only=True)
+    requester_template_id = serializers.IntegerField(source="requester_assignment.template_id", read_only=True)
+    requester_template_name = serializers.CharField(source="requester_assignment.template.name", read_only=True)
+    requester_template_color = serializers.CharField(source="requester_assignment.template.color", read_only=True)
+    target_employee_name = serializers.SerializerMethodField()
+    # target_assignment ist optional (leer = "Zielperson übernimmt die Schicht
+    # einfach", siehe Modell-Docstring) -- source="target_assignment.xxx"
+    # würde bei None mit AttributeError abbrechen statt sauber None zu
+    # liefern, deshalb SerializerMethodField mit expliziter None-Prüfung.
+    target_assignment_date = serializers.SerializerMethodField()
+    target_assignment_template_id = serializers.SerializerMethodField()
+    target_assignment_template_name = serializers.SerializerMethodField()
+    target_assignment_template_color = serializers.SerializerMethodField()
+
     class Meta:
         model = ShiftTradeRequest
         fields = [
             "id",
             "requester_assignment",
+            "requester_employee_id",
+            "requester_employee_name",
+            "requester_node_id",
+            "requester_node_name",
+            "requester_date",
+            "requester_template_id",
+            "requester_template_name",
+            "requester_template_color",
             "target_employee",
+            "target_employee_name",
             "target_assignment",
+            "target_assignment_date",
+            "target_assignment_template_id",
+            "target_assignment_template_name",
+            "target_assignment_template_color",
             "status",
             "note",
             "created_at",
             "resolved_at",
         ]
         read_only_fields = ["status", "created_at", "resolved_at"]
+
+    def get_requester_employee_name(self, obj):
+        employee = obj.requester_assignment.employee
+        return f"{employee.first_name} {employee.last_name}"
+
+    def get_target_employee_name(self, obj):
+        return f"{obj.target_employee.first_name} {obj.target_employee.last_name}"
+
+    def get_target_assignment_date(self, obj):
+        return obj.target_assignment.date if obj.target_assignment_id else None
+
+    def get_target_assignment_template_id(self, obj):
+        return obj.target_assignment.template_id if obj.target_assignment_id else None
+
+    def get_target_assignment_template_name(self, obj):
+        return obj.target_assignment.template.name if obj.target_assignment_id else None
+
+    def get_target_assignment_template_color(self, obj):
+        return obj.target_assignment.template.color if obj.target_assignment_id else None
 
     def validate(self, attrs):
         tenant = self.context["request"].tenant

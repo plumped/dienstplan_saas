@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, onTasksChanged } from "./api.js";
+import AbsenceOverview from "./components/AbsenceOverview.jsx";
 import AbsencePanel from "./components/AbsencePanel.jsx";
 import BalanceBadge from "./components/BalanceBadge.jsx";
 import Dashboard from "./components/Dashboard.jsx";
@@ -11,6 +12,7 @@ import PlanGrid from "./components/PlanGrid.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 import TimeRecordOverview from "./components/TimeRecordOverview.jsx";
 import TimeRecordPanel from "./components/TimeRecordPanel.jsx";
+import TradeRequestOverview from "./components/TradeRequestOverview.jsx";
 import TradeRequestPanel from "./components/TradeRequestPanel.jsx";
 import YearPlan from "./components/YearPlan.jsx";
 import { canManageSchedule, canViewScheduleReports, ROLE_LABELS } from "./roles.js";
@@ -279,6 +281,16 @@ export default function App() {
           // Service) behalten unverändert die stationsgebundene
           // TimeRecordPanel weiter unten.
           <TimeRecordOverview key={timeRecordTabNonce} nodes={nodes} onError={setError} />
+        ) : activeTab === "absences" && canViewScheduleReports(me) ? (
+          // Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen
+          // gleich aufgebaut sein wie Zeiterfassung" -- gleiches Muster wie
+          // beim timerecords-Zweig oben: stationsübergreifende Übersicht für
+          // Admin/Planer/HR statt der stationsgebundenen Ansicht.
+          // Mitarbeitende (Self-Service) behalten unverändert die
+          // stationsgebundene AbsencePanel weiter unten.
+          <AbsenceOverview nodes={nodes} me={me} onError={setError} />
+        ) : activeTab === "trades" && canViewScheduleReports(me) ? (
+          <TradeRequestOverview nodes={nodes} me={me} onError={setError} />
         ) : !nodeId ? (
           <p className="empty-state">
             {canManageSchedule(me)

@@ -3342,6 +3342,13 @@ class RoleBasedPermissionTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_employee_can_delete_own_absence_not_others(self):
+        # Alice und Bob teilen sich hier bewusst eine Station: sonst wäre
+        # Bobs Absenz für Alice unter dem neuen Stations-Scoping gar nicht
+        # sichtbar (404 statt 403) -- dieser Test prüft aber die
+        # Ownership-Berechtigung, nicht das Stations-Scoping (siehe
+        # PlannerHRStationScopingTests dafür).
+        self.alice.nodes.add(self.node)
+        self.bob.nodes.add(self.node)
         own_absence = Absence.objects.create(
             tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2),
             type=self.vacation_type,
@@ -3389,9 +3396,15 @@ class RoleBasedPermissionTests(APITestCase):
         )
         third_user = User.objects.create_user(username="carla", password="pw-not-real-123!")
         Membership.objects.create(user=third_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
-        Employee.objects.create(
+        carla = Employee.objects.create(
             tenant=self.tenant, user=third_user, first_name="Carla", last_name="C", employment_pct=100
         )
+        # Carla ist weder Requester noch Target -- der Mitarbeiter-Sonderfall
+        # im Scoping greift für sie nicht. Damit accept() für sie überhaupt
+        # bis zur Objektberechtigung kommt (403) statt vorher am
+        # Queryset-Filter zu scheitern (404), braucht sie dieselbe Station
+        # wie die Anfrage.
+        carla.nodes.add(self.node)
 
         self.auth_as(third_user)
         self.assertEqual(
@@ -7490,3 +7503,303 @@ class BalanceFairnessBulkAPITests(APITestCase):
         self.auth_as(self.admin_user)
         response = self.client.get("/api/employees/balance-fairness-bulk/?ids=abc")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class AbsenceOverviewAPITests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+    aufgebaut sein wie Zeiterfassung" -- ?search=/?ordering=/?status=/?node=
+    auf AbsenceViewSet, Stations-Scoping (analog TimeRecordOverviewAPITests),
+    denormalisierte Anzeige-Felder.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-absence-overview")
+        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", color="#112233", icon="F")
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        self.planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        self.employee_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, first_name="Alice", last_name="A", employment_pct=100, user=self.employee_user
+        )
+        self.alice.nodes.add(self.node_a)
+        self.carla = Employee.objects.create(
+            tenant=self.tenant, first_name="Carla", last_name="C", employment_pct=100
+        )
+        self.carla.nodes.add(self.node_b)
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+        self.absence_a = Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 2),
+            type=self.absence_type,
+            status=Absence.Status.PENDING,
+        )
+        self.absence_b = Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.carla,
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 11),
+            type=self.absence_type,
+            status=Absence.Status.APPROVED,
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_search_by_employee_name(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/absences/?search=Carla")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_b.id})
+
+    def test_ordering_by_start_date(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/absences/?ordering=start_date")
+        ids = [a["id"] for a in response.data["results"]]
+        self.assertEqual(ids, [self.absence_a.id, self.absence_b.id])
+
+    def test_filter_by_status(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/absences/?status=pending")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_a.id})
+
+    def test_filter_by_node(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/absences/?node={self.node_b.id}")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_b.id})
+
+    def test_serializer_includes_employee_and_type_display_fields(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/absences/{self.absence_a.id}/")
+        self.assertEqual(response.data["employee_name"], "Alice A")
+        self.assertEqual(response.data["employee_node_names"], "Station A")
+        self.assertEqual(response.data["type_name"], "Ferien")
+        self.assertEqual(response.data["type_color"], "#112233")
+        self.assertEqual(response.data["type_icon"], "F")
+
+    def test_employee_node_names_joins_multiple_stations(self):
+        self.carla.nodes.add(self.node_a)
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/absences/{self.absence_b.id}/")
+        # Reihenfolge folgt der natuerlichen MP_Node-Baumsortierung (nach
+        # path/id), nicht der Reihenfolge der .add()-Aufrufe.
+        self.assertEqual(response.data["employee_node_names"], "Station A, Station B")
+
+    def test_planner_with_scoped_nodes_only_sees_own_station_absences(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/absences/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_a.id})
+
+    def test_planner_without_scoped_nodes_sees_all_absences(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/absences/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_a.id, self.absence_b.id})
+
+    def test_admin_always_sees_all_absences(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/absences/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_a.id, self.absence_b.id})
+
+    def test_employee_scoped_to_own_station_absences(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get("/api/absences/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_a.id})
+
+    def test_task_counts_absences_scoped_to_planner_stations(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        # absence_a (PENDING, Station A) liegt im Scope -- zaehlt.
+        # absence_b (Station B) liegt ausserhalb, unabhaengig vom Status.
+        self.assertEqual(response.data["task_counts"]["absences"], 1)
+
+    def test_task_counts_absences_unscoped_for_planner_without_scoped_nodes(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.data["task_counts"]["absences"], 1)
+
+
+class ShiftTradeRequestOverviewAPITests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+    aufgebaut sein wie Zeiterfassung" -- ?search=/?ordering=/?open=/?node=
+    auf ShiftTradeRequestViewSet, Stations-Scoping inkl. Mitarbeiter-
+    Sonderfall (eine an mich adressierte Anfrage bleibt sichtbar, auch
+    ausserhalb meines Stations-Scopes), denormalisierte Anzeige-Felder.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-trade-overview")
+        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.template_a = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_a, name="Tagdienst A",
+            start_time=time(8, 0), end_time=time(16, 0), break_minutes=30,
+        )
+        self.template_b = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_b, name="Tagdienst B",
+            start_time=time(8, 0), end_time=time(16, 0), break_minutes=30,
+        )
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        self.planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, first_name="Alice", last_name="A", employment_pct=100, user=self.alice_user
+        )
+        self.alice.nodes.add(self.node_a)
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.carla = Employee.objects.create(
+            tenant=self.tenant, first_name="Carla", last_name="C", employment_pct=100
+        )
+        self.carla.nodes.add(self.node_b)
+
+        self.assignment_a = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node_a, date=date(2026, 6, 1), template=self.template_a
+        )
+        self.assignment_b = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.carla, node=self.node_b, date=date(2026, 6, 5), template=self.template_b
+        )
+        # Anfrage a: Alice (Station A) bietet ihre Schicht Carla (Station B)
+        # an -- vom Blickwinkel eines auf Station B gescopten Planers ist das
+        # trotzdem "meine Station beteiligt" ueber requester_assignment.node.
+        self.trade_a = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.assignment_a, target_employee=self.carla
+        )
+        # Anfrage b: Carla (Station B) bietet ihre Schicht Alice (Station A)
+        # an -- fuer den Mitarbeiter-Sonderfall-Test unten: Alice ist hier
+        # Zielperson, requester_assignment.node liegt aber auf Station B,
+        # ausserhalb von Alices eigenem Stations-Scope (Station A).
+        self.trade_b = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.assignment_b, target_employee=self.alice
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_search_by_requester_or_target_name(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/shift-trade-requests/?search=Carla")
+        ids = {r["id"] for r in response.data["results"]}
+        # Carla ist einmal Zielperson (trade_a) und einmal anbietende Person
+        # (trade_b) -- beide Treffer.
+        self.assertEqual(ids, {self.trade_a.id, self.trade_b.id})
+
+    def test_ordering_by_requester_date(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/shift-trade-requests/?ordering=requester_assignment__date")
+        ids = [r["id"] for r in response.data["results"]]
+        self.assertEqual(ids, [self.trade_a.id, self.trade_b.id])
+
+    def test_filter_by_open(self):
+        self.trade_a.status = ShiftTradeRequest.Status.DECLINED
+        self.trade_a.save()
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/shift-trade-requests/?open=true")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.trade_b.id})
+
+    def test_filter_by_node(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/shift-trade-requests/?node={self.node_b.id}")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.trade_b.id})
+
+    def test_serializer_includes_requester_and_target_display_fields(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/shift-trade-requests/{self.trade_a.id}/")
+        self.assertEqual(response.data["requester_employee_name"], "Alice A")
+        self.assertEqual(response.data["requester_node_name"], "Station A")
+        self.assertEqual(response.data["requester_date"], "2026-06-01")
+        self.assertEqual(response.data["requester_template_name"], "Tagdienst A")
+        self.assertEqual(response.data["target_employee_name"], "Carla C")
+        self.assertIsNone(response.data["target_assignment_date"])
+        self.assertIsNone(response.data["target_assignment_template_id"])
+
+    def test_planner_with_scoped_nodes_only_sees_own_station_trades(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/shift-trade-requests/")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.trade_a.id})
+
+    def test_planner_without_scoped_nodes_sees_all_trades(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/shift-trade-requests/")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.trade_a.id, self.trade_b.id})
+
+    def test_admin_always_sees_all_trades(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/shift-trade-requests/")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.trade_a.id, self.trade_b.id})
+
+    def test_employee_scoped_to_own_station_trades(self):
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/shift-trade-requests/")
+        ids = {r["id"] for r in response.data["results"]}
+        # trade_a: Alice ist Anbieterin (eigene Station A) -> sichtbar.
+        # trade_b: Alice ist NICHT auf der anbietenden Station (B), aber
+        # persoenlich als Zielperson adressiert -- muss trotzdem sichtbar
+        # sein (Mitarbeiter-Sonderfall), sonst koennte sie nicht darauf
+        # reagieren.
+        self.assertEqual(ids, {self.trade_a.id, self.trade_b.id})
+
+    def test_employee_still_sees_trade_addressed_to_them_outside_own_station_scope(self):
+        # Regressionstest fuer genau den Sonderfall oben: ohne die
+        # Q-OR-Erweiterung in ShiftTradeRequestViewSet.get_queryset() wuerde
+        # trade_b hier fehlen UND Alice koennte accept/decline gar nicht mehr
+        # aufrufen (get_object() liefert 404 ausserhalb der sichtbaren
+        # Queryset).
+        self.auth_as(self.alice_user)
+        response = self.client.get(f"/api/shift-trade-requests/{self.trade_b.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        accept_response = self.client.post(f"/api/shift-trade-requests/{self.trade_b.id}/accept/")
+        self.assertEqual(accept_response.status_code, status.HTTP_200_OK)
+
+    def test_task_counts_trades_scoped_to_planner_stations(self):
+        self.trade_a.status = ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
+        self.trade_a.save()
+        self.trade_b.status = ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
+        self.trade_b.save()
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        # Nur trade_a (requester_assignment auf Station A) zaehlt fuer einen
+        # auf Station A gescopten Planer.
+        self.assertEqual(response.data["task_counts"]["trades"], 1)
+
+    def test_task_counts_trades_unscoped_for_planner_without_scoped_nodes(self):
+        self.trade_a.status = ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
+        self.trade_b.status = ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
+        self.trade_a.save()
+        self.trade_b.save()
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.data["task_counts"]["trades"], 2)

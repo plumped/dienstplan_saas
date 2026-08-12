@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
-import { canManageSchedule } from "../roles.js";
+import AbsenceForm, { DAY_PORTIONS } from "./AbsenceForm.jsx";
 
 const STATUS_LABELS = {
   pending: "Offen",
@@ -8,62 +8,22 @@ const STATUS_LABELS = {
   rejected: "Abgelehnt",
 };
 
-// Nutzer-Feedback (2026-08): "ich kann auch einen Nachmittag frei nehmen" --
-// nur bei einem einzelnen Tag sinnvoll (Backend erzwingt das in
-// Absence.clean(), siehe Kommentar dort), daher gilt DAY_PORTIONS[1]/[2] nur
-// für start_date === end_date; das Select wird sonst deaktiviert.
-const DAY_PORTIONS = [
-  { value: "full", label: "Ganzer Tag" },
-  { value: "morning", label: "Nur vormittags" },
-  { value: "afternoon", label: "Nur nachmittags" },
-];
-
-const SICK_PAY_SCALE_LABELS = { basel: "Basler", bern: "Berner", zuerich: "Zürcher" };
-
-function emptyForm(defaultEmployeeId, defaultTypeId) {
-  return {
-    employee: defaultEmployeeId ?? "",
-    start_date: "",
-    end_date: "",
-    day_portion: "full",
-    type: defaultTypeId ?? "",
-    note: "",
-  };
-}
-
+// Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+// aufgebaut sein wie Zeiterfassung" -- Admin/Planer/HR nutzen dafür jetzt
+// die stationsübergreifende AbsenceOverview.jsx (siehe App.jsx-Routing).
+// Dieses Panel wird dadurch nur noch von der Mitarbeiter-Rolle erreicht:
+// eigene, stationsgebundene Selbstauskunft (eigene Absenz erfassen,
+// eigene/Team-Absenzen einsehen, eigene offene Absenz zurückziehen) --
+// keine canManage-Verzweigung mehr nötig, kein tenant-weiter
+// allEmployeesById-Workaround mehr (der existierte nur, weil AbsenceViewSet
+// bisher kein Stations-Scoping kannte, siehe AbsenceOverview.jsx-Docstring).
 export default function AbsencePanel({ employees, me, onError }) {
-  const canManage = canManageSchedule(me);
   const ownEmployeeId = me?.employee?.id ?? null;
-  // Backend (core.permissions.OwnEmployeeRecordPermission) erlaubt Schreiben
-  // für Admin/Planer (jede Absenz) und für die Mitarbeiter-Rolle (nur die
-  // eigene) -- HR bleibt aussen vor ("nur Reporting").
-  const canWrite = canManage || me?.role === "employee";
-  const defaultEmployeeId = canManage ? employees[0]?.id ?? "" : ownEmployeeId ?? "";
 
   const [absenceTypes, setAbsenceTypes] = useState([]);
   const absenceTypesById = new Map(absenceTypes.map((t) => [t.id, t]));
   const [absences, setAbsences] = useState([]);
-  // Bugfix: der Header-Badge (core.views._task_counts) zählt PENDING-Absenzen
-  // tenant-weit, die Liste unten filterte aber bisher immer auf die gerade
-  // gewählte Station -- eine offene Absenz aus einer anderen Station war für
-  // Admin/Planer dadurch nirgends sichtbar/genehmigbar und der Badge blieb
-  // dauerhaft hängen. allEmployeesById liefert die Namen dafür (die
-  // Stations-gescopte `employees`-Prop kennt fremde Stationen nicht), analog
-  // zu TradeRequestPanel.jsx, das aus demselben Grund schon tenant-weit lädt.
-  const [allEmployeesById, setAllEmployeesById] = useState(new Map());
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState(() => emptyForm(defaultEmployeeId));
-  const [saving, setSaving] = useState(false);
-  // MVP-Fahrplan Block 1 Punkt 16 (Art. 324a OR): Lohnfortzahlungs-Anspruch
-  // des gerade gewählten Mitarbeiters, nur geladen wenn im Formular
-  // tatsächlich eine Absenzart mit counts_as_sick_leave ausgewählt ist (kein
-  // unnötiger Roundtrip für Ferien/Sonstiges).
-  const [sickPaySummary, setSickPaySummary] = useState(null);
-
-  useEffect(() => {
-    setForm((prev) => ({ ...emptyForm(defaultEmployeeId, absenceTypes[0]?.id), type: prev.type || absenceTypes[0]?.id || "" }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, canManage, ownEmployeeId, absenceTypes]);
 
   useEffect(() => {
     let cancelled = false;
@@ -78,23 +38,6 @@ export default function AbsencePanel({ employees, me, onError }) {
   }, []);
 
   useEffect(() => {
-    if (!canManage) return;
-    let cancelled = false;
-    api
-      .getEmployees()
-      .then((data) => {
-        if (cancelled) return;
-        const list = data.results ?? data;
-        setAllEmployeesById(new Map(list.map((e) => [e.id, e])));
-      })
-      .catch((e) => onError(e.message));
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canManage]);
-
-  useEffect(() => {
     let cancelled = false;
     setLoading(true);
     api
@@ -102,12 +45,8 @@ export default function AbsencePanel({ employees, me, onError }) {
       .then((data) => {
         if (cancelled) return;
         const list = data.results ?? data;
-        if (canManage) {
-          setAbsences(list);
-        } else {
-          const employeeIds = new Set(employees.map((e) => e.id));
-          setAbsences(list.filter((a) => employeeIds.has(a.employee)));
-        }
+        const employeeIds = new Set(employees.map((e) => e.id));
+        setAbsences(list.filter((a) => employeeIds.has(a.employee)));
       })
       .catch((e) => onError(e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -115,49 +54,10 @@ export default function AbsencePanel({ employees, me, onError }) {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, canManage]);
+  }, [employees]);
 
-  const selectedAbsenceType = absenceTypesById.get(Number(form.type));
-
-  useEffect(() => {
-    if (!canWrite || !form.employee || !selectedAbsenceType?.counts_as_sick_leave) {
-      setSickPaySummary(null);
-      return;
-    }
-    let cancelled = false;
-    api
-      .getEmployeeSickPay(form.employee)
-      .then((data) => !cancelled && setSickPaySummary(data))
-      .catch(() => !cancelled && setSickPaySummary(null));
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canWrite, form.employee, selectedAbsenceType?.counts_as_sick_leave]);
-
-  async function handleSubmit(event) {
-    event.preventDefault();
-    if (!form.employee || !form.start_date || !form.end_date) {
-      onError("Mitarbeiter, Start- und Enddatum sind Pflichtfelder.");
-      return;
-    }
-    setSaving(true);
-    try {
-      const created = await api.createAbsence({
-        employee: Number(form.employee),
-        start_date: form.start_date,
-        end_date: form.end_date,
-        day_portion: form.start_date === form.end_date ? form.day_portion : "full",
-        type: Number(form.type),
-        note: form.note,
-      });
-      setAbsences((prev) => [created, ...prev]);
-      setForm((prev) => ({ ...emptyForm(defaultEmployeeId, absenceTypes[0]?.id), employee: prev.employee }));
-    } catch (e) {
-      onError(e.message);
-    } finally {
-      setSaving(false);
-    }
+  function handleCreated(created) {
+    setAbsences((prev) => [created, ...prev]);
   }
 
   async function handleDelete(id) {
@@ -169,26 +69,8 @@ export default function AbsencePanel({ employees, me, onError }) {
     }
   }
 
-  async function handleApprove(id) {
-    try {
-      const updated = await api.approveAbsence(id);
-      setAbsences((prev) => prev.map((a) => (a.id === id ? updated : a)));
-    } catch (e) {
-      onError(e.message);
-    }
-  }
-
-  async function handleReject(id) {
-    try {
-      const updated = await api.rejectAbsence(id);
-      setAbsences((prev) => prev.map((a) => (a.id === id ? updated : a)));
-    } catch (e) {
-      onError(e.message);
-    }
-  }
-
   function employeeName(id) {
-    const employee = canManage ? allEmployeesById.get(id) : employees.find((e) => e.id === id);
+    const employee = employees.find((e) => e.id === id);
     return employee ? `${employee.first_name} ${employee.last_name}` : `#${id}`;
   }
 
@@ -202,144 +84,31 @@ export default function AbsencePanel({ employees, me, onError }) {
 
   return (
     <div className="side-panel">
-      {canWrite && (
-        <form className="panel-form" onSubmit={handleSubmit}>
-          <h2>Abwesenheit erfassen</h2>
-          <div className="panel-form-row">
-            <label>
-              Mitarbeiter
-              {canManage ? (
-                <select
-                  value={form.employee}
-                  onChange={(e) => setForm((prev) => ({ ...prev, employee: e.target.value }))}
-                >
-                  {employees.map((emp) => (
-                    <option key={emp.id} value={emp.id}>
-                      {emp.first_name} {emp.last_name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input type="text" value={me?.employee ? `${me.employee.first_name} ${me.employee.last_name}` : ""} disabled />
-              )}
-            </label>
-            <label>
-              Art
-              <select
-                value={form.type}
-                onChange={(e) => setForm((prev) => ({ ...prev, type: e.target.value }))}
-              >
-                {absenceTypes.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="panel-form-row">
-            <label>
-              Von
-              <input
-                type="date"
-                value={form.start_date}
-                onChange={(e) => setForm((prev) => ({ ...prev, start_date: e.target.value }))}
-                required
-              />
-            </label>
-            <label>
-              Bis
-              <input
-                type="date"
-                value={form.end_date}
-                onChange={(e) => setForm((prev) => ({ ...prev, end_date: e.target.value }))}
-                required
-              />
-            </label>
-          </div>
-          {/* Nutzer-Feedback (2026-08): Halbtags-Absenzen -- nur bei einem
-              einzelnen Tag wählbar (Backend erzwingt das), sonst deaktiviert
-              und automatisch auf "Ganzer Tag" zurückgesetzt beim Absenden. */}
-          <label>
-            Tagesanteil
-            <select
-              value={form.day_portion}
-              disabled={!form.start_date || form.start_date !== form.end_date}
-              onChange={(e) => setForm((prev) => ({ ...prev, day_portion: e.target.value }))}
-              title={
-                form.start_date && form.start_date !== form.end_date
-                  ? "Nur bei einem einzelnen Tag wählbar (Von = Bis)"
-                  : undefined
-              }
-            >
-              {DAY_PORTIONS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Notiz (optional)
-            <input
-              type="text"
-              value={form.note}
-              onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
-            />
-          </label>
-          {sickPaySummary && sickPaySummary.model === "scale" && (
-            <div className={sickPaySummary.remaining_days <= 0 ? "corridor-callout" : "panel-hint"}>
-              {sickPaySummary.remaining_days <= 0 ? (
-                <p>
-                  <strong>Lohnfortzahlungs-Anspruch bereits ausgeschöpft</strong> im laufenden
-                  Dienstjahr ({sickPaySummary.service_year_start} – {sickPaySummary.service_year_end}):{" "}
-                  {sickPaySummary.used_days} von {sickPaySummary.entitlement_days} Tagen verbraucht
-                  (Art. 324a OR, {SICK_PAY_SCALE_LABELS[sickPaySummary.scale]} Skala).
-                </p>
-              ) : (
-                <>
-                  Lohnfortzahlungs-Anspruch im laufenden Dienstjahr ({sickPaySummary.service_year_start} –{" "}
-                  {sickPaySummary.service_year_end}): {sickPaySummary.remaining_days} von{" "}
-                  {sickPaySummary.entitlement_days} Tagen verbleibend (Art. 324a OR,{" "}
-                  {SICK_PAY_SCALE_LABELS[sickPaySummary.scale]} Skala).
-                </>
-              )}
-            </div>
-          )}
-          {sickPaySummary && sickPaySummary.model === "daily_allowance_insurance" && (
-            <p className="panel-hint">
-              Krankentaggeldversicherung: Wartefrist {sickPaySummary.waiting_days} Tage, bisher{" "}
-              {sickPaySummary.used_days} Tage im laufenden Dienstjahr erfasst.
-            </p>
-          )}
-          <button type="submit" disabled={saving || !form.employee}>
-            {saving ? "Speichert …" : "Anlegen"}
-          </button>
-        </form>
-      )}
+      <AbsenceForm
+        employees={employees}
+        canManage={false}
+        me={me}
+        absenceTypes={absenceTypes}
+        onCreated={handleCreated}
+        onError={onError}
+      />
 
       <div className="panel-list">
         <h2>Erfasste Abwesenheiten</h2>
         {loading ? (
           <p className="loading-state">Wird geladen …</p>
         ) : absences.length === 0 ? (
-          <p className="empty-state">
-            {canManage ? "Keine Abwesenheiten erfasst." : "Keine Abwesenheiten für diese Station erfasst."}
-          </p>
+          <p className="empty-state">Keine Abwesenheiten für diese Station erfasst.</p>
         ) : (
           <ul className="entry-list">
             {absences.map((a) => {
-              const isOwnPending =
-                a.status === "pending" && a.employee === ownEmployeeId && ownEmployeeId !== null;
-              const canDelete = canManage || isOwnPending;
+              const isOwnPending = a.status === "pending" && a.employee === ownEmployeeId && ownEmployeeId !== null;
               return (
                 <li key={a.id} className="entry-list-item">
                   <span className="type-badge" style={{ "--chip-color": absenceTypesById.get(a.type)?.color }}>
                     {absenceTypesById.get(a.type)?.name ?? a.type}
                   </span>
-                  <span className={`status-badge status-badge--${a.status}`}>
-                    {STATUS_LABELS[a.status] ?? a.status}
-                  </span>
+                  <span className={`status-badge status-badge--${a.status}`}>{STATUS_LABELS[a.status] ?? a.status}</span>
                   <span className="entry-main">
                     <strong>{employeeName(a.employee)}</strong> · {a.start_date} – {a.end_date}
                     {a.day_portion && a.day_portion !== "full" && (
@@ -351,17 +120,7 @@ export default function AbsencePanel({ employees, me, onError }) {
                     {a.note && <span className="entry-note"> · {a.note}</span>}
                   </span>
                   <span className="entry-actions">
-                    {canManage && a.status === "pending" && (
-                      <>
-                        <button type="button" onClick={() => handleApprove(a.id)}>
-                          Genehmigen
-                        </button>
-                        <button type="button" className="btn-ghost" onClick={() => handleReject(a.id)}>
-                          Ablehnen
-                        </button>
-                      </>
-                    )}
-                    {canDelete && (
+                    {isOwnPending && (
                       <button
                         type="button"
                         className="btn-ghost"

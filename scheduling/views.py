@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -872,17 +872,50 @@ class AbsenceViewSet(TenantScopedViewSet):
     ihre Absenzen starten als PENDING (Model-Default) und brauchen
     approve()/reject() durch Admin/Planer (Block 2.3). HR ist aussen vor
     (nur Reporting).
+
+    Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+    aufgebaut sein wie Zeiterfassung" -- ?search=/?ordering=/?node=/?status=
+    sowie stationsbasiertes Scoping (analog TimeRecordViewSet) erlauben jetzt
+    eine stationsübergreifende, durchsuch-/sortierbare "Zu genehmigen"/"Alle"-
+    Übersicht (siehe AbsenceOverview.jsx) statt Station für Station manuell
+    nachzuschauen. Schliesst nebenbei eine Lücke: Planer/HR mit
+    Membership.scoped_nodes sahen bisher trotzdem immer den ganzen Tenant --
+    inkonsistent zu allen anderen stationsbezogenen Ressourcen.
     """
 
     permission_classes = [permissions.IsAuthenticated, OwnEmployeeRecordPermission]
     queryset = Absence.all_objects.all()
     serializer_class = AbsenceSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["employee__first_name", "employee__last_name"]
+    ordering_fields = ["start_date", "employee__last_name", "status"]
+    ordering = ["-start_date"]
 
     def get_queryset(self):
-        qs = super().get_queryset().select_related("employee")
+        qs = super().get_queryset().select_related("employee", "type").prefetch_related("employee__nodes")
         employee = self.request.query_params.get("employee")
         if employee:
             qs = qs.filter(employee_id=employee)
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            qs = qs.filter(status=status_param)
+        # Employee.nodes ist M2M -- ohne .distinct() würde eine Person mit
+        # mehreren, alle im Scope liegenden Stationen mehrfach auftauchen.
+        node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
+        if node_ids is not None:
+            node_filter = Q(employee__nodes__id__in=node_ids)
+            employee_profile = self.request.employee_profile
+            if self.request.membership.role == Membership.Role.EMPLOYEE and employee_profile:
+                # Eigene Absenzen bleiben immer sichtbar/verwaltbar, auch wenn
+                # dem eigenen Employee-Profil (noch) keine Station zugeordnet
+                # ist -- sonst würde get_object() für z.B. approve()/reject()/
+                # delete() auf die eigene Absenz 404 statt 403 liefern, weil
+                # DRF Objektberechtigungen erst NACH dem Queryset-Filter prüft.
+                node_filter |= Q(employee_id=employee_profile.id)
+            qs = qs.filter(node_filter).distinct()
+        node = self.request.query_params.get("node")
+        if node:
+            qs = qs.filter(employee__nodes__id=node).distinct()
         return qs
 
     def perform_create(self, serializer):
@@ -1012,16 +1045,68 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
     `accept`/`decline` als Zielperson (geprüft in
     ShiftTradeRequestPermission.has_object_permission, da get_object() in
     jeder Action aufgerufen wird).
+
+    Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+    aufgebaut sein wie Zeiterfassung" -- ?search=/?ordering=/?node=/?open=
+    sowie stationsbasiertes Scoping (analog TimeRecordViewSet) erlauben jetzt
+    eine stationsübergreifende "Offen"/"Alle"-Übersicht (siehe
+    TradeRequestOverview.jsx). Beim Scoping ein wichtiger Sonderfall für die
+    Mitarbeiter-Rolle: eine an sie persönlich adressierte Anfrage
+    (target_employee) oder eine von ihnen selbst angebotene (requester_
+    assignment.employee) bleibt IMMER sichtbar, auch wenn die Station der
+    anbietenden Schicht ausserhalb des eigenen Stations-Scopes liegt --
+    sonst könnte die Zielperson eine an sie adressierte Anfrage weder sehen
+    noch über accept/decline (siehe ShiftTradeRequestPermission.
+    has_object_permission) darauf reagieren, weil get_object() vorher 404
+    liefern würde.
     """
 
     permission_classes = [permissions.IsAuthenticated, ShiftTradeRequestPermission]
     queryset = ShiftTradeRequest.all_objects.all()
     serializer_class = ShiftTradeRequestSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = [
+        "requester_assignment__employee__first_name",
+        "requester_assignment__employee__last_name",
+        "target_employee__first_name",
+        "target_employee__last_name",
+        "requester_assignment__node__name",
+    ]
+    ordering_fields = [
+        "requester_assignment__date",
+        "requester_assignment__employee__last_name",
+        "requester_assignment__node__name",
+        "status",
+        "created_at",
+    ]
+    ordering = ["-created_at"]
 
     def get_queryset(self):
-        return super().get_queryset().select_related(
-            "requester_assignment", "target_employee", "target_assignment"
+        qs = super().get_queryset().select_related(
+            "requester_assignment",
+            "requester_assignment__employee",
+            "requester_assignment__node",
+            "requester_assignment__template",
+            "target_employee",
+            "target_assignment",
+            "target_assignment__template",
         )
+        if self.request.query_params.get("open") == "true":
+            qs = qs.filter(
+                status__in=[ShiftTradeRequest.Status.PENDING, ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED]
+            )
+        node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
+        if node_ids is not None:
+            node_filter = Q(requester_assignment__node_id__in=node_ids)
+            employee_profile = self.request.employee_profile
+            if self.request.membership.role == Membership.Role.EMPLOYEE and employee_profile:
+                node_filter |= Q(requester_assignment__employee_id=employee_profile.id)
+                node_filter |= Q(target_employee_id=employee_profile.id)
+            qs = qs.filter(node_filter)
+        node = self.request.query_params.get("node")
+        if node:
+            qs = qs.filter(requester_assignment__node_id=node)
+        return qs
 
     def perform_create(self, serializer):
         if self.request.membership.role == Membership.Role.EMPLOYEE:

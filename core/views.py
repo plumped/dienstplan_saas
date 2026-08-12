@@ -60,38 +60,39 @@ def _task_counts(membership, employee):
     (core bleibt die "unterste" App).
 
     Nutzer-Feedback (2026-08): "ich muss die Stationen durchsuchen, bis ich
-    die zu bestätigende Erfassung finde" -- der time_records-Zähler zählte
-    bisher tenant-weit, unabhängig davon, ob ein Planer inzwischen (siehe
+    die zu bestätigende Erfassung finde" -- die Zähler zählten bisher
+    tenant-weit, unabhängig davon, ob ein Planer inzwischen (siehe
     Membership.scoped_nodes) auf einzelne Stationen eingeschränkt ist. Jetzt
     stationsübergreifend über GENAU die Stationen gezählt, die der Planer in
-    der neuen "Zu bestätigen"-Übersicht auch tatsächlich sieht (dieselbe
-    Scoping-Logik wie TimeRecordViewSet, siehe _employee_scoped_node_ids) --
-    sonst würde die Badge-Zahl wieder nicht zu dem passen, was ein Klick
-    darauf zeigt. absences/trades bleiben bewusst tenant-weit (kein direkter
-    Stationsbezug ohne zusätzlichen Join über Employee -- ausserhalb des
-    Rahmens dieser Änderung, siehe README).
+    den neuen "Zu bestätigen"/"Zu genehmigen"/"Offen"-Übersichten auch
+    tatsächlich sieht (dieselbe Scoping-Logik wie TimeRecordViewSet/
+    AbsenceViewSet/ShiftTradeRequestViewSet, siehe _employee_scoped_node_ids)
+    -- sonst würde die Badge-Zahl wieder nicht zu dem passen, was ein Klick
+    darauf zeigt.
     """
     from scheduling.models import Absence, ShiftTradeRequest, TimeRecord
     from scheduling.views import _employee_scoped_node_ids
 
     if membership.role in (Membership.Role.ADMIN, Membership.Role.PLANNER):
+        node_ids = _employee_scoped_node_ids(membership, None)
         time_records_qs = TimeRecord.all_objects.filter(
             tenant=membership.tenant, status=TimeRecord.Status.SUBMITTED
         )
-        node_ids = _employee_scoped_node_ids(membership, None)
+        absences_qs = Absence.all_objects.filter(tenant=membership.tenant, status=Absence.Status.PENDING)
+        # EMPLOYEE_ACCEPTED, nicht PENDING: das ist der Stand, an dem die
+        # Anfrage tatsächlich auf Admin/Planer-Freigabe wartet (siehe
+        # ShiftTradeRequest-Docstring) -- ein PENDING-Request wartet in
+        # aller Regel zuerst auf die Zielperson.
+        trades_qs = ShiftTradeRequest.all_objects.filter(
+            tenant=membership.tenant, status=ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
+        )
         if node_ids is not None:
             time_records_qs = time_records_qs.filter(assignment__node_id__in=node_ids)
+            absences_qs = absences_qs.filter(employee__nodes__id__in=node_ids).distinct()
+            trades_qs = trades_qs.filter(requester_assignment__node_id__in=node_ids)
         return {
-            "absences": Absence.all_objects.filter(
-                tenant=membership.tenant, status=Absence.Status.PENDING
-            ).count(),
-            # EMPLOYEE_ACCEPTED, nicht PENDING: das ist der Stand, an dem die
-            # Anfrage tatsächlich auf Admin/Planer-Freigabe wartet (siehe
-            # ShiftTradeRequest-Docstring) -- ein PENDING-Request wartet in
-            # aller Regel zuerst auf die Zielperson.
-            "trades": ShiftTradeRequest.all_objects.filter(
-                tenant=membership.tenant, status=ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
-            ).count(),
+            "absences": absences_qs.count(),
+            "trades": trades_qs.count(),
             "time_records": time_records_qs.count(),
         }
     if membership.role == Membership.Role.EMPLOYEE and employee:

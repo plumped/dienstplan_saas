@@ -1284,11 +1284,18 @@ thead .col-employee {
    den umgebrochenen Zeilen der Beschreibung ein grosser Leerraum entstand.
    Jetzt: Titel und Beschreibung fliessen normal untereinander, der Button
    bekommt eine eigene, rechtsbündige Zeile danach -- liest sich als klar
-   abgesetzte Aktion statt als Kopfzeilen-Dekoration. */
+   abgesetzte Aktion statt als Kopfzeilen-Dekoration.
+   Nutzer-Feedback (2026-08, dritte Runde): ohne Abstand nach unten rückte
+   der Button direkt über die rechtsbündige Rollen-Auswahl der ersten
+   Kontenzeile darunter -- sah wie eine zusammengehörige Gruppe aus. Klarer
+   Abstand (16px, Ecke an border-top statt an nichts) trennt Aktion und
+   Liste sichtbar voneinander. */
 .panel-list-actions {
   display: flex;
   justify-content: flex-end;
-  margin-top: 4px;
+  margin: 4px 0 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
 }
 
 /* MVP-Fahrplan Block 2, Punkt 5: Planblatt-Export -- schmale Button-Leiste

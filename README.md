@@ -3002,6 +3002,14 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     (neue `.panel-list-actions`-Klasse) -- liest sich jetzt als klar abgesetzte Aktion statt als
     Kopfzeilen-Dekoration neben unausgeglichenem Fliesstext.
 
+    **Dritte Runde (2026-08, Nutzer-Feedback: "Ernsthaft? Sieht das für dich stimmig aus?" mit
+    Screenshot)**: ohne Abstand nach unten rückte der rechtsbündige Button direkt über die
+    ebenfalls rechtsbündige Rollen-Auswahl der ersten Kontenzeile darunter -- beide sahen wie eine
+    zusammengehörige Gruppe aus, obwohl sie inhaltlich nichts miteinander zu tun haben ("+ Konto
+    hinzufügen" vs. Rollen-Dropdown eines bestehenden Kontos). `.panel-list-actions` bekommt jetzt
+    `margin-bottom: 16px` plus `border-bottom`, damit Aktion und Liste sichtbar getrennt sind statt
+    ineinander zu verschwimmen.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

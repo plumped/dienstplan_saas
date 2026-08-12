@@ -216,11 +216,6 @@ button {
    optisch schwerere Button-Klasse für sie einzuführen. */
 .btn-primary {
   display: inline-flex;
-  /* Verhindert, dass der Button in einem flex-column-Container (z. B.
-     .panel-form-group, dessen Default align-items: stretch ist) auf die
-     volle Breite gezogen wird -- bei einem gefüllten Button fällt das
-     deutlich mehr auf als beim vorherigen unstyled <button>. */
-  align-self: flex-start;
   align-items: center;
   justify-content: center;
   gap: 6px;
@@ -233,6 +228,21 @@ button {
   border-radius: 6px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.14);
   transition: filter 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Nutzer-Feedback (2026-08, Nachtrag): ein pauschales align-self: flex-start
+   direkt auf .btn-primary (erster Versuch) behob zwar das Streck-Problem in
+   .panel-form-group (flex-column, Default align-items: stretch), riss aber
+   die absichtliche Zeilen-Ausrichtung anderer Flex-Row-Container wieder ein
+   -- .panel-form-row nutzt bewusst align-items: flex-end (Button auf Höhe
+   des Eingabefelds, nicht des Labels darüber, siehe dortiger Kommentar) und
+   .panel-list-header nutzt align-items: center (Button neben dem Titel).
+   Ein globales align-self hätte beide überschrieben ("Button steht im Raum"/
+   überschneidet den Titel). Jetzt gezielt nur auf direkte Kinder von
+   .panel-form-group beschränkt -- der einzige Container, in dem das
+   Streck-Problem tatsächlich auftrat. */
+.panel-form-group > .btn-primary {
+  align-self: flex-start;
 }
 
 .btn-primary:hover:not(:disabled) {

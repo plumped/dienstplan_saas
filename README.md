@@ -2969,17 +2969,28 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     `PayrollSettings.jsx` (die Speichern-Buttons pro Lohnart-Zeile + "CSV herunterladen"),
     `TenantSettings.jsx` (Speichern, "Hinzufügen" bei den Feiertags-Ausnahmen, "Entfernen" als
     Danger-Ghost) und `MembershipAccessSettings.jsx` ("+ Konto hinzufügen", "Anlegen",
-    "Verstanden, schliessen", Speichern im Stationen-Modal). Dabei einen Bug aufgedeckt und
-    behoben, der durch `.btn-primary` erst sichtbar wurde: `.panel-form-group` ist ein
+    "Verstanden, schliessen", Speichern im Stationen-Modal). Dabei einen Bug aufgedeckt, der durch
+    `.btn-primary` erst sichtbar wurde: `.panel-form-group` ist ein
     `display: flex; flex-direction: column`-Container mit dem Flex-Default `align-items: stretch`
     -- ein Button darin wurde schon vorher auf die volle Breite gestreckt, fiel als unstyled
     grauer Rahmen aber kaum auf. Mit gefülltem `--primary`-Hintergrund war der Effekt (z. B.
-    "Hinzufügen" bei den Feiertags-Ausnahmen) deutlich sichtbar falsch. Fix: `.btn-primary`
-    bekommt `align-self: flex-start`, damit er sich in jedem Flex-Container an seinem Inhalt
-    orientiert statt am Container zu strecken -- in den bereits verifizierten Flex-Row-Kontexten
-    (Toolbar, Bulk-Bar, Tabellenzellen) ändert das nichts sichtbar, da dort keine Höhen-/
-    Breitenstreckung auftrat. Mit Playwright erneut gegen alle sechs Module verifiziert (inkl.
-    Regressionscheck der zuvor verifizierten Abwesenheiten-/Zeiterfassungs-Screens).
+    "Hinzufügen" bei den Feiertags-Ausnahmen) deutlich sichtbar falsch.
+
+    **Korrektur (2026-08, Nutzer-Feedback: "CSV herunterladen auf Lohnarten steht nun irgendwo im
+    Raum, zentriere ihn vertikal mit dem Monatsfeld" / "bei Konten ohne Mitarbeiterprofil steht
+    der Button irgendwo und überschneidet den Text fast")**: der erste Fix-Versuch setzte
+    `align-self: flex-start` pauschal auf `.btn-primary` selbst -- das behob zwar das
+    `.panel-form-group`-Streck-Problem, riss aber zwei bereits absichtlich austarierte
+    Flex-Row-Ausrichtungen wieder ein, die `align-self: flex-start` stillschweigend
+    überschreibt: `.panel-form-row` nutzt bewusst `align-items: flex-end` (Button auf Höhe des
+    Eingabefelds, nicht des Labels darüber -- genau das liess "CSV herunterladen" neben dem
+    Monatsfeld nach oben wegdriften) und `.panel-list-header` nutzt `align-items: center` (Button
+    neben dem Titel -- das liess "+ Konto hinzufügen" an den Titel heranrücken). Fix jetzt gezielt
+    als `.panel-form-group > .btn-primary { align-self: flex-start; }` statt auf der Klasse selbst
+    -- betrifft nur den einen Container, in dem das Streck-Problem tatsächlich auftrat, alle
+    anderen Flex-Kontexte behalten ihre eigene, bereits korrekte `align-items`-Regel. Mit
+    Playwright erneut gegen alle sechs Module verifiziert (inkl. Regressionscheck der zuvor
+    verifizierten Abwesenheiten-/Zeiterfassungs-Screens).
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

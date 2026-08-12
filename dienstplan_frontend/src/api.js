@@ -197,6 +197,12 @@ export const api = {
   getEmployeeSickPay: (id) => request(`/employees/${id}/sick-pay/`),
   // MVP-Fahrplan Block 2, Punkt 20: Fairness-Punkte für unpopuläre Schichten.
   getEmployeeFairness: (id) => request(`/employees/${id}/fairness/`),
+  // Nutzer-Feedback (2026-08, Performance): Bulk-Variante für Saldo+Fairness
+  // -- ein Request für eine ganze Mitarbeitendenliste statt 2xN
+  // Einzelrequests (siehe EmployeeSettings.jsx, BalanceBadge.jsx/
+  // FairnessBadge.jsx im Bulk-Modus).
+  getEmployeesBalanceFairnessBulk: (ids) =>
+    ids.length ? request(`/employees/balance-fairness-bulk/?ids=${ids.join(",")}`) : Promise.resolve([]),
   getEmployeeWeeklyOvertime: (id, week) => request(`/employees/${id}/weekly-overtime/?week=${week}`),
   getEmployeeMonthlySummary: (id, year, month) =>
     request(`/employees/${id}/monthly-summary/?year=${year}&month=${month}`),

@@ -19,23 +19,35 @@ import { api, onBalanceChanged } from "../api.js";
 // - "cell": schlichter Zelleninhalt für die Saldo-Spalte im Planblatt-Grid
 //   (Block 2.7) -- kein Badge-Rahmen, kein Balken (zu wenig Platz in der
 //   Tabellenzeile), nur Saldo + Ferientage.
-export default function BalanceBadge({ employeeId, variant = "pill" }) {
-  const [balance, setBalance] = useState(null);
+//
+// Bulk-Modus (Nutzer-Feedback 2026-08, Performance): wird ein `data`-Prop
+// übergeben, holt die Badge sich den Saldo NICHT mehr selbst -- dann liefert
+// der Elternteil (z. B. EmployeeSettings.jsx über einen einzigen
+// Bulk-Request für die ganze Liste statt N Einzelrequests) die Daten und
+// ist auch für das Neuladen nach Mutationen zuständig (eigenes
+// onBalanceChanged-Abo auf Tabellenebene statt eines pro Badge). Ohne
+// `data`-Prop (Topbar, Planblatt-Zelle) verhält sich die Badge unverändert
+// wie bisher, holt sich ihre Daten selbst.
+export default function BalanceBadge({ employeeId, variant = "pill", data: providedBalance }) {
+  const [fetchedBalance, setFetchedBalance] = useState(null);
+  const bulkMode = providedBalance !== undefined;
+  const balance = bulkMode ? providedBalance : fetchedBalance;
 
   useEffect(() => {
+    if (bulkMode) return;
     let cancelled = false;
 
     function load() {
       api
         .getEmployeeBalance(employeeId)
-        .then((data) => !cancelled && setBalance(data))
+        .then((data) => !cancelled && setFetchedBalance(data))
         .catch(() => {
           // Saldo ist eine Zusatzinfo -- ein Fehler hier soll die restliche
           // Seite nicht mit einer globalen Fehlermeldung stören.
         });
     }
 
-    setBalance(null);
+    setFetchedBalance(null);
     load();
     // UX-Nachbesserung: der Saldo ist im Backend nach jeder Mutation sofort
     // aktuell -- ohne dieses Abo würde die Badge das aber nur einmal beim
@@ -47,7 +59,7 @@ export default function BalanceBadge({ employeeId, variant = "pill" }) {
       cancelled = true;
       unsubscribe();
     };
-  }, [employeeId]);
+  }, [employeeId, bulkMode]);
 
   if (!balance) return null;
 

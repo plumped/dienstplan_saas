@@ -7403,3 +7403,90 @@ class FairnessSummaryAPITests(APITestCase):
         self.auth_as(self.admin_user)
         response = self.client.get(f"/api/employees/{self.employee.id}/fairness/")
         self.assertEqual(response.data["window_end"], str(timezone.localdate()))
+
+
+class BalanceFairnessBulkAPITests(APITestCase):
+    """
+    EmployeeViewSet.balance_fairness_bulk -- Performance-Fix (Nutzer-Feedback
+    2026-08): liefert Saldo+Fairness für mehrere Mitarbeitende in einem
+    Request statt 2xN Einzelrequests pro Mitarbeitendenliste.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-bulk")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.employee1 = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee1.nodes.add(self.node)
+        self.employee2 = Employee.objects.create(
+            tenant=self.tenant, first_name="Bruno", last_name="B", employment_pct=100
+        )
+        self.employee2.nodes.add(self.node)
+
+        self.other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-bulk")
+        self.other_employee = Employee.objects.create(
+            tenant=self.other_tenant, first_name="Chris", last_name="C", employment_pct=100
+        )
+
+        self.admin_user = User.objects.create_user(username="bulk-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.employee_user = User.objects.create_user(username="bulk-emp", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_can_read(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(
+            f"/api/employees/balance-fairness-bulk/?ids={self.employee1.id},{self.employee2.id}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_employee_can_read(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get(f"/api/employees/balance-fairness-bulk/?ids={self.employee1.id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_returns_same_shape_as_single_endpoints(self):
+        self.auth_as(self.admin_user)
+        bulk_response = self.client.get(f"/api/employees/balance-fairness-bulk/?ids={self.employee1.id}")
+        balance_response = self.client.get(f"/api/employees/{self.employee1.id}/balance/")
+        fairness_response = self.client.get(f"/api/employees/{self.employee1.id}/fairness/")
+
+        entry = bulk_response.data[0]
+        self.assertEqual(entry["id"], self.employee1.id)
+        self.assertEqual(entry["balance"], balance_response.data)
+        self.assertEqual(entry["fairness"], fairness_response.data)
+
+    def test_missing_id_silently_skipped(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/balance-fairness-bulk/?ids={self.employee1.id},999999")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_id_from_other_tenant_excluded(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/balance-fairness-bulk/?ids={self.other_employee.id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_empty_ids_returns_empty_list(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/employees/balance-fairness-bulk/?ids=")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_missing_ids_param_returns_empty_list(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/employees/balance-fairness-bulk/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_invalid_ids_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/employees/balance-fairness-bulk/?ids=abc")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)

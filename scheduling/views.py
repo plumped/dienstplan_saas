@@ -57,6 +57,7 @@ from .models import (
 from .serializers import (
     AbsenceSerializer,
     AbsenceTypeSerializer,
+    BalanceFairnessBulkItemSerializer,
     EmployeeAccessSetupSerializer,
     EmployeeBalanceSerializer,
     EmployeeSerializer,
@@ -443,9 +444,15 @@ class EmployeeViewSet(TenantScopedViewSet):
         else:
             year = as_of_date.year
 
+        data = self._balance_data(employee, as_of_date, year)
+        return Response(EmployeeBalanceSerializer(data).data)
+
+    @staticmethod
+    def _balance_data(employee, as_of_date, year):
+        """Rohdaten für balance() -- ausgelagert, damit balance_fairness_bulk() sie wiederverwenden kann."""
         time_account = employee.time_account_summary(as_of_date)
         vacation = employee.vacation_balance(year)
-        data = {
+        return {
             "as_of": as_of_date,
             "saldo_hours": time_account["saldo_hours"],
             "plan_saldo_hours": time_account["plan_saldo_hours"],
@@ -457,7 +464,44 @@ class EmployeeViewSet(TenantScopedViewSet):
             "vacation_used_days": vacation["used_days"],
             "vacation_remaining_days": vacation["remaining_days"],
         }
-        return Response(EmployeeBalanceSerializer(data).data)
+
+    @action(detail=False, methods=["get"], url_path="balance-fairness-bulk")
+    def balance_fairness_bulk(self, request):
+        """
+        Bulk-Variante von balance()/fairness() für die Mitarbeitendenliste
+        (Nutzer-Feedback 2026-08: "lässt sich da was machen an der
+        Performance?"). Die Liste löste bisher pro Zeile zwei eigene
+        Requests aus (2xN HTTP-Roundtrips, siehe BalanceBadge.jsx/
+        FairnessBadge.jsx) -- selbst nach dem bereits behobenen
+        N+1-Query-Bug in fairness_summary() blieb das durch die
+        Browser-Verbindungslimite (~6 gleichzeitige Requests pro Host)
+        spürbar langsam. `?ids=1,2,3` (Pflicht, kommagetrennt) liefert
+        beides für die ganze Liste in einem einzigen Request. IDs ausserhalb
+        des eigenen Tenants oder ungültige IDs werden stillschweigend
+        übersprungen (kein 404 für eine Bulk-Abfrage). Stichtag bewusst
+        immer "heute" (kein ?as_of=/?year= wie bei balance()/fairness()) --
+        die Mitarbeitendenliste zeigt ohnehin nur den aktuellen Stand.
+        Lesen wie balance()/fairness() für alle vier Rollen offen.
+        """
+        ids_param = request.query_params.get("ids", "")
+        try:
+            ids = [int(x) for x in ids_param.split(",") if x.strip()]
+        except ValueError:
+            raise ValidationError({"ids": "Ungültige ID-Liste, erwartet kommagetrennte Ganzzahlen."})
+        if not ids:
+            return Response([])
+
+        today = timezone.localdate()
+        employees = self.get_queryset().filter(id__in=ids)
+        results = [
+            {
+                "id": employee.id,
+                "balance": self._balance_data(employee, today, today.year),
+                "fairness": employee.fairness_summary(today),
+            }
+            for employee in employees
+        ]
+        return Response(BalanceFairnessBulkItemSerializer(results, many=True).data)
 
     @action(detail=True, methods=["get"], url_path="sick-pay")
     def sick_pay(self, request, pk=None):

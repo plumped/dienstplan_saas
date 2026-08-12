@@ -377,6 +377,23 @@ class FairnessSummarySerializer(serializers.Serializer):
     team_average_points = serializers.FloatField(allow_null=True)
 
 
+class BalanceFairnessBulkItemSerializer(serializers.Serializer):
+    """
+    Read-only: ein Eintrag aus EmployeeViewSet.balance_fairness_bulk() --
+    Bulk-Variante von balance()/fairness() für die Mitarbeitendenliste
+    (Nutzer-Feedback 2026-08: "lässt sich da was machen an der
+    Performance?"). Statt 2xN Einzelrequests (je einer pro Badge und Zeile)
+    liefert dieser Endpoint beides für eine ganze Liste von Mitarbeitenden-
+    IDs in einer einzigen Antwort -- die Browser-Verbindungslimite (~6
+    gleichzeitige Requests pro Host) war nach dem bereits behobenen
+    N+1-Query-Bug in fairness_summary() der verbleibende Flaschenhals.
+    """
+
+    id = serializers.IntegerField()
+    balance = EmployeeBalanceSerializer()
+    fairness = FairnessSummarySerializer()
+
+
 class SpecialSurchargeBreakdownSerializer(serializers.Serializer):
     """
     Read-only: ein Eintrag aus Employee.monthly_summary()["special_surcharge_breakdown"]

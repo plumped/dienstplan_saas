@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api.js";
+import { api, onBalanceChanged } from "../api.js";
 import { isTenantAdmin, ROLE_LABELS, ROLE_OPTIONS } from "../roles.js";
 import BalanceBadge from "./BalanceBadge.jsx";
 import EmploymentEditor from "./EmploymentEditor.jsx";
@@ -164,6 +164,11 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
   const [page, setPage] = useState(1);
   const [tableData, setTableData] = useState({ count: 0, next: null, previous: null, results: [] });
   const [listLoading, setListLoading] = useState(true);
+  // Nutzer-Feedback (2026-08, Performance): Saldo+Fairness für die ganze
+  // sichtbare Seite in einem einzigen Bulk-Request statt 2xN
+  // Einzelrequests (siehe BalanceBadge.jsx/FairnessBadge.jsx Bulk-Modus,
+  // api.getEmployeesBalanceFairnessBulk). Keyed by employee.id.
+  const [balanceFairnessById, setBalanceFairnessById] = useState({});
 
   // Freitext-Suche debouncen (300ms), Filter/Sortierung/Seite lösen sofort
   // eine neue Anfrage aus -- ein Tippvorgang soll nicht bei jedem Zeichen
@@ -194,6 +199,46 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, ordering, nodeFilter, activeFilter, page]);
+
+  // Bulk-Laden von Saldo+Fairness für die aktuell sichtbare Seite (ein
+  // Request statt 2xN, siehe balanceFairnessById oben) -- läuft immer dann
+  // neu, wenn sich die geladene Tabellenseite ändert (neue Seite/Suche/
+  // Filter/Sortierung ODER reloadCurrentPage() nach einer Mutation) UND
+  // zusätzlich bei jeder onBalanceChanged-Meldung von ANDERSWO in der App
+  // (z. B. eine Schicht-Zuweisung im Planblatt), analog zum bisherigen
+  // Pub/Sub-Abo, das vorher jede einzelne Badge selbst hatte -- jetzt nur
+  // noch ein Abo für die ganze Tabelle statt N*2.
+  useEffect(() => {
+    const ids = tableData.results.map((emp) => emp.id);
+    if (!ids.length) {
+      setBalanceFairnessById({});
+      return;
+    }
+    let cancelled = false;
+    function load() {
+      api
+        .getEmployeesBalanceFairnessBulk(ids)
+        .then((entries) => {
+          if (cancelled) return;
+          const byId = {};
+          entries.forEach((entry) => {
+            byId[entry.id] = entry;
+          });
+          setBalanceFairnessById(byId);
+        })
+        .catch(() => {
+          // Saldo/Fairness sind Zusatzinfos -- ein Fehler hier soll die
+          // restliche Seite nicht mit einer globalen Fehlermeldung stören
+          // (gleiches Verhalten wie die einzelnen Badges vorher).
+        });
+    }
+    load();
+    const unsubscribe = onBalanceChanged(load);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [tableData.results]);
 
   // Nach jeder Anlage/Änderung die aktuelle Seite neu laden statt den
   // Eintrag manuell im lokalen Array zu patchen -- so bleiben Sortierung/
@@ -461,8 +506,8 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                       </td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <span className="settings-table-actions">
-                          <BalanceBadge employeeId={emp.id} />
-                          <FairnessBadge employeeId={emp.id} />
+                          <BalanceBadge employeeId={emp.id} data={balanceFairnessById[emp.id]?.balance ?? null} />
+                          <FairnessBadge employeeId={emp.id} data={balanceFairnessById[emp.id]?.fairness ?? null} />
                           <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
                             Bearbeiten
                           </button>

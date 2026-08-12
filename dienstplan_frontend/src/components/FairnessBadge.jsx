@@ -9,30 +9,39 @@ import { api, onBalanceChanged } from "../api.js";
 // Kanal wie BalanceBadge.jsx abonniert statt einen eigenen einzuführen --
 // dieselbe Zuweisungs-Mutation beeinflusst sowohl Saldo als auch
 // Fairness-Punkte (siehe affectsBalance in api.js).
-export default function FairnessBadge({ employeeId }) {
-  const [fairness, setFairness] = useState(null);
+//
+// Bulk-Modus (Nutzer-Feedback 2026-08, Performance): wird ein `data`-Prop
+// übergeben, holt die Badge sich die Fairness-Punkte NICHT mehr selbst --
+// siehe BalanceBadge.jsx für dasselbe Muster und die Begründung
+// (EmployeeSettings.jsx lädt dann Saldo+Fairness für die ganze Liste in
+// einem einzigen Bulk-Request statt 2xN Einzelrequests).
+export default function FairnessBadge({ employeeId, data: providedFairness }) {
+  const [fetchedFairness, setFetchedFairness] = useState(null);
+  const bulkMode = providedFairness !== undefined;
+  const fairness = bulkMode ? providedFairness : fetchedFairness;
 
   useEffect(() => {
+    if (bulkMode) return;
     let cancelled = false;
 
     function load() {
       api
         .getEmployeeFairness(employeeId)
-        .then((data) => !cancelled && setFairness(data))
+        .then((data) => !cancelled && setFetchedFairness(data))
         .catch(() => {
           // Fairness-Punkte sind eine Zusatzinfo -- ein Fehler hier soll die
           // restliche Seite nicht mit einer globalen Fehlermeldung stören.
         });
     }
 
-    setFairness(null);
+    setFetchedFairness(null);
     load();
     const unsubscribe = onBalanceChanged(load);
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, [employeeId]);
+  }, [employeeId, bulkMode]);
 
   if (!fairness) return null;
 

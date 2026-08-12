@@ -2027,6 +2027,19 @@ steht.
       `Employee._bulk_fairness_points()` ersetzt das durch je eine Query für alle Zuweisungen/
       Wunschdienste der ganzen Vergleichsgruppe, danach in Python pro Mitarbeiter aggregiert --
       konstant statt quadratisch mit der Teamgrösse.
+    - **Bulk-Endpoint (Nutzer-Feedback, zweite Performance-Runde)**: der N+1-Fix oben behebt die
+      Query-Last pro Request, aber die Mitarbeitendenliste blieb trotzdem spürbar langsam -- jede
+      Zeile lud Saldo UND Fairness über zwei eigene HTTP-Requests (`BalanceBadge.jsx`/
+      `FairnessBadge.jsx`), bei 20 Mitarbeitenden also 40 Requests, ausgebremst durch die
+      Verbindungslimite des Browsers (~6 gleichzeitige Requests pro Host). Neuer Endpoint `GET
+      /api/employees/balance-fairness-bulk/?ids=1,2,3` (`EmployeeViewSet.balance_fairness_bulk`)
+      liefert Saldo+Fairness für eine ganze Liste von IDs in einem einzigen Request.
+      `BalanceBadge.jsx`/`FairnessBadge.jsx` bekommen dafür einen optionalen `data`-Prop: wird er
+      übergeben, holt sich die Badge ihre Daten NICHT mehr selbst (Bulk-Modus) -- ohne Prop
+      (Topbar-Saldo, Saldo-Spalte im Planblatt-Grid) bleibt das bisherige Selbst-Laden unverändert.
+      `EmployeeSettings.jsx` lädt die sichtbare Tabellenseite jetzt mit einem Bulk-Request statt
+      2×N Einzelrequests, inkl. einem einzigen `onBalanceChanged`-Abo auf Tabellenebene statt N×2
+      Einzel-Abos in den Badges.
 
 21. ✅ **Dashboard/Übersicht für Admin/Planer** (2026-08). Nutzer-Anfrage: eine zentrale Seite,
     auf der auf einen Blick sichtbar ist, was gerade Handlungsbedarf hat -- offene Genehmigungen,

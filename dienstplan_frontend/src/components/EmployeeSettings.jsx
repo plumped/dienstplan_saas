@@ -143,6 +143,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
   const [roleChanging, setRoleChanging] = useState(false);
   const [scopedNodesSaving, setScopedNodesSaving] = useState(false);
   const [newCredentials, setNewCredentials] = useState(null);
+  const [resettingPassword, setResettingPassword] = useState(false);
   // Nutzer-Feedback (2026-08): "ein Deaktivieren Button [...] deaktiviert
   // diesen inklusive seines Logins! Wenn einer Austritt aus dem Unternehmen
   // muss das Handlebar sein" -- eigener Ladezustand pro Zeile, damit ein
@@ -346,6 +347,28 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
       onError(e.message);
     } finally {
       setScopedNodesSaving(false);
+    }
+  }
+
+  // Nutzer-Feedback (2026-08): "Ja mach passwort reset" -- Admin generiert
+  // ein neues Temp-Passwort, gezeigt im selben "einmalige Anzeige"-Modal wie
+  // bei der Erstanlage (newCredentials wird hier bewusst wiederverwendet).
+  async function handleResetPassword() {
+    if (!form.membership_id) return;
+    if (
+      !window.confirm(
+        `Neues Passwort für "${form.existingUsername}" generieren? Das bisherige Passwort wird dabei ungültig.`
+      )
+    )
+      return;
+    setResettingPassword(true);
+    try {
+      const result = await api.resetMembershipPassword(form.membership_id);
+      setNewCredentials({ username: result.username, password: result.temporary_password });
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setResettingPassword(false);
     }
   }
 
@@ -699,6 +722,16 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                   Benutzername: <strong>{form.existingUsername}</strong> -- Rolle jederzeit über das Dropdown
                   änderbar, wirkt sofort.
                 </p>
+                <div>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    disabled={resettingPassword}
+                    onClick={handleResetPassword}
+                  >
+                    {resettingPassword ? "Wird zurückgesetzt …" : "Passwort zurücksetzen"}
+                  </button>
+                </div>
                 <label>
                   Rolle
                   <select
@@ -937,7 +970,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
         <div className="modal-overlay" onClick={() => setNewCredentials(null)}>
           <div className="panel-form modal-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>Zugang eingerichtet</h2>
+              <h2>Zugangsdaten</h2>
             </div>
             <div className="modal-body">
               <p className="panel-hint">

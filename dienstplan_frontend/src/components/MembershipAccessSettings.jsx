@@ -31,6 +31,7 @@ export default function MembershipAccessSettings({ nodes, onError }) {
   const [creating, setCreating] = useState(false);
   const [newCredentials, setNewCredentials] = useState(null); // {username, password} -- einmalige Anzeige
   const [roleChangingId, setRoleChangingId] = useState(null);
+  const [resettingId, setResettingId] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -93,6 +94,27 @@ export default function MembershipAccessSettings({ nodes, onError }) {
       onError(err.message);
     } finally {
       setRoleChangingId(null);
+    }
+  }
+
+  // Nutzer-Feedback (2026-08): "Ja mach passwort reset" -- Admin generiert
+  // ein neues Temp-Passwort, gezeigt im selben "einmalige Anzeige"-Modal wie
+  // bei der Erstanlage (newCredentials wird hier bewusst wiederverwendet).
+  async function handleResetPassword(membership) {
+    if (
+      !window.confirm(
+        `Neues Passwort für "${membership.username}" generieren? Das bisherige Passwort wird dabei ungültig.`
+      )
+    )
+      return;
+    setResettingId(membership.id);
+    try {
+      const result = await api.resetMembershipPassword(membership.id);
+      setNewCredentials({ username: result.username, password: result.temporary_password });
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setResettingId(null);
     }
   }
 
@@ -195,6 +217,14 @@ export default function MembershipAccessSettings({ nodes, onError }) {
                   )}
                   <button
                     type="button"
+                    className="btn-ghost"
+                    disabled={resettingId === m.id}
+                    onClick={() => handleResetPassword(m)}
+                  >
+                    {resettingId === m.id ? "Wird zurückgesetzt …" : "Passwort zurücksetzen"}
+                  </button>
+                  <button
+                    type="button"
                     className="btn-ghost btn-danger-ghost"
                     onClick={() => handleDelete(m)}
                   >
@@ -282,7 +312,7 @@ export default function MembershipAccessSettings({ nodes, onError }) {
         <div className="modal-overlay" onClick={() => setNewCredentials(null)}>
           <div className="panel-form modal-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>Konto angelegt</h2>
+              <h2>Zugangsdaten</h2>
             </div>
             <div className="modal-body">
               <p className="panel-hint">

@@ -767,6 +767,49 @@ class MembershipViewSetTests(APITestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def test_admin_can_reset_password(self):
+        # Nutzer-Feedback (2026-08): "Ja mach passwort reset" -- Admin
+        # generiert ein neues Temp-Passwort für einen anderen Account, siehe
+        # MembershipViewSet.reset_password.
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/memberships/{self.planner_membership.id}/reset-password/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["username"], "planner")
+        self.assertTrue(response.data["temporary_password"])
+        self.planner_user.refresh_from_db()
+        self.assertTrue(self.planner_user.check_password(response.data["temporary_password"]))
+        self.assertTrue(self.planner_user.must_change_password)
+
+    def test_non_admin_cannot_reset_password(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/memberships/{self.admin_membership.id}/reset-password/")
+        self.assertEqual(response.status_code, 403)
+
+    def test_reset_password_invalidates_old_password(self):
+        self.auth_as(self.admin_user)
+        self.client.post(f"/api/memberships/{self.planner_membership.id}/reset-password/")
+        self.planner_user.refresh_from_db()
+        self.assertFalse(self.planner_user.check_password("pw-not-real-123!"))
+
+    def test_cannot_reset_password_of_staff_account(self):
+        staff_user = User.objects.create_user(username="staff-reset-pw", password="pw-not-real-123!")
+        Membership.objects.bulk_create(
+            [Membership(user=staff_user, tenant=self.tenant, role=Membership.Role.ADMIN)]
+        )
+        User.objects.filter(pk=staff_user.pk).update(is_staff=True)
+        staff_membership = Membership.objects.get(user=staff_user)
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/memberships/{staff_membership.id}/reset-password/")
+        self.assertEqual(response.status_code, 400)
+
+    def test_admin_can_reset_own_password(self):
+        # Legitimer Wiederherstellungsfall: noch auf einem anderen Gerät
+        # eingeloggt, eigenes Passwort vergessen -- anders als beim Löschen
+        # (perform_destroy) gibt es hier keinen Grund, das zu sperren.
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/memberships/{self.admin_membership.id}/reset-password/")
+        self.assertEqual(response.status_code, 200, response.data)
+
 
 class ChangePasswordViewTests(APITestCase):
     """

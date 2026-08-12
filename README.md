@@ -3109,11 +3109,25 @@ Setup-Wizard statt direkt in den Django-Admin.
    einmalig angezeigtes Temp-Passwort, erzwungener Wechsel beim ersten Login) für den laufenden
    Betrieb umgesetzt. Für Block 3 bleibt offen: dieselbe Direktanlage in den Setup-Wizard
    (Punkt 3) integrieren, statt sie separat in "Einstellungen" zu suchen.
-5. **Passwort-Reset bei vergessenem Passwort** — aktuell nicht vorhanden, nur der erzwungene
-   Wechsel eines bekannten Temp-Passworts (Punkt 6) sowie `POST /api/auth/token/` mit bekanntem
-   Passwort. Ohne E-Mail-Infrastruktur (bewusster Verzicht, siehe Punkt 6) müsste das über den
-   Applikationsmanager laufen (Konto-Reset = neues Temp-Passwort vergeben), nicht per
-   Magic-Link/E-Mail.
+5. ✅ **Passwort-Reset bei vergessenem Passwort** (2026-08, Nutzer-Feedback: "Ja mach passwort
+   reset"): wie hier ursprünglich skizziert läuft der Reset über den Applikationsmanager statt
+   per Magic-Link/E-Mail (weiterhin keine E-Mail-Infrastruktur, siehe Punkt 6) --
+   `MembershipViewSet.reset_password` (POST `.../reset-password/`, Admin-only über die
+   Viewset-weite `IsTenantAdmin`-Berechtigung) generiert ein neues Temp-Passwort, erzwingt
+   `must_change_password` und gibt das Passwort EINMALIG im Response zurück, exakt dasselbe
+   Muster wie die Erstanlage (`MembershipCreateSerializer`/`EmployeeViewSet.setup_access`).
+   Deckt beide Kontotypen ab: Mitarbeitende mit Login (Button "Passwort zurücksetzen" im
+   "Login-Zugang"-Abschnitt des Bearbeiten-Formulars, `EmployeeSettings.jsx`) und Konten ohne
+   Mitarbeiterprofil (gleicher Button je Kontenzeile, `MembershipAccessSettings.jsx`) -- beide
+   nutzen dasselbe "Zugangsdaten"-Anzeigemodal wie die Erstanlage. Django-Admin-Accounts
+   (`is_staff`/`is_superuser`) sind explizit ausgeschlossen (analog zu den anderen
+   Kontoverwaltungs-Actions), das eigene Passwort zurückzusetzen ist dagegen bewusst erlaubt
+   (legitimer Wiederherstellungsfall bei einem noch gültigen Zweitgerät -- anders als beim
+   Löschen des eigenen Accounts gibt es hier keinen Grund für eine Sperre). Backend-Tests decken
+   Admin-Erfolg, Nicht-Admin-403, ungültig-Werden des alten Passworts, den
+   Django-Admin-Ausschluss und den Self-Reset-Fall ab, volle Suite (605 Tests) grün. Mit
+   Playwright verifiziert: beide Buttons funktionieren, das Temp-Passwort erscheint korrekt im
+   Modal.
 6. ✅ **Rollenverwaltung im Frontend** (2026-08, siehe Block 2.1 für Details): Nutzer-Feedback
    zu diesem Punkt führte zur Revision des ursprünglich hier notierten E-Mail-Einladungs-Plans
    — *"Ist das state of the art mit Mailversand? [...] Applikationsmanager wird den Benutzer

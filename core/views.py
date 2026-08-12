@@ -1,7 +1,9 @@
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
+from django.utils.crypto import get_random_string
 from rest_framework import viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -347,6 +349,38 @@ class MembershipViewSet(TenantScopedAPIMixin, viewsets.ModelViewSet):
             if not other_admins_exist:
                 raise ValidationError("Es muss mindestens eine Admin-Mitgliedschaft je Mandant erhalten bleiben.")
         instance.user.delete()
+
+    @action(detail=True, methods=["post"], url_path="reset-password")
+    def reset_password(self, request, pk=None):
+        """
+        Nutzer-Feedback (2026-08): "Ja mach passwort reset" (README Block 3,
+        Punkt 5: "Passwort-Reset bei vergessenem Passwort -- aktuell nicht
+        vorhanden [...] müsste das über den Applikationsmanager laufen
+        [Konto-Reset = neues Temp-Passwort vergeben], nicht per
+        Magic-Link/E-Mail"). Bewusst kein Self-Service-Flow ohne bekanntes
+        Passwort (siehe ChangePasswordView-Docstring: "current_password"
+        wird dort verlangt) -- ohne E-Mail-Infrastruktur (Grundsatzentscheid,
+        siehe README Block 3 Punkt 6) gibt es keinen Kanal für einen
+        Magic-Link, also übernimmt der Admin dieselbe Rolle wie bei der
+        Erstanlage (setup_access/MembershipCreateSerializer): neues
+        Temp-Passwort generieren, `must_change_password` erzwingen, EINMALIG
+        im Response zurückgeben.
+
+        Kein zusätzlicher Rollen-Check nötig -- IsTenantAdmin (Viewset-Ebene)
+        verlangt für jeden schreibenden Request bereits Admin, anders als bei
+        EmployeeViewSet (dort IsTenantManager, Admin+Planer, daher dort
+        explizite Admin-only-Checks in setup_access/deactivate/reactivate).
+        """
+        membership = self.get_object()
+        if membership.user.is_staff or membership.user.is_superuser:
+            raise ValidationError(
+                "Dieser Account hat Django-Admin-Zugriff -- Passwort kann hier nicht zurückgesetzt werden."
+            )
+        temp_password = get_random_string(12)
+        membership.user.set_password(temp_password)
+        membership.user.must_change_password = True
+        membership.user.save(update_fields=["password", "must_change_password"])
+        return Response({"username": membership.user.username, "temporary_password": temp_password})
 
 
 class TenantHolidaysView(TenantScopedAPIMixin, APIView):

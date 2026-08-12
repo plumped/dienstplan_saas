@@ -441,6 +441,11 @@ export const api = {
   // ebenfalls eine Löschfunktion haben" -- nur für den Sonderfall ohne
   // Mitarbeiterprofil, siehe MembershipViewSet.perform_destroy.
   deleteMembership: (id) => request(`/memberships/${id}/`, { method: "DELETE" }),
+  // Nutzer-Feedback (2026-08): "Ja mach passwort reset" -- Admin generiert
+  // ein neues Temp-Passwort für einen bestehenden Account, siehe
+  // MembershipViewSet.reset_password. Response enthält `temporary_password`
+  // EINMALIG (danach nicht mehr abrufbar), analog createMembership().
+  resetMembershipPassword: (id) => request(`/memberships/${id}/reset-password/`, { method: "POST" }),
 
   // MVP-Fahrplan Block 2, Punkt 31: Lohn-Rohdaten-Export. getPayrollExport
   // liefert die JSON-Vorschau (inkl. Warnliste bei fehlendem Mapping) für

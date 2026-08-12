@@ -153,6 +153,14 @@ class TenantAdmin(admin.ModelAdmin):
                 "Näherungen -- vor Produktivnutzung mit einer Rechts-/Treuhandstelle verifizieren.",
             },
         ),
+        (
+            "Fairness-Punktesystem (unpopuläre Schichten)",
+            {
+                "fields": ("sunday_shift_bonus_points_per_hour", "night_shift_bonus_points_per_hour"),
+                "description": "Grundlage für Employee.fairness_summary() -- rein interne "
+                "Transparenz-/Planungsgrösse, keine gesetzliche Vorgabe.",
+            },
+        ),
     )
 
 

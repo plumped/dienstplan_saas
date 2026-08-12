@@ -500,6 +500,94 @@ class Employee(TenantScopedModel):
         next_due = self.last_night_work_medical_exam_date + timedelta(days=interval_years * 365)
         return as_of_date >= next_due
 
+    def _fairness_points(self, window_start, window_end):
+        """
+        Rohbausteine für fairness_summary() -- ausgelagert, damit sie sowohl
+        für `self` als auch für jede Kollegin/jeden Kollegen einzeln
+        aufgerufen werden können, ohne dass dabei rekursiv wieder deren
+        eigener Team-Durchschnitt mitberechnet wird (das würde
+        fairness_summary() selbst tun).
+
+        Nutzer-Feedback (2026-08, "wie würdest du das Bonussystem am
+        intuitivsten aufbauen?"): eine Zuweisung, für die am selben Tag ein
+        `ShiftPreference` vom Typ `wunschdienst` existiert, zählt NICHT als
+        Belastung -- wer sich die Schicht gewünscht hat, wurde dadurch nicht
+        unfair behandelt.
+        """
+        assignments = ShiftAssignment.all_objects.filter(
+            employee=self, date__gte=window_start, date__lte=window_end
+        ).select_related("template")
+        wished_dates = set(
+            ShiftPreference.all_objects.filter(
+                employee=self,
+                type=ShiftPreference.Type.SHIFT,
+                date__gte=window_start,
+                date__lte=window_end,
+            ).values_list("date", flat=True)
+        )
+        sunday_hours = 0.0
+        night_hours = 0.0
+        for assignment in assignments:
+            if assignment.date in wished_dates:
+                continue
+            if assignment.is_sunday:
+                sunday_hours += ShiftAssignment._shift_hours(assignment.date, assignment.template)
+            night_hours += assignment.night_hours
+        sunday_hours = round(sunday_hours, 2)
+        night_hours = round(night_hours, 2)
+        sunday_points = round(sunday_hours * self.tenant.sunday_shift_bonus_points_per_hour, 2)
+        night_points = round(night_hours * self.tenant.night_shift_bonus_points_per_hour, 2)
+        return sunday_hours, night_hours, sunday_points, night_points
+
+    def fairness_summary(self, reference_date=None):
+        """
+        Fairness-Punkte für unpopuläre Schichten (Sonntag, Nacht) über ein
+        gleitendes 365-Tage-Fenster (MVP-Fahrplan Block 2, Punkt 20).
+        Bewusst NICHT das Kalenderjahr-Muster von night_work_summary()
+        (harter Reset am 1. Januar würde die über den Jahreswechsel hinweg
+        spürbare Belastung verschleiern) und NICHT das Dienstjahr-Muster der
+        Lohnfortzahlung (an employment_start_date gekoppelt -- für Fairness
+        sachlich nicht begründbar). Stattdessen täglich gleitend: die
+        letzten 365 Tage ab `reference_date` (Default heute), kein fixer
+        Reset-Zeitpunkt.
+
+        "Team" = alle aktiven Mitarbeitenden, die mindestens eine Station
+        mit dieser Person teilen (Employee.nodes-Schnittmenge, dieselbe
+        Abgrenzung wie bei effective_cost_center(), Punkt 31) -- inkl. der
+        Person selbst. `team_average_points` ist None, falls die Person
+        keiner Station zugeordnet ist.
+
+        Rein informativ wie night_work_summary() selbst -- kein Bestandteil
+        der Regel-Engine, kein Lohnbestandteil.
+        """
+        reference_date = reference_date or timezone.localdate()
+        window_start = reference_date - timedelta(days=365)
+        sunday_hours, night_hours, sunday_points, night_points = self._fairness_points(
+            window_start, reference_date
+        )
+        points = round(sunday_points + night_points, 2)
+
+        colleagues = Employee.objects.filter(
+            tenant=self.tenant, is_active=True, nodes__in=self.nodes.all()
+        ).distinct()
+        colleague_totals = [
+            round(sum(c._fairness_points(window_start, reference_date)[2:]), 2) for c in colleagues
+        ]
+        team_average_points = (
+            round(sum(colleague_totals) / len(colleague_totals), 2) if colleague_totals else None
+        )
+
+        return {
+            "window_start": window_start,
+            "window_end": reference_date,
+            "sunday_hours": sunday_hours,
+            "sunday_points": sunday_points,
+            "night_hours": night_hours,
+            "night_points": night_points,
+            "points": points,
+            "team_average_points": team_average_points,
+        }
+
     def _effective_weekly_hours(self):
         """Wochensoll bei 100% Pensum: Employee-Override oder Tenant-Default."""
         return self.standard_weekly_hours or self.tenant.standard_weekly_hours

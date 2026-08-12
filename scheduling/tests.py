@@ -7210,3 +7210,154 @@ class PlanExportViewTests(APITestCase):
         self.assertIn("Personalnummer,Name,Datum,Wochentag,Typ,Bezeichnung,Von,Bis", content)
         self.assertIn(f"{self.employee1.id},Anna A,2026-06-01,Mo,Dienst,Frühdienst,08:00,16:30", content)
         self.assertIn(f"{self.employee2.id},Bruno B,2026-06-02,Di,Absenz,Ferien,,", content)
+
+
+class FairnessSummaryTests(TestCase):
+    """
+    MVP-Fahrplan Block 2, Punkt 20: Employee.fairness_summary() -- Stunden-
+    basierte Fairness-Punkte für Sonntags-/Nachtzuweisungen über ein
+    gleitendes 365-Tage-Fenster, Wunschdienst-Ausnahme, Team-Durchschnitt.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-fairness")
+        self.tenant.sunday_shift_bonus_points_per_hour = 2.0
+        self.tenant.night_shift_bonus_points_per_hour = 0.5
+        self.tenant.save()
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.day_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,  # 7.5h netto
+        )
+        # 23:00-06:00 deckt sich exakt mit dem Nachtarbeitszeitraum (Art. 16
+        # ArG) -> 7h Nachtstunden, einfache Erwartungswerte (siehe andere
+        # Nachtarbeit-Tests in dieser Datei).
+        self.night_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtdienst", start_time=time(23, 0), end_time=time(6, 0)
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee.nodes.add(self.node)
+        self.reference_date = date(2026, 6, 15)
+
+    def _assign(self, employee, day, template):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=employee, node=self.node, date=day, template=template
+        )
+
+    def test_sunday_shift_produces_points(self):
+        self._assign(self.employee, date(2026, 6, 7), self.day_template)  # Sonntag
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["sunday_hours"], 7.5)
+        self.assertEqual(summary["sunday_points"], 15.0)  # 7.5h * 2.0
+
+    def test_night_shift_produces_points(self):
+        self._assign(self.employee, date(2026, 6, 8), self.night_template)  # Montag
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["night_hours"], 7.0)
+        self.assertEqual(summary["night_points"], 3.5)  # 7h * 0.5
+
+    def test_sunday_night_shift_combines_both_signals(self):
+        self._assign(self.employee, date(2026, 6, 7), self.night_template)  # Sonntagnacht
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["sunday_hours"], 7.0)
+        self.assertEqual(summary["night_hours"], 7.0)
+        self.assertEqual(summary["points"], 17.5)  # 7*2.0 + 7*0.5
+
+    def test_wunschdienst_excludes_assignment_entirely(self):
+        self._assign(self.employee, date(2026, 6, 7), self.day_template)  # Sonntag
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.employee, date=date(2026, 6, 7), type=ShiftPreference.Type.SHIFT
+        )
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["sunday_hours"], 0.0)
+        self.assertEqual(summary["points"], 0.0)
+
+    def test_wunschfrei_does_not_exclude(self):
+        self._assign(self.employee, date(2026, 6, 7), self.day_template)  # Sonntag
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.employee, date=date(2026, 6, 7), type=ShiftPreference.Type.FREE
+        )
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["sunday_hours"], 7.5)
+
+    def test_assignment_outside_window_excluded(self):
+        old_day = self.reference_date - timedelta(days=400)
+        self._assign(self.employee, old_day, self.night_template)
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["night_hours"], 0.0)
+
+    def test_assignment_exactly_at_window_boundary_included(self):
+        boundary_day = self.reference_date - timedelta(days=365)
+        self._assign(self.employee, boundary_day, self.night_template)
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["night_hours"], 7.0)
+
+    def test_team_average_across_colleagues(self):
+        colleague = Employee.objects.create(
+            tenant=self.tenant, first_name="Bruno", last_name="B", employment_pct=100
+        )
+        colleague.nodes.add(self.node)
+        self._assign(self.employee, date(2026, 6, 8), self.night_template)  # 3.5 Punkte
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["points"], 3.5)
+        self.assertEqual(summary["team_average_points"], 1.75)  # (3.5 + 0) / 2
+
+    def test_employee_without_node_has_no_team_average(self):
+        lone = Employee.objects.create(tenant=self.tenant, first_name="Carla", last_name="C", employment_pct=100)
+        summary = lone.fairness_summary(self.reference_date)
+        self.assertIsNone(summary["team_average_points"])
+
+    def test_colleague_on_different_station_excluded_from_average(self):
+        other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        outsider = Employee.objects.create(
+            tenant=self.tenant, first_name="Dora", last_name="D", employment_pct=100
+        )
+        outsider.nodes.add(other_node)
+        self._assign(outsider, date(2026, 6, 8), self.night_template)
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["team_average_points"], 0.0)  # nur Anna selbst zählt, 0 Punkte
+
+
+class FairnessSummaryAPITests(APITestCase):
+    """API-Berechtigungen für EmployeeViewSet.fairness -- Lesen für alle Rollen offen."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-fairness-api")
+        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.admin_user = User.objects.create_user(username="fair-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.employee_user = User.objects.create_user(username="fair-emp", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_can_read(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/fairness/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_employee_can_read(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/fairness/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_invalid_as_of_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/fairness/?as_of=not-a-date")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_default_as_of_is_today(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/fairness/")
+        self.assertEqual(response.data["window_end"], str(timezone.localdate()))

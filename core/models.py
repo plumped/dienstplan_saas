@@ -202,6 +202,24 @@ class Tenant(models.Model):
         "Ausnahmen gelten -- auf 0 setzen, falls nicht zutreffend).",
     )
 
+    # Fairness-Punktesystem (MVP-Fahrplan Block 2, Punkt 20, Nutzer-Feedback
+    # 2026-08): keine gesetzliche Grundlage wie die Zuschlagsfelder oben,
+    # rein interne Transparenz-/Planungshilfe, wer wie oft unpopuläre
+    # Schichten (Sonntag, Nacht) übernommen hat -- siehe Employee.
+    # fairness_summary(). FloatField statt PositiveSmallIntegerField wie bei
+    # den Zuschlagsfeldern oben, weil Bruchwerte (z. B. 0.5 Punkte je Stunde)
+    # explizit gewünscht sind.
+    sunday_shift_bonus_points_per_hour = models.FloatField(
+        default=1.0,
+        help_text="Fairness-Punkte je Sonntagsstunde (Employee.fairness_summary()) -- rein "
+        "interne Transparenz-/Planungsgrösse, kein Lohnbestandteil.",
+    )
+    night_shift_bonus_points_per_hour = models.FloatField(
+        default=0.5,
+        help_text="Fairness-Punkte je Nachtstunde (Employee.fairness_summary()) -- rein interne "
+        "Transparenz-/Planungsgrösse, kein Lohnbestandteil.",
+    )
+
     # Lohnfortzahlung bei Krankheit (MVP-Fahrplan Block 1, Punkt 16, Art. 324a
     # OR): das Gesetz selbst nennt nur "eine beschränkte Zeit", konkretisiert
     # durch drei kantonal unterschiedlich angewendete Gerichts-Skalen

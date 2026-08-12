@@ -36,6 +36,8 @@ class TenantSerializer(serializers.ModelSerializer):
             "night_work_permit_confirmed",
             "occasional_night_work_surcharge_pct",
             "sunday_work_surcharge_pct",
+            "sunday_shift_bonus_points_per_hour",
+            "night_shift_bonus_points_per_hour",
             "sick_pay_model",
             "sick_pay_scale",
             "sick_pay_waiting_days",

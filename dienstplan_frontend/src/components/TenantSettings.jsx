@@ -130,6 +130,24 @@ const FIELD_GROUPS = [
     ],
   },
   {
+    title: "Fairness-Punktesystem (unpopuläre Schichten)",
+    fields: [
+      {
+        key: "sunday_shift_bonus_points_per_hour",
+        label: "Punkte je Sonntagsstunde",
+        hint: "Rein interne Transparenz-/Planungsgrösse (Mitarbeitendenliste, Admin/Planer), kein "
+          + "Lohnbestandteil. Wunschdienste zählen nicht als Belastung.",
+        step: "0.1",
+      },
+      {
+        key: "night_shift_bonus_points_per_hour",
+        label: "Punkte je Nachtstunde",
+        hint: "Gleiches Prinzip wie oben, für Nachtstunden statt Sonntagsstunden.",
+        step: "0.1",
+      },
+    ],
+  },
+  {
     title: "Lohnfortzahlung bei Krankheit (Art. 324a OR)",
     fields: [
       {
@@ -296,6 +314,7 @@ export default function TenantSettings({ onError }) {
                 <input
                   type="number"
                   min="0"
+                  step={field.step ?? "1"}
                   value={form[field.key]}
                   onChange={handleChange(field.key)}
                   required

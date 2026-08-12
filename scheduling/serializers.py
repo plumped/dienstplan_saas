@@ -364,6 +364,19 @@ class NightWorkSummarySerializer(serializers.Serializer):
     medical_exam_due = serializers.BooleanField()
 
 
+class FairnessSummarySerializer(serializers.Serializer):
+    """Read-only: Ergebnis von Employee.fairness_summary() (Block 2, Punkt 20)."""
+
+    window_start = serializers.DateField()
+    window_end = serializers.DateField()
+    sunday_hours = serializers.FloatField()
+    sunday_points = serializers.FloatField()
+    night_hours = serializers.FloatField()
+    night_points = serializers.FloatField()
+    points = serializers.FloatField()
+    team_average_points = serializers.FloatField(allow_null=True)
+
+
 class SpecialSurchargeBreakdownSerializer(serializers.Serializer):
     """
     Read-only: ein Eintrag aus Employee.monthly_summary()["special_surcharge_breakdown"]

@@ -60,6 +60,7 @@ from .serializers import (
     EmployeeAccessSetupSerializer,
     EmployeeBalanceSerializer,
     EmployeeSerializer,
+    FairnessSummarySerializer,
     MonthlySummarySerializer,
     NightWorkSummarySerializer,
     NodeSerializer,
@@ -390,6 +391,26 @@ class EmployeeViewSet(TenantScopedViewSet):
             year = timezone.localdate().year
         summary = employee.night_work_summary(year)
         return Response(NightWorkSummarySerializer(summary).data)
+
+    @action(detail=True, methods=["get"])
+    def fairness(self, request, pk=None):
+        """
+        Fairness-Punkte für unpopuläre Schichten (MVP-Fahrplan Block 2,
+        Punkt 20): gleitendes 365-Tage-Fenster ab ?as_of=YYYY-MM-DD
+        (Default heute), siehe Employee.fairness_summary(). Lesen wie bei
+        balance/night-work für alle Rollen offen.
+        """
+        employee = self.get_object()
+        as_of_param = request.query_params.get("as_of")
+        if as_of_param:
+            try:
+                reference_date = date.fromisoformat(as_of_param)
+            except ValueError:
+                raise ValidationError({"as_of": "Ungültiges Datum, erwartet YYYY-MM-DD."})
+        else:
+            reference_date = timezone.localdate()
+        summary = employee.fairness_summary(reference_date)
+        return Response(FairnessSummarySerializer(summary).data)
 
     @action(detail=True, methods=["get"])
     def balance(self, request, pk=None):

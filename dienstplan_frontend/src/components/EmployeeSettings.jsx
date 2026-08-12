@@ -3,6 +3,7 @@ import { api } from "../api.js";
 import { isTenantAdmin, ROLE_LABELS, ROLE_OPTIONS } from "../roles.js";
 import BalanceBadge from "./BalanceBadge.jsx";
 import EmploymentEditor from "./EmploymentEditor.jsx";
+import FairnessBadge from "./FairnessBadge.jsx";
 import NodeScopeEditor, { toggleNodeSelection } from "./NodeScopeEditor.jsx";
 import PregnancyEditor from "./PregnancyEditor.jsx";
 
@@ -461,6 +462,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                       <td onClick={(e) => e.stopPropagation()}>
                         <span className="settings-table-actions">
                           <BalanceBadge employeeId={emp.id} />
+                          <FairnessBadge employeeId={emp.id} />
                           <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
                             Bearbeiten
                           </button>

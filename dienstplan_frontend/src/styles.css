@@ -244,6 +244,27 @@ button {
   font-weight: 700;
 }
 
+/* MVP-Fahrplan Block 2, Punkt 20: Fairness-Punkte -- bewusst farblich
+   neutral (keine .is-positive/.is-negative-Analogie wie beim Saldo), da
+   mehr Punkte nicht "schlecht" sind, nur ein Fakt (siehe FairnessBadge.jsx). */
+.fairness-badge {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.fairness-badge-avg {
+  color: var(--ink-muted);
+  opacity: 0.75;
+}
+
 /* Arbeitszeitmodell (Block 2.7 Punkt 7): schmaler Fortschrittsbalken zum
    Jahressoll statt einer rohen Jahresrestsoll-Zahl -- siehe BalanceBadge.jsx. */
 .balance-progress {

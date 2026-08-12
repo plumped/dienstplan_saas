@@ -255,7 +255,7 @@ entstanden sind, nicht neu sortiert nach Status):
 | Block | Thema | Status | Aktuell offen |
 |---|---|---|---|
 | 1 | Schweizer Arbeitsgesetz (ArG) | ✅ 16 von 17 Punkten erledigt | Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 (Aufbewahrungspflicht) |
-| 2 | Kernfunktionen Praxisalltag | 30 von 32 Punkten erledigt | Automatisierte Planung (19), Fairness-Punktesystem (20) |
+| 2 | Kernfunktionen Praxisalltag | 31 von 32 Punkten erledigt | Automatisierte Planung (19) |
 | 3 | Onboarding & Self-Signup | Konzept steht, nichts umgesetzt | kompletter Block |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
 | 5 | Datenschutz (revDSG) & Rechtliches | nichts umgesetzt | kompletter Block (AVV, Löschkonzept, Betroffenenrechte) |
@@ -265,9 +265,10 @@ entstanden sind, nicht neu sortiert nach Status):
 
 Reihenfolge aktuell: Block 1 ist mit Punkt 16 (Lohnfortzahlung Krankheit) inhaltlich fertig, Block 2
 Punkt 30/31 (Lohn-Export) ebenfalls (Nutzerentscheid 2026-08: "näher am Verkaufsargument" als der
-einfachere Plan-Export aus Punkt 5) -- Punkt 5 danach als nächstes nachgezogen. Offen in Block 2
-bleiben nur noch die beiden grossen, für sich zu planenden Vorhaben Automatisierte Planung (19) und
-Fairness-Punktesystem (20). Block 4/5 (Produktion) bewusst zurückgestellt, bis die Funktionalität
+einfachere Plan-Export aus Punkt 5) -- Punkt 5 danach als nächstes nachgezogen, danach Punkt 20
+(Fairness-Punktesystem, bewusst vor Punkt 19 priorisiert, weil Punkt 19 die Fairness-Punkte als
+Eingabe nutzen soll). Offen in Block 2 bleibt nur noch Automatisierte Planung (19) -- ein grosses,
+für sich zu planendes Vorhaben. Block 4/5 (Produktion) bewusst zurückgestellt, bis die Funktionalität
 steht.
 
 ### 1. Schweizer Arbeitsgesetz (ArG) — Regel-Engine vervollständigen
@@ -1952,42 +1953,60 @@ steht.
       bleibt performant, ein tenant-weiter Jahres-Lauf müsste erst als eigener, potenziell
       asynchroner Hintergrund-Task (nicht im Request-Response-Zyklus) konzipiert werden.
 
-20. **Bonus-/Fairness-Punktesystem für unpopuläre Schichten** (noch nicht umgesetzt). Ziel: sichtbar
-    und nachvollziehbar machen, wer wie oft unpopuläre Schichten (Sonntag, Nacht) übernommen hat --
-    sowohl als Transparenz-/Motivationsinstrument für Mitarbeitende als auch als Fairness-Eingabe
+20. ✅ **Bonus-/Fairness-Punktesystem für unpopuläre Schichten** (2026-08). Ziel: sichtbar und
+    nachvollziehbar machen, wer wie oft unpopuläre Schichten (Sonntag, Nacht) übernommen hat --
+    sowohl als Transparenz-/Planungshilfe für Admin/Planer als auch als künftige Fairness-Eingabe
     für die automatisierte Planung (Punkt 19 oben), damit nicht dieselbe Person systematisch
-    überproportional oft Sonntagsdienst leistet.
+    überproportional oft Sonntags-/Nachtdienst leistet.
 
-    - **Bewusst keine manuelle Punktevergabe pro Schichttyp**: statt eines neuen, separat zu
-      pflegenden Felds (z. B. "Bonuspunkte" pro `TimeTemplate`) auf den bereits vorhandenen,
-      automatisch berechneten Signalen aufbauen, die die Regel-Engine ohnehin schon liefert --
-      `ShiftAssignment.is_sunday`/`night_hours` (Block 1.5/1.6, informativ, bereits pro Zuweisung
-      berechnet). Zwei neue, konfigurierbare `Tenant`-Felder nach demselben Muster wie
-      `overtime_surcharge_pct`/`sunday_work_surcharge_pct`: `sunday_shift_bonus_points` und
-      `night_shift_bonus_points_per_hour` -- eine Klinik kann damit z. B. "1 Punkt pro
-      Sonntagsdienst" oder "0.5 Punkte pro Nachtstunde" festlegen, ohne jedes `TimeTemplate`
-      manuell zu pflegen. Neue Schichttypen sind dadurch automatisch korrekt eingebunden, sobald sie
-      auf einen Sonntag fallen oder Nachtstunden enthalten -- kein Vergessen möglich.
-    - **Aggregation nach demselben, bereits etablierten Muster** wie `night_work_summary()`/
-      `weekly_hours_summary()`: neue Methode `Employee.fairness_summary(year)` (kalenderjahresweise,
-      analog zu `annual_target_hours`) liefert die kumulierten Punkte der Person sowie -- für die
-      Einordnung "bin ich fair dran" -- den Punktedurchschnitt aller Mitarbeitenden derselben
-      Station/desselben Teams im selben Zeitraum.
-    - **Frontend**: kleines Badge analog zu `BalanceBadge.jsx` (gleiches Pub/Sub-Muster über
-      `onBalanceChanged`, da eine neue Zuweisung sowohl den Saldo als auch die Fairness-Punkte
-      beeinflusst), sichtbar für Admin/Planer in der Mitarbeitendenliste (Übersicht "wer ist
-      wann dran") sowie optional für Mitarbeitende selbst in der Topbar (**zur Diskussion**, wenn
-      umgesetzt: Transparenz kann Fairness-Vertrauen stärken, aber ein sichtbarer
-      "Punkte-Vergleich mit Kolleg:innen" könnte in manchen Teams auch unerwünschten Konkurrenzdruck
-      erzeugen -- anders als der bestehende Saldo, der bewusst rein personenbezogen ist und nie mit
-      anderen verglichen wird).
-    - **Verzahnung mit Punkt 19**: der Solver berücksichtigt beim Verteilen einer unpopulären
-      Schicht neben den harten Regeln (Ruhezeit, Qualifikation etc.) den *aktuellen* Punktestand
-      aller in Frage kommenden Mitarbeitenden als weichen Zielfunktions-Term -- wer zuletzt
-      überdurchschnittlich oft Sonntag/Nacht gemacht hat, wird bei der nächsten automatischen
-      Zuteilung tendenziell übersprungen, ohne dass das je hart erzwungen würde (eine einzelne
-      unpopuläre Schicht bei objektiv fehlenden Alternativen -- z. B. nur eine Person mit dem
-      nötigen Skill verfügbar -- darf die Planung nicht blockieren).
+    **Nachbesserung ggü. dem ursprünglichen Entwurf** (Nutzer-Feedback: "wie würdest du das
+    Bonussystem am intuitivsten aufbauen?", drei Designfragen neu durchdacht statt den
+    Erstentwurf unverändert umzusetzen):
+
+    - **Beide Kategorien einheitlich in Stunden statt gemischter Einheiten**: der Erstentwurf
+      hatte "1 Punkt pro Sonntagsdienst" (pro Schicht) gegen "0.5 Punkte pro Nachtstunde" (pro
+      Stunde) gesetzt -- damit hätte eine 2h- und eine 12h-Sonntagsschicht gleich viel gezählt,
+      obwohl die tatsächliche Belastung sehr unterschiedlich ist. Jetzt beide Signale konsistent
+      auf Stundenbasis: `Tenant.sunday_shift_bonus_points_per_hour` × Sonntagsstunden +
+      `Tenant.night_shift_bonus_points_per_hour` × Nachtstunden, beide neue, konfigurierbare
+      `FloatField`s nach demselben Muster wie `overtime_surcharge_pct`/`sunday_work_surcharge_pct`.
+      Bewusst weiterhin keine manuelle Punktevergabe pro Schichttyp -- baut auf den bereits
+      vorhandenen, pro Zuweisung berechneten Signalen `ShiftAssignment.is_sunday`/`night_hours`
+      (Block 1.5/1.6) auf, neue Schichttypen sind automatisch korrekt eingebunden.
+    - **Wunschdienste zählen nicht als Belastung**: eine Zuweisung, für die am selben Tag ein
+      `ShiftPreference` vom Typ `wunschdienst` (Block 2.13) existiert, fliesst nicht in die
+      Fairness-Punkte ein -- wer sich die Schicht gewünscht hat, wurde dadurch nicht unfair
+      behandelt. Ohne diese Ausnahme hätte die Zahl Leute, die freiwillig oft Sonntag/Nacht
+      übernehmen, fälschlich als "benachteiligt" ausgewiesen.
+    - **Gleitendes 365-Tage-Fenster statt Kalenderjahr oder Dienstjahr**: bewusst NICHT das
+      Kalenderjahr-Muster von `night_work_summary()`/`vacation_balance()` übernommen (harter
+      Reset am 1. Januar würde die reale, über den Jahreswechsel hinweg spürbare Belastung
+      verschleiern) und auch NICHT das Dienstjahr-Muster der Lohnfortzahlung (an
+      `employment_start_date` gekoppelt -- für Fairness sachlich nicht begründbar, "wie lange
+      bin ich schon hier" hat nichts mit "wie oft war ich zuletzt an der Reihe" zu tun). Stattdessen
+      täglich gleitend: die letzten 365 Tage ab dem Stichtag, kein fixer Reset-Zeitpunkt.
+    - **Vergleichsbasis**: Durchschnitt über alle aktiven Mitarbeitenden, die mindestens eine
+      Station mit der Person teilen (`Employee.nodes`-Schnittmenge, dieselbe Abgrenzung wie bei
+      `effective_cost_center()`, Punkt 31), inkl. der Person selbst.
+    - **Transparente Bausteine statt einer Blackbox-Zahl**: `Employee.fairness_summary()`
+      (`scheduling/models.py`, Aufbau analog `night_work_summary()`) liefert Sonntagsstunden,
+      Nachtstunden, deren Einzelpunktzahlen sowie die Summe und den Team-Durchschnitt getrennt --
+      konsistent mit dem Rest der App (`monthly_summary()` etc.), nicht nur eine Endsumme.
+    - **API**: `GET /api/employees/<id>/fairness/` (`EmployeeViewSet.fairness`, analog
+      `night_work`/`balance`), Lesen für alle vier Rollen offen wie die übrigen
+      Selbstauskunfts-Endpunkte.
+    - **Sichtbarkeit bewusst auf Admin/Planer beschränkt** (Rückfrage beantwortet): Badge
+      (`FairnessBadge.jsx`, analog `BalanceBadge.jsx`, gleiches `onBalanceChanged`-Pub/Sub wie
+      der Saldo) nur in der Mitarbeitendenliste (`EmployeeSettings.jsx`), NICHT zusätzlich in der
+      Topbar für Mitarbeitende selbst -- ein sichtbarer Punkte-Vergleich mit Kolleg:innen könnte
+      in manchen Teams unerwünschten Konkurrenzdruck erzeugen, anders als der bestehende Saldo,
+      der rein personenbezogen ist und nie verglichen wird. Kann jederzeit später ergänzt werden.
+    - **Verzahnung mit Punkt 19** (unverändert als künftige Erweiterung vorgesehen, noch nicht
+      umgesetzt): der Solver soll beim Verteilen einer unpopulären Schicht neben den harten Regeln
+      den *aktuellen* Punktestand aller in Frage kommenden Mitarbeitenden als weichen
+      Zielfunktions-Term berücksichtigen -- wer zuletzt überdurchschnittlich oft Sonntag/Nacht
+      gemacht hat, wird bei der nächsten automatischen Zuteilung tendenziell übersprungen, ohne
+      dass das je hart erzwungen würde.
 
 21. ✅ **Dashboard/Übersicht für Admin/Planer** (2026-08). Nutzer-Anfrage: eine zentrale Seite,
     auf der auf einen Blick sichtbar ist, was gerade Handlungsbedarf hat -- offene Genehmigungen,

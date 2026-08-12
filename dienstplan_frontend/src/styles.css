@@ -3122,7 +3122,7 @@ thead .col-employee {
   z-index: 1;
   max-width: 1180px;
   margin: 0 auto;
-  padding: 96px 32px 56px;
+  padding: 96px 32px 72px;
   animation: landing-rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
@@ -3304,7 +3304,7 @@ thead .col-employee {
   gap: 1px;
   max-width: 1180px;
   margin: 0 auto;
-  padding: 40px 32px;
+  padding: 56px 32px;
 }
 
 .landing-stat {
@@ -3344,14 +3344,14 @@ thead .col-employee {
   border-left: 1px solid var(--border);
   max-width: 1180px;
   width: 100%;
-  margin: 0 auto;
+  margin: 120px auto 0;
 }
 
 .landing-feature-tile {
   background: var(--surface);
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  padding: 32px 28px;
+  padding: 40px 32px;
   transition: background 0.15s ease;
 }
 
@@ -3387,7 +3387,7 @@ thead .col-employee {
   position: relative;
   z-index: 1;
   max-width: 1180px;
-  margin: 96px auto 0;
+  margin: 120px auto 0;
   padding: 0 32px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -3493,8 +3493,8 @@ thead .col-employee {
   position: relative;
   z-index: 1;
   max-width: 1180px;
-  margin: 96px auto 0;
-  padding: 48px 32px;
+  margin: 120px auto 0;
+  padding: 56px 32px;
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
@@ -3543,7 +3543,7 @@ thead .col-employee {
   z-index: 1;
   max-width: 1180px;
   margin: 0 auto;
-  padding: 80px 32px 0;
+  padding: 112px 32px 0;
 }
 
 .landing-cta-band-inner {
@@ -3578,8 +3578,8 @@ thead .col-employee {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  margin-top: 56px;
-  padding: 32px 24px 40px;
+  margin-top: 72px;
+  padding: 32px 24px 48px;
   color: var(--ink-muted);
   font-size: 13px;
 }
@@ -3649,6 +3649,7 @@ thead .col-employee {
   .landing-showcase--reverse {
     grid-template-columns: 1fr;
     gap: 28px;
+    margin-top: 72px;
   }
 
   .landing-showcase--reverse .landing-showcase-copy,
@@ -3656,8 +3657,25 @@ thead .col-employee {
     order: initial;
   }
 
+  .landing-feature-grid {
+    margin-top: 72px;
+  }
+
+  .landing-checklist {
+    margin-top: 72px;
+    padding: 40px 24px;
+  }
+
   .landing-checklist-grid {
     grid-template-columns: 1fr;
+  }
+
+  .landing-cta-band {
+    padding-top: 72px;
+  }
+
+  .landing-footer {
+    margin-top: 56px;
   }
 }
 

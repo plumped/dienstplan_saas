@@ -43,13 +43,18 @@ import screenshotSettings from "../assets/landing/screenshot-settings.png";
 //
 // Nutzer-Feedback (2026-08, 4. Runde): "Komm weg von dem Excel-Müll. Jedes
 // Unternehmen hat mittlerweile irgendein Tool. Denk als Marketingexperte!"
-// -- alle "ohne Excel"-Formulierungen entfernt. Neue Positionierung: nicht
-// gegen Excel antreten (das haben die meisten Interessenten längst
-// abgelöst), sondern gegen generische, international gebaute
-// Planungstools, die Schweizer Arbeitsrecht (Ersatzruhetage,
-// Nachtzuschläge nach ArG) schlicht nicht kennen -- das ist der tatsächlich
-// differenzierende Claim, den das Produkt (Regel-Engine, siehe README)
-// auch einlösen kann.
+// -- alle "ohne Excel"-Formulierungen entfernt, Positionierung zunächst auf
+// "generische Tools kennen das Schweizer Arbeitsrecht nicht" umgestellt.
+//
+// Nutzer-Korrektur (2026-08, 5. Runde): "Du hast mir ganz am Anfang gesagt
+// ich sollte nicht 'ich kann das und andere nicht' schreiben. Arbeitsgesetz
+// beachtet jedes 2. Füdlitool. Du sollst es schmackhaft machen! Intuitiv,
+// effizient, schnell usw." -- die "generische Tools können das nicht"-Linie
+// war exakt der Fehler, vor dem am Anfang gewarnt wurde: eine Overclaim-
+// artige Abgrenzung nach unten statt einer positiven Verkaufsaussage. Text
+// an allen betroffenen Stellen (Hero-Sub, Showcase-Copy, CTA-Band) auf
+// reine Vorteilssprache umgestellt -- schnell, intuitiv, effizient, ohne
+// Vergleich zu "anderen Tools".
 const FEATURES = [
   {
     title: "ArG-konforme Prüfung",
@@ -243,9 +248,9 @@ export default function LandingPage({ onStart, onLogin }) {
               mitdenkt.
             </h1>
             <p className="landing-sub">
-              Die meisten Planungstools kennen weder Ersatzruhetage noch Nachtzuschläge nach
-              Schweizer Recht. Dienstplan schon -- inklusive automatischer Prüfung gegen das
-              Arbeitsgesetz, laufender Saldoführung und Lohn-Export.
+              Schichten planen, Konflikte sofort sehen, fertig. Ruhezeiten, Höchstarbeitszeit und
+              Zuschläge werden automatisch mitgeprüft -- dazu laufende Saldoführung und
+              Lohn-Export auf Knopfdruck.
             </p>
 
             <div className="landing-cta-row">
@@ -289,8 +294,8 @@ export default function LandingPage({ onStart, onLogin }) {
           <h2>Alles auf einen Blick planen</h2>
           <p>
             Farbcodierte Dienste, Mehrfachauswahl zum schnellen Stempeln und automatische
-            Konflikthinweise direkt in der Zelle -- Dinge, die generische Planungstools nicht
-            können, weil sie nicht für Schweizer Arbeitsrecht gebaut wurden.
+            Konflikthinweise direkt in der Zelle -- ein Monatsplan steht in Minuten, Konflikte
+            fallen sofort auf statt erst am Monatsende.
           </p>
           <ul className="landing-showcase-points">
             <li>Drag &amp; Drop sowie Mehrfachauswahl zum schnellen Stempeln</li>
@@ -323,11 +328,11 @@ export default function LandingPage({ onStart, onLogin }) {
       <Reveal as="section" className="landing-showcase landing-showcase--reverse">
         <div className="landing-showcase-copy">
           <p className="landing-showcase-eyebrow">Einstellungen</p>
-          <h2>Vollständig konfigurierbar, ohne Support-Ticket</h2>
+          <h2>Vollständig konfigurierbar, in wenigen Klicks</h2>
           <p>
             Schichttypen, Absenzarten, Stationen, Skills, Lohnarten und die Regel-Engine lassen
             sich direkt im System pflegen -- von der Person, die den Betrieb tatsächlich kennt,
-            nicht per E-Mail an einen Anbieter.
+            in Minuten erledigt statt in einem Ticket-System versandet.
           </p>
           <ul className="landing-showcase-points">
             <li>Schichttypen, Absenzarten und Stationen frei definierbar</li>
@@ -359,7 +364,7 @@ export default function LandingPage({ onStart, onLogin }) {
 
       <Reveal as="section" className="landing-cta-band">
         <div className="landing-cta-band-inner">
-          <h2>Bereit für einen Dienstplan, der das Arbeitsgesetz nicht ignoriert?</h2>
+          <h2>Bereit für einen Dienstplan, der einfach mitdenkt?</h2>
           <p>In wenigen Minuten eingerichtet, mit Beispieldaten zum Anfassen.</p>
           <button type="button" className="landing-btn-primary landing-btn-primary--inverse" onClick={onStart}>
             Jetzt kostenlos starten

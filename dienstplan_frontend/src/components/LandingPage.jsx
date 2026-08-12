@@ -40,6 +40,16 @@ import screenshotSettings from "../assets/landing/screenshot-settings.png";
 // Hover-Effekte auf Screenshot-Rahmen/Feature-Icons -- alles in styles.css
 // unter @media (prefers-reduced-motion: no-preference) gekapselt, damit
 // reduzierte Bewegung den Inhalt immer sofort und vollständig zeigt.
+//
+// Nutzer-Feedback (2026-08, 4. Runde): "Komm weg von dem Excel-Müll. Jedes
+// Unternehmen hat mittlerweile irgendein Tool. Denk als Marketingexperte!"
+// -- alle "ohne Excel"-Formulierungen entfernt. Neue Positionierung: nicht
+// gegen Excel antreten (das haben die meisten Interessenten längst
+// abgelöst), sondern gegen generische, international gebaute
+// Planungstools, die Schweizer Arbeitsrecht (Ersatzruhetage,
+// Nachtzuschläge nach ArG) schlicht nicht kennen -- das ist der tatsächlich
+// differenzierende Claim, den das Produkt (Regel-Engine, siehe README)
+// auch einlösen kann.
 const FEATURES = [
   {
     title: "ArG-konforme Prüfung",
@@ -233,7 +243,8 @@ export default function LandingPage({ onStart, onLogin }) {
               mitdenkt.
             </h1>
             <p className="landing-sub">
-              Schichtplanung ohne Excel-Chaos -- inklusive automatischer Prüfung gegen das
+              Die meisten Planungstools kennen weder Ersatzruhetage noch Nachtzuschläge nach
+              Schweizer Recht. Dienstplan schon -- inklusive automatischer Prüfung gegen das
               Arbeitsgesetz, laufender Saldoführung und Lohn-Export.
             </p>
 
@@ -278,8 +289,8 @@ export default function LandingPage({ onStart, onLogin }) {
           <h2>Alles auf einen Blick planen</h2>
           <p>
             Farbcodierte Dienste, Mehrfachauswahl zum schnellen Stempeln und automatische
-            Konflikthinweise direkt in der Zelle -- statt Excel-Formeln, die bei jedem
-            Personalwechsel neu gepflegt werden müssen.
+            Konflikthinweise direkt in der Zelle -- Dinge, die generische Planungstools nicht
+            können, weil sie nicht für Schweizer Arbeitsrecht gebaut wurden.
           </p>
           <ul className="landing-showcase-points">
             <li>Drag &amp; Drop sowie Mehrfachauswahl zum schnellen Stempeln</li>
@@ -348,7 +359,7 @@ export default function LandingPage({ onStart, onLogin }) {
 
       <Reveal as="section" className="landing-cta-band">
         <div className="landing-cta-band-inner">
-          <h2>Bereit für den ersten Dienstplan ohne Excel?</h2>
+          <h2>Bereit für einen Dienstplan, der das Arbeitsgesetz nicht ignoriert?</h2>
           <p>In wenigen Minuten eingerichtet, mit Beispieldaten zum Anfassen.</p>
           <button type="button" className="landing-btn-primary landing-btn-primary--inverse" onClick={onStart}>
             Jetzt kostenlos starten

@@ -5,7 +5,7 @@ from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.exceptions import ValidationError
-from django.db import connection
+from django.db import connection, transaction
 from django.db.migrations.executor import MigrationExecutor
 from django.db.utils import IntegrityError
 from django.test import TestCase, TransactionTestCase
@@ -37,6 +37,7 @@ from .models import (
     _bern_scale_weeks,
     _zurich_scale_weeks,
 )
+from .views import _employee_scoped_node_ids
 
 User = get_user_model()
 
@@ -46,6 +47,17 @@ def make_tenant_with_planner(slug, username):
     user = User.objects.create_user(username=username, password="s3cret-not-real!")
     Membership.objects.create(user=user, tenant=tenant, role=Membership.Role.PLANNER)
     return tenant, user
+
+
+def make_station(tenant, name, **kwargs):
+    """
+    Ersetzt das frühere direkte Node.add_root(...) in Tests -- seit der
+    Mandanten-Isolation für den Node-Baum (scheduling/migrations/0031-0032,
+    Node.get_or_create_forest_root()) muss jede Station ein Kind der
+    unsichtbaren Tenant-Wurzel sein, nie mehr ein treebeard-Wurzelknoten
+    direkt.
+    """
+    return Node.get_or_create_forest_root(tenant).add_child(name=name, tenant=tenant, **kwargs)
 
 
 class TwoTenantFixtureMixin:
@@ -60,8 +72,8 @@ class TwoTenantFixtureMixin:
         self.tenant_a, self.user_a = make_tenant_with_planner("klinik-a", "planner_a")
         self.tenant_b, self.user_b = make_tenant_with_planner("klinik-b", "planner_b")
 
-        self.node_a = Node.add_root(name="Station A", tenant=self.tenant_a)
-        self.node_b = Node.add_root(name="Station B", tenant=self.tenant_b)
+        self.node_a = make_station(self.tenant_a, "Station A")
+        self.node_b = make_station(self.tenant_b, "Station B")
 
         self.skill_a = Skill.objects.create(tenant=self.tenant_a, name="Nachtdienst")
         self.skill_b = Skill.objects.create(tenant=self.tenant_b, name="Nachtdienst")
@@ -254,7 +266,7 @@ class RuleEngineTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -556,7 +568,7 @@ class RuleEngineTests(TestCase):
         strict_tenant = Tenant.objects.create(
             name="Klinik streng", slug="klinik-streng", maximum_weekly_hours=10
         )
-        node = Node.add_root(name="Station", tenant=strict_tenant)
+        node = make_station(strict_tenant, "Station")
         employee = Employee.objects.create(
             tenant=strict_tenant, first_name="Chris", last_name="C", employment_pct=100
         )
@@ -734,7 +746,7 @@ class RuleEngineTests(TestCase):
 class AbsenceModelTests(TestCase):
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -1047,7 +1059,7 @@ class TimeRecordTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -1221,7 +1233,7 @@ class SegmentedTimeTemplateTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -1294,7 +1306,7 @@ class SegmentedTimeRecordTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -1362,7 +1374,7 @@ class SegmentedTimeTemplateAndRecordAPITests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
         Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
         self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
@@ -1518,7 +1530,7 @@ class WeeklyOvertimeTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -1644,7 +1656,7 @@ class NightAndSundayWorkTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         # 23:00-06:00 deckt sich exakt mit dem Nachtarbeitszeitraum (Art. 16
         # ArG) -> 7h Nachtstunden pro Schicht, einfache Erwartungswerte.
         self.night_template = TimeTemplate.objects.create(
@@ -1853,7 +1865,7 @@ class EmployeeBalanceTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -2501,7 +2513,7 @@ class MonthlySummaryTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         # 08:00-16:30, 30min Pause -> 8h Spanne netto pro Schicht (klare Zahlen).
         self.template = TimeTemplate.objects.create(
             tenant=self.tenant,
@@ -2914,7 +2926,7 @@ class ShiftTradeRequestTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee_1 = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -3102,7 +3114,7 @@ class ShiftTradeRequestTests(TestCase):
 class ShiftTradeRequestAPITests(APITestCase):
     def setUp(self):
         self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee_1 = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -3209,7 +3221,7 @@ class RoleBasedPermissionTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -3669,7 +3681,7 @@ class RoleBasedPermissionTests(APITestCase):
     # --- Ein Mitarbeiter darf nur seine eigene(n) Station(en) sehen ---
 
     def test_employee_sees_only_own_station_in_node_list(self):
-        other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        other_node = make_station(self.tenant, "Station B")
         self.alice.nodes.add(self.node)
         self.auth_as(self.alice_user)
         response = self.client.get("/api/nodes/")
@@ -3687,7 +3699,7 @@ class RoleBasedPermissionTests(APITestCase):
         self.assertEqual(response.data["results"], [])
 
     def test_admin_planner_and_hr_still_see_all_stations(self):
-        other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        other_node = make_station(self.tenant, "Station B")
         for user in (self.planner_user, self.hr_user):
             self.auth_as(user)
             response = self.client.get("/api/nodes/")
@@ -3696,7 +3708,7 @@ class RoleBasedPermissionTests(APITestCase):
             self.assertIn(other_node.id, ids)
 
     def test_employee_only_sees_shift_assignments_of_own_station(self):
-        other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        other_node = make_station(self.tenant, "Station B")
         other_template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=other_node,
@@ -3720,7 +3732,7 @@ class RoleBasedPermissionTests(APITestCase):
         self.assertNotIn(other_assignment.id, ids)
 
     def test_employee_only_sees_time_templates_of_own_station(self):
-        other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        other_node = make_station(self.tenant, "Station B")
         other_template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=other_node,
@@ -3742,7 +3754,7 @@ class EmploymentModelTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
         )
@@ -3840,7 +3852,7 @@ class TeamNestingPermissionTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik ICT", slug="klinik-ict")
-        self.station = Node.add_root(name="ICT", tenant=self.tenant)
+        self.station = make_station(self.tenant, "ICT")
         self.team_a = self.station.add_child(name="Infrastruktur", tenant=self.tenant)
         self.team_b = self.station.add_child(name="Support", tenant=self.tenant)
         self.template = TimeTemplate.objects.create(
@@ -3936,8 +3948,8 @@ class EmployeeSerializerEmploymentSyncTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node_a = Node.add_root(name="Team A", tenant=self.tenant)
-        self.node_b = Node.add_root(name="Team B", tenant=self.tenant)
+        self.node_a = make_station(self.tenant, "Team A")
+        self.node_b = make_station(self.tenant, "Team B")
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
         )
@@ -3999,7 +4011,7 @@ class EmployeeSerializerEmploymentSyncTests(APITestCase):
 
     def test_employments_with_foreign_node_rejected(self):
         other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b")
-        foreign_node = Node.add_root(name="Fremde Station", tenant=other_tenant)
+        foreign_node = make_station(other_tenant, "Fremde Station")
         response = self.client.patch(
             f"/api/employees/{self.employee.id}/",
             {"employments": [{"node": foreign_node.id, "pensum_pct": 50, "title": "", "is_team_lead": False}]},
@@ -4112,7 +4124,7 @@ class EmployeeAccessSetupTests(APITestCase):
 
     def test_employee_with_planner_role_exposes_scoped_nodes(self):
         self.auth_as(self.admin_user)
-        node = Node.add_root(name="Station A", tenant=self.tenant)
+        node = make_station(self.tenant, "Station A")
         setup = self.client.post(
             f"/api/employees/{self.employee.id}/setup-access/",
             {"username": "anna.berger5", "role": "planner"},
@@ -4132,7 +4144,7 @@ class EmployeeCsvImportTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-csv")
-        self.station = Node.add_root(name="Pflege Tag", tenant=self.tenant)
+        self.station = make_station(self.tenant, "Pflege Tag")
         self.admin_user = User.objects.create_user(username="admin-csv", password="pw-not-real-123!")
         Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
         self.employee_user = User.objects.create_user(username="employee-csv", password="pw-not-real-123!")
@@ -4183,7 +4195,7 @@ class EmployeeCsvImportTests(APITestCase):
     def test_station_lookup_is_tenant_scoped(self):
         self.auth_as(self.admin_user)
         other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-csv")
-        Node.add_root(name="Fremde Station", tenant=other_tenant)
+        make_station(other_tenant, "Fremde Station")
         content = (
             "first_name,last_name,employment_pct,employment_start_date,station\n"
             "Anna,Muster,100,,Fremde Station\n"
@@ -4517,7 +4529,7 @@ class EmployeeSkillsM2MTests(APITestCase):
         # Zwei unterschiedliche Sonderlogiken (M2M-Sync + verschachtelte
         # employments-Zuweisung, README Punkt 17) in einem Request dürfen
         # sich nicht gegenseitig stören.
-        node = Node.add_root(name="Team A", tenant=self.tenant)
+        node = make_station(self.tenant, "Team A")
         response = self.client.patch(
             f"/api/employees/{self.employee.id}/",
             {
@@ -4537,7 +4549,7 @@ class ShiftPreferenceTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -4676,7 +4688,7 @@ class NotificationsAndTaskCountsTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -4942,7 +4954,7 @@ class ShiftAssignmentSwapTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.station = Node.add_root(name="Station A", tenant=self.tenant)
+        self.station = make_station(self.tenant, "Station A")
         self.team_a = self.station.add_child(name="Team A", tenant=self.tenant)
         self.team_b = self.station.add_child(name="Team B", tenant=self.tenant)
         self.employee_1 = Employee.objects.create(
@@ -5056,7 +5068,7 @@ class ShiftAssignmentSwapTests(TestCase):
 class ShiftAssignmentSwapAPITests(APITestCase):
     def setUp(self):
         self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
-        self.station = Node.add_root(name="Station A", tenant=self.tenant)
+        self.station = make_station(self.tenant, "Station A")
         self.employee_1 = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -5108,7 +5120,7 @@ class ShiftAssignmentSwapAPITests(APITestCase):
 
     def test_swap_endpoint_returns_404_for_foreign_tenant_assignment(self):
         other_tenant, other_user = make_tenant_with_planner("klinik-b", "planner_b")
-        other_node = Node.add_root(name="Station B", tenant=other_tenant)
+        other_node = make_station(other_tenant, "Station B")
         other_employee = Employee.objects.create(
             tenant=other_tenant, first_name="Carla", last_name="C", employment_pct=100
         )
@@ -5151,8 +5163,8 @@ class ShiftAssignmentOtherTeamConflictsAPITests(APITestCase):
 
     def setUp(self):
         self.tenant, self.user = make_tenant_with_planner("klinik-conflicts", "planner_conflicts")
-        self.station_a = Node.add_root(name="Station A", tenant=self.tenant)
-        self.station_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.station_a = make_station(self.tenant, "Station A")
+        self.station_b = make_station(self.tenant, "Station B")
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=40
         )
@@ -5245,7 +5257,7 @@ class ShiftAssignmentOtherTeamConflictsAPITests(APITestCase):
 
     def test_does_not_leak_other_tenants_data(self):
         other_tenant, other_user = make_tenant_with_planner("klinik-conflicts-b", "planner_conflicts_b")
-        other_station = Node.add_root(name="Fremdstation", tenant=other_tenant)
+        other_station = make_station(other_tenant, "Fremdstation")
         other_employee = Employee.objects.create(
             tenant=other_tenant, first_name="Fremd", last_name="Person", employment_pct=100
         )
@@ -5281,7 +5293,7 @@ class ShiftTradeRequestFullSwapSameDateTests(TestCase):
 
     def test_approve_full_swap_same_date_succeeds(self):
         tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        node = Node.add_root(name="Station A", tenant=tenant)
+        node = make_station(tenant, "Station A")
         employee_1 = Employee.objects.create(tenant=tenant, first_name="Anna", last_name="A", employment_pct=100)
         employee_2 = Employee.objects.create(tenant=tenant, first_name="Bea", last_name="B", employment_pct=100)
         template = TimeTemplate.objects.create(
@@ -5310,7 +5322,7 @@ class TimeTemplateMinimumStaffingTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
 
     def test_minimum_staffing_defaults_to_zero(self):
         template = TimeTemplate.objects.create(
@@ -5338,7 +5350,7 @@ class TimeTemplateMinimumStaffingTests(TestCase):
 class TimeTemplateMinimumStaffingAPITests(APITestCase):
     def setUp(self):
         self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         token, _ = Token.objects.get_or_create(user=self.user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
 
@@ -5372,7 +5384,7 @@ class TimeTemplateCategoryTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
 
     def test_category_defaults_to_shift(self):
         template = TimeTemplate.objects.create(
@@ -5399,7 +5411,7 @@ class TimeTemplateCategoryTests(TestCase):
 class TimeTemplateCategoryAPITests(APITestCase):
     def setUp(self):
         self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         token, _ = Token.objects.get_or_create(user=self.user)
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
 
@@ -5463,7 +5475,7 @@ class SplitShiftTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="ICT", tenant=self.tenant)
+        self.node = make_station(self.tenant, "ICT")
         self.early = TimeTemplate.objects.create(
             tenant=self.tenant, node=self.node, name="Frühdienst",
             start_time=time(7, 0), end_time=time(12, 0), break_minutes=0,
@@ -5680,7 +5692,7 @@ class SpecialAssignmentStackingTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.day_shift = TimeTemplate.objects.create(
             tenant=self.tenant, node=self.node, name="Frühdienst",
             start_time=time(7, 0), end_time=time(15, 0), break_minutes=30,
@@ -5850,7 +5862,7 @@ class ShiftTradeRequestSplitShiftTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="ICT", tenant=self.tenant)
+        self.node = make_station(self.tenant, "ICT")
         self.early = TimeTemplate.objects.create(
             tenant=self.tenant, node=self.node, name="Frühdienst",
             start_time=time(7, 0), end_time=time(12, 0), break_minutes=0,
@@ -5911,7 +5923,7 @@ class UnderstaffedShiftsViewTests(APITestCase):
 
     def setUp(self):
         self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -6124,7 +6136,7 @@ class MaternityProtectionRuleEngineTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Petra", last_name="P", employment_pct=100
         )
@@ -6311,8 +6323,8 @@ class EmployeeSearchOrderingAPITests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
-        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_b = make_station(self.tenant, "Station B")
         self.planner_user = User.objects.create_user(username="planner-search", password="pw-not-real-123!")
         Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
         token, _ = Token.objects.get_or_create(user=self.planner_user)
@@ -6400,8 +6412,8 @@ class TimeTemplateSearchOrderingAPITests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
-        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
-        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_b = make_station(self.tenant, "Station B")
         self.planner_user = User.objects.create_user(username="planner-tt-search", password="pw-not-real-123!")
         Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
         token, _ = Token.objects.get_or_create(user=self.planner_user)
@@ -6453,7 +6465,7 @@ class TimeTemplateSearchOrderingAPITests(APITestCase):
 
     def test_search_is_tenant_scoped(self):
         other_tenant, other_user = make_tenant_with_planner("klinik-tt-x", "planner-tt-x")
-        other_node = Node.add_root(name="Station X", tenant=other_tenant)
+        other_node = make_station(other_tenant, "Station X")
         TimeTemplate.objects.create(
             tenant=other_tenant, node=other_node, name="Frühdienst", start_time="07:00", end_time="15:00"
         )
@@ -6480,36 +6492,43 @@ class NodeMoveAPITests(APITestCase):
         # Standort A
         #   └─ Team A1
         # Standort B
-        self.standort_a = Node.add_root(name="Standort A", tenant=self.tenant)
+        self.standort_a = make_station(self.tenant, "Standort A")
         self.team_a1 = self.standort_a.add_child(name="Team A1", tenant=self.tenant)
-        self.standort_b = Node.add_root(name="Standort B", tenant=self.tenant)
+        self.standort_b = make_station(self.tenant, "Standort B")
 
     def test_move_reparents_node_under_new_parent(self):
         response = self.client.post(f"/api/nodes/{self.standort_b.id}/move/", {"parent": self.standort_a.id})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.standort_b.refresh_from_db()
         self.assertEqual(self.standort_b.get_parent().pk, self.standort_a.pk)
-        self.assertEqual(self.standort_b.depth, 2)
+        # Standort A selbst ist bereits ein Kind der (unsichtbaren) Tenant-
+        # Wurzel (depth=2, siehe Node.get_or_create_forest_root) -- Standort
+        # B landet als dessen Kind deshalb auf depth=3, nicht 2.
+        self.assertEqual(self.standort_b.depth, 3)
 
     def test_move_to_root_removes_parent(self):
         response = self.client.post(f"/api/nodes/{self.team_a1.id}/move/", {"parent": None}, format="json")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.team_a1.refresh_from_db()
-        self.assertIsNone(self.team_a1.get_parent())
-        self.assertEqual(self.team_a1.depth, 1)
+        # "Oberste Ebene" heisst seit dem Tenant-Wurzelknoten "Kind der
+        # unsichtbaren Wurzel", nicht mehr parentless (siehe NodeViewSet.move).
+        forest_root = Node.get_or_create_forest_root(self.tenant)
+        self.assertEqual(self.team_a1.get_parent().pk, forest_root.pk)
+        self.assertEqual(self.team_a1.depth, 2)
 
     def test_move_updates_descendant_depth(self):
         grandchild = self.team_a1.add_child(name="Schicht-Gruppe", tenant=self.tenant)
         self.client.post(f"/api/nodes/{self.team_a1.id}/move/", {"parent": None}, format="json")
         grandchild.refresh_from_db()
-        self.assertEqual(grandchild.depth, 2)
+        self.assertEqual(grandchild.depth, 3)
         self.assertEqual(grandchild.get_parent().pk, self.team_a1.pk)
 
     def test_move_into_own_descendant_is_rejected(self):
         response = self.client.post(f"/api/nodes/{self.standort_a.id}/move/", {"parent": self.team_a1.id})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.standort_a.refresh_from_db()
-        self.assertIsNone(self.standort_a.get_parent())
+        forest_root = Node.get_or_create_forest_root(self.tenant)
+        self.assertEqual(self.standort_a.get_parent().pk, forest_root.pk)
 
     def test_move_into_self_is_rejected(self):
         response = self.client.post(f"/api/nodes/{self.standort_a.id}/move/", {"parent": self.standort_a.id})
@@ -6517,7 +6536,7 @@ class NodeMoveAPITests(APITestCase):
 
     def test_move_with_foreign_parent_is_rejected(self):
         other_tenant, other_user = make_tenant_with_planner("klinik-move-x", "planner-move-x")
-        foreign_node = Node.add_root(name="Fremde Station", tenant=other_tenant)
+        foreign_node = make_station(other_tenant, "Fremde Station")
         response = self.client.post(f"/api/nodes/{self.standort_b.id}/move/", {"parent": foreign_node.id})
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
@@ -6535,9 +6554,9 @@ class NodeMoveAPITests(APITestCase):
         alphabetisch zuerst unter BEIDEN Wurzeln, um genau diese Kollision
         zu erzwingen.
         """
-        root_x = Node.add_root(name="Root X", tenant=self.tenant)
+        root_x = make_station(self.tenant, "Root X")
         child_x = root_x.add_child(name="AAA Kind", tenant=self.tenant)
-        root_y = Node.add_root(name="Root Y", tenant=self.tenant)
+        root_y = make_station(self.tenant, "Root Y")
         root_y.add_child(name="ZZZ Kind", tenant=self.tenant)
 
         response = self.client.post(f"/api/nodes/{child_x.id}/move/", {"parent": root_y.id})
@@ -6554,6 +6573,92 @@ class NodeMoveAPITests(APITestCase):
         self.assertEqual(child_x.get_parent().pk, root_x.pk)
 
 
+class NodeForestRootTests(APITestCase):
+    """
+    Mandanten-Isolation für den Node-Baum (Nutzer-Feedback: "Es muss ALLES
+    tenant unabhängig sein schon rein datenschutz technisch. Es darf nicht
+    sein das alle tenants einen baum teilen! Das ist fahrlässig") --
+    Node.get_or_create_forest_root() sorgt dafür, dass jeder Tenant einen
+    eigenen, unsichtbaren Wurzelknoten hat und Pfad-Vergabe nie mehr auf
+    einer mit anderen Tenants geteilten Ebene stattfindet.
+    """
+
+    def setUp(self):
+        self.tenant_a, self.user_a = make_tenant_with_planner("klinik-forest-a", "planner-forest-a")
+        self.tenant_b, self.user_b = make_tenant_with_planner("klinik-forest-b", "planner-forest-b")
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_alphabetically_colliding_station_names_across_tenants_do_not_collide(self):
+        """
+        Reproduziert den ursprünglichen Fund: bevor jeder Tenant seinen
+        eigenen Wurzelknoten hatte, lag jede neue Station direkt auf einer
+        global geteilten treebeard-Wurzelebene -- ein neuer Stationsname,
+        der alphabetisch zwischen zwei fremde, unbeteiligte Wurzelknoten
+        fiel, löste dort einen IntegrityError aus. "Mitte"-Stationen in
+        zwei komplett unabhängigen Tenants sind das klassische Kollisions-
+        Szenario dafür.
+        """
+        self.auth_as(self.user_a)
+        response_a = self.client.post("/api/nodes/", {"name": "Mitte"}, format="json")
+        self.assertEqual(response_a.status_code, status.HTTP_201_CREATED, response_a.data)
+
+        self.auth_as(self.user_b)
+        response_b = self.client.post("/api/nodes/", {"name": "Mitte"}, format="json")
+        self.assertEqual(response_b.status_code, status.HTTP_201_CREATED, response_b.data)
+
+    def test_get_or_create_forest_root_is_idempotent(self):
+        first = Node.get_or_create_forest_root(self.tenant_a)
+        second = Node.get_or_create_forest_root(self.tenant_a)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Node.all_objects.filter(tenant=self.tenant_a, is_forest_root=True).count(), 1)
+
+    def test_duplicate_forest_root_violates_unique_constraint(self):
+        Node.get_or_create_forest_root(self.tenant_a)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Node.add_root(name="Zweite Wurzel", tenant=self.tenant_a, is_forest_root=True)
+
+    def test_forest_root_never_appears_in_node_list(self):
+        self.auth_as(self.user_a)
+        self.client.post("/api/nodes/", {"name": "Station A"}, format="json")
+        forest_root = Node.get_or_create_forest_root(self.tenant_a)
+
+        response = self.client.get("/api/nodes/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_ids = {n["id"] for n in response.data["results"]}
+        self.assertNotIn(forest_root.id, returned_ids)
+
+        detail = self.client.get(f"/api/nodes/{forest_root.id}/")
+        self.assertEqual(detail.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_employee_scoped_node_ids_excludes_forest_root(self):
+        station = make_station(self.tenant_a, "Station A")
+        employee = Employee.objects.create(
+            tenant=self.tenant_a, first_name="Anna", last_name="Muster", employment_pct=100
+        )
+        employee.nodes.set([station.id])
+        employee_user = User.objects.create_user(username="employee-forest-a", password="pw-not-real-123!")
+        Membership.objects.create(user=employee_user, tenant=self.tenant_a, role=Membership.Role.EMPLOYEE)
+        employee.user = employee_user
+        employee.save(update_fields=["user"])
+
+        node_ids = _employee_scoped_node_ids(
+            Membership.objects.get(user=employee_user), employee
+        )
+        forest_root = Node.get_or_create_forest_root(self.tenant_a)
+        self.assertNotIn(forest_root.id, node_ids)
+        self.assertIn(station.id, node_ids)
+
+    def test_admin_cannot_add_node_via_django_admin(self):
+        superuser = User.objects.create_superuser(username="root-forest", password="pw-not-real-123!")
+        self.client.force_login(superuser)
+        response = self.client.get("/admin/scheduling/node/add/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
 class PlannerHRStationScopingTests(APITestCase):
     """
     Nutzer-Feedback (2026-08): "Natürlich gibt es in einer Klinik Planer mit
@@ -6564,9 +6669,9 @@ class PlannerHRStationScopingTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-scoping")
-        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node_a = make_station(self.tenant, "Station A")
         self.node_a_team = self.node_a.add_child(name="Team A1", tenant=self.tenant)
-        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.node_b = make_station(self.tenant, "Station B")
 
         self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
         self.admin_membership = Membership.objects.create(
@@ -6630,8 +6735,8 @@ class TimeRecordOverviewAPITests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-timerecord-overview")
-        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
-        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_b = make_station(self.tenant, "Station B")
         self.template_a = TimeTemplate.objects.create(
             tenant=self.tenant, node=self.node_a, name="Tagdienst A",
             start_time=time(8, 0), end_time=time(16, 0), break_minutes=30,
@@ -6773,7 +6878,7 @@ class PayrollCategoryMappingModelTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-pcm")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.special_template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -6844,7 +6949,7 @@ class PayrollCategoryMappingAPITests(APITestCase):
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-pcm-api")
         self.other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-pcm-api")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.special_template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -6856,7 +6961,7 @@ class PayrollCategoryMappingAPITests(APITestCase):
         )
         self.other_special_template = TimeTemplate.objects.create(
             tenant=self.other_tenant,
-            node=Node.add_root(name="Station X", tenant=self.other_tenant),
+            node=make_station(self.other_tenant, "Station X"),
             name="Pikett B",
             start_time=time(18, 0),
             end_time=time(22, 0),
@@ -6948,7 +7053,7 @@ class PayrollRawLinesTests(TestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-payroll")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -7165,34 +7270,34 @@ class CostCenterTests(TestCase):
         )
 
     def test_node_uses_own_cost_center(self):
-        node = Node.add_root(name="Station A", tenant=self.tenant, cost_center="KST-100")
+        node = make_station(self.tenant, "Station A", cost_center="KST-100")
         self.assertEqual(node.effective_cost_center(), "KST-100")
 
     def test_node_inherits_from_parent(self):
-        root = Node.add_root(name="Station A", tenant=self.tenant, cost_center="KST-100")
+        root = make_station(self.tenant, "Station A", cost_center="KST-100")
         team = root.add_child(name="Team 1", tenant=self.tenant)
         self.assertEqual(team.effective_cost_center(), "KST-100")
 
     def test_node_inherits_from_nearest_ancestor(self):
-        root = Node.add_root(name="Standort", tenant=self.tenant, cost_center="KST-ROOT")
+        root = make_station(self.tenant, "Standort", cost_center="KST-ROOT")
         station = root.add_child(name="Station A", tenant=self.tenant, cost_center="KST-100")
         team = station.add_child(name="Team 1", tenant=self.tenant)
         self.assertEqual(team.effective_cost_center(), "KST-100")
 
     def test_node_without_any_cost_center_returns_none(self):
-        root = Node.add_root(name="Station A", tenant=self.tenant)
+        root = make_station(self.tenant, "Station A")
         child = root.add_child(name="Team 1", tenant=self.tenant)
         self.assertIsNone(child.effective_cost_center())
 
     def test_employee_cost_center_unique_across_nodes(self):
-        node_a = Node.add_root(name="Station A", tenant=self.tenant, cost_center="KST-100")
-        node_b = Node.add_root(name="Station B", tenant=self.tenant, cost_center="KST-100")
+        node_a = make_station(self.tenant, "Station A", cost_center="KST-100")
+        node_b = make_station(self.tenant, "Station B", cost_center="KST-100")
         self.employee.nodes.add(node_a, node_b)
         self.assertEqual(self.employee.effective_cost_center(), "KST-100")
 
     def test_employee_cost_center_ambiguous_returns_none(self):
-        node_a = Node.add_root(name="Station A", tenant=self.tenant, cost_center="KST-100")
-        node_b = Node.add_root(name="Station B", tenant=self.tenant, cost_center="KST-200")
+        node_a = make_station(self.tenant, "Station A", cost_center="KST-100")
+        node_b = make_station(self.tenant, "Station B", cost_center="KST-200")
         self.employee.nodes.add(node_a, node_b)
         self.assertIsNone(self.employee.effective_cost_center())
 
@@ -7208,7 +7313,7 @@ class PayrollExportViewTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-export")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -7412,8 +7517,8 @@ class PlanExportViewTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-planexport")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
-        self.other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
+        self.other_node = make_station(self.tenant, "Station B")
         self.template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -7539,7 +7644,7 @@ class FairnessSummaryTests(TestCase):
         self.tenant.sunday_shift_bonus_points_per_hour = 2.0
         self.tenant.night_shift_bonus_points_per_hour = 0.5
         self.tenant.save()
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.day_template = TimeTemplate.objects.create(
             tenant=self.tenant,
             node=self.node,
@@ -7629,7 +7734,7 @@ class FairnessSummaryTests(TestCase):
         self.assertIsNone(summary["team_average_points"])
 
     def test_colleague_on_different_station_excluded_from_average(self):
-        other_node = Node.add_root(name="Station B", tenant=self.tenant)
+        other_node = make_station(self.tenant, "Station B")
         outsider = Employee.objects.create(
             tenant=self.tenant, first_name="Dora", last_name="D", employment_pct=100
         )
@@ -7686,7 +7791,7 @@ class FairnessSummaryAPITests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-fairness-api")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -7729,7 +7834,7 @@ class BalanceFairnessBulkAPITests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-bulk")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         self.employee1 = Employee.objects.create(
             tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -7817,8 +7922,8 @@ class AbsenceOverviewAPITests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-absence-overview")
-        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
-        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_b = make_station(self.tenant, "Station B")
         self.absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", color="#112233", icon="F")
 
         self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
@@ -7951,8 +8056,8 @@ class ShiftTradeRequestOverviewAPITests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-trade-overview")
-        self.node_a = Node.add_root(name="Station A", tenant=self.tenant)
-        self.node_b = Node.add_root(name="Station B", tenant=self.tenant)
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_b = make_station(self.tenant, "Station B")
         self.template_a = TimeTemplate.objects.create(
             tenant=self.tenant, node=self.node_a, name="Tagdienst A",
             start_time=time(8, 0), end_time=time(16, 0), break_minutes=30,

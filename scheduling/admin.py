@@ -26,9 +26,34 @@ from .models import (
 
 @admin.register(Node)
 class NodeAdmin(TenantScopedAdminMixin, TreeAdmin):
+    """
+    Mandanten-Isolation für den Node-Baum (Nutzer-Feedback: "Es muss ALLES
+    tenant unabhängig sein schon rein datenschutz technisch"): der
+    unsichtbare Tenant-Wurzelknoten (Node.is_forest_root, siehe dessen
+    Docstring) ist reine interne Baumstruktur, kein von Menschen verwaltetes
+    Objekt -- get_queryset() blendet ihn aus Liste und Move-Zielauswahl aus
+    (Verteidigung in der Tiefe, auch wenn er über die API ohnehin nie
+    sichtbar ist, siehe NodeViewSet.get_queryset).
+
+    has_add_permission ist bewusst False: treebeards eigenes Tree-UI
+    (movenodeform_factory) ruft bei "neuen Knoten ohne Ziel hinzufügen"
+    intern selbst Node.add_root() auf und würde damit Node.
+    get_or_create_forest_root() (und dessen Tenant-Isolation) komplett
+    umgehen -- die App-eigene Settings-Oberfläche (NodeSettings.jsx ->
+    NodeViewSet) ist die vorgesehene Verwaltungsfläche für neue Stationen,
+    der Admin bleibt nur für Ansicht/Umbenennen/Verschieben/Löschen
+    bestehender Knoten nutzbar.
+    """
+
     form = movenodeform_factory(Node)
     list_display = ["name", "tenant"]
     list_filter = ["tenant"]
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).exclude(is_forest_root=True)
+
+    def has_add_permission(self, request):
+        return False
 
 
 @admin.register(Skill)

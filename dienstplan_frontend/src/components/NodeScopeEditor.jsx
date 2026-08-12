@@ -41,7 +41,7 @@ export default function NodeScopeEditor({ nodes, selectedNodeIds, onToggle }) {
           ? nodes.find((a) => selectedNodeIds.has(a.id) && isDescendantOf(n, a))
           : null;
         return (
-          <li key={n.id} style={{ paddingLeft: `${Math.max(n.depth - 1, 0) * 20}px` }}>
+          <li key={n.id} style={{ paddingLeft: `${Math.max(n.depth - 2, 0) * 20}px` }}>
             <label className={impliedBy ? "is-implied" : undefined}>
               <input
                 type="checkbox"

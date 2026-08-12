@@ -333,7 +333,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                   >
                     {nodes.map((n) => (
                       <option key={n.id} value={n.id}>
-                        {"  ".repeat(Math.max(n.depth - 1, 0))}
+                        {"  ".repeat(Math.max(n.depth - 2, 0))}
                         {n.name}
                       </option>
                     ))}

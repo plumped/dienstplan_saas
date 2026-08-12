@@ -13,6 +13,7 @@ from core.models import Membership, Tenant, TenantHolidayOverride
 from core.onboarding import seed_demo_tenant, unique_tenant_slug
 from core.tenancy import resolve_tenant_for_user
 from scheduling.models import AbsenceType, Employee, Employment, Node, Skill, TimeTemplate
+from scheduling.tests import make_station
 
 User = get_user_model()
 
@@ -425,8 +426,8 @@ class AdminTenantScopingTests(TestCase):
     def setUp(self):
         self.tenant_a = Tenant.objects.create(name="Klinik A", slug="klinik-a")
         self.tenant_b = Tenant.objects.create(name="Klinik B", slug="klinik-b")
-        self.node_a = Node.add_root(name="Station A", tenant=self.tenant_a)
-        self.node_b = Node.add_root(name="Station B", tenant=self.tenant_b)
+        self.node_a = make_station(self.tenant_a, "Station A")
+        self.node_b = make_station(self.tenant_b, "Station B")
         self.employee_a = Employee.objects.create(
             tenant=self.tenant_a, first_name="Anna", last_name="A", employment_pct=100
         )
@@ -548,9 +549,9 @@ class MembershipViewSetTests(APITestCase):
 
     def setUp(self):
         self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-membership")
-        self.node = Node.add_root(name="Station A", tenant=self.tenant)
+        self.node = make_station(self.tenant, "Station A")
         other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-membership")
-        self.foreign_node = Node.add_root(name="Fremde Station", tenant=other_tenant)
+        self.foreign_node = make_station(other_tenant, "Fremde Station")
 
         self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
         self.admin_membership = Membership.objects.create(
@@ -877,7 +878,13 @@ class SeedDemoTenantTests(TestCase):
         seed_demo_tenant(self.tenant)
 
     def test_creates_two_beispiel_nodes(self):
-        names = set(Node.all_objects.filter(tenant=self.tenant).values_list("name", flat=True))
+        # Node.all_objects enthält seit der Mandanten-Isolation für den
+        # Node-Baum (Node.get_or_create_forest_root) zusätzlich den
+        # unsichtbaren Tenant-Wurzelknoten -- is_forest_root=False filtert
+        # ihn hier bewusst raus, das ist nicht Teil der Demo-Daten.
+        names = set(
+            Node.all_objects.filter(tenant=self.tenant, is_forest_root=False).values_list("name", flat=True)
+        )
         self.assertEqual(names, {"Pflege Tag (Beispiel)", "Pflege Nacht (Beispiel)"})
 
     def test_creates_three_absence_types_without_beispiel_suffix(self):
@@ -976,7 +983,11 @@ class SignupViewTests(APITestCase):
         membership = Membership.objects.get(tenant=tenant, user=user)
         self.assertEqual(membership.role, Membership.Role.ADMIN)
 
-        self.assertEqual(Node.all_objects.filter(tenant=tenant).count(), 2)
+        # +1 für den unsichtbaren Tenant-Wurzelknoten (Node.is_forest_root,
+        # siehe Node.get_or_create_forest_root) -- nicht Teil der
+        # Demo-Daten, aber ebenfalls ein Node-Datensatz dieses Tenants.
+        self.assertEqual(Node.all_objects.filter(tenant=tenant, is_forest_root=False).count(), 2)
+        self.assertEqual(Node.all_objects.filter(tenant=tenant, is_forest_root=True).count(), 1)
         self.assertEqual(AbsenceType.all_objects.filter(tenant=tenant).count(), 3)
         self.assertEqual(TimeTemplate.all_objects.filter(tenant=tenant).count(), 3)
         self.assertEqual(Employee.all_objects.filter(tenant=tenant).count(), 2)

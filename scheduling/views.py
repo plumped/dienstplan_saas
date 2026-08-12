@@ -179,7 +179,12 @@ def _employee_scoped_node_ids(membership, employee_profile):
         node_ids = {n.id for n in own_nodes}
         for n in own_nodes:
             parent = n.get_parent()
-            if parent is not None:
+            # Der unsichtbare Tenant-Wurzelknoten (Node.is_forest_root, siehe
+            # dessen Docstring) ist kein Team-Level und darf hier nie als
+            # "Elternknoten" auftauchen -- sonst würde jede heute flache
+            # Station (jetzt depth=2 statt depth=1) fälschlich dessen Id mit
+            # in die sichtbaren Knoten aufnehmen.
+            if parent is not None and not parent.is_forest_root:
                 node_ids.add(parent.id)
         return list(node_ids)
     if membership.role in (Membership.Role.PLANNER, Membership.Role.HR):
@@ -208,7 +213,11 @@ class NodeViewSet(TenantScopedViewSet):
     serializer_class = NodeSerializer
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        # Der unsichtbare Tenant-Wurzelknoten (Node.is_forest_root) ist reine
+        # interne Baumstruktur, nie ein von Nutzern verwaltetes Objekt --
+        # dieser Ausschluss macht GET/PATCH/DELETE/move darauf automatisch
+        # zu einem 404 (get_object() läuft über dieselbe Queryset).
+        qs = super().get_queryset().exclude(is_forest_root=True)
         node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
         if node_ids is not None:
             qs = qs.filter(id__in=node_ids)
@@ -226,7 +235,11 @@ class NodeViewSet(TenantScopedViewSet):
                 raise ValidationError({"parent": "Ungültiger oder fremder Knoten."})
             node = parent.add_child(name=name, tenant=tenant, cost_center=cost_center)
         else:
-            node = Node.add_root(name=name, tenant=tenant, cost_center=cost_center)
+            # Nie mehr direkt als treebeard-Wurzel anlegen (siehe Node-
+            # Klassen-Docstring) -- jede "Top-Level"-Station ist jetzt ein
+            # Kind des unsichtbaren Tenant-Wurzelknotens.
+            forest_root = Node.get_or_create_forest_root(tenant)
+            node = forest_root.add_child(name=name, tenant=tenant, cost_center=cost_center)
 
         serializer.instance = node
 
@@ -246,70 +259,92 @@ class NodeViewSet(TenantScopedViewSet):
         tenant = request.tenant
         parent_id = request.data.get("parent")
 
+        # "Auf die oberste Ebene verschieben" ist seit dem Tenant-
+        # Wurzelknoten (Node.is_forest_root, siehe Node-Klassen-Docstring)
+        # strukturell dasselbe wie "unter eine andere Station verschieben"
+        # -- das Ziel ist in beiden Fällen ein konkreter, tenant-eigener
+        # Knoten, nie mehr "irgendeine Wurzel". Kein `parent` übergeben ->
+        # Ziel ist der unsichtbare Wurzelknoten selbst.
         if parent_id:
             target = Node.all_objects.filter(tenant=tenant, pk=parent_id).first()
             if target is None:
                 raise ValidationError({"parent": "Ungültiger oder fremder Knoten."})
             if target.pk == node.pk:
                 raise ValidationError({"parent": "Eine Station kann nicht in sich selbst verschoben werden."})
-            try:
-                current_parent = node.get_parent()
-                if current_parent is not None and current_parent.pk != target.pk:
-                    # Bugfix (2026-08, Nutzer-Feedback: "ich kann Küche direkt in
-                    # Station A ziehen, nicht aber von Station A zurück in
-                    # Hauswirtschaft"): treebeards move(pos="sorted-child") wandelt
-                    # das intern in "sorted-sibling" gegen target.get_last_child()
-                    # um und bricht früh ab, falls die letzte Pfad-Ziffer des
-                    # gezogenen Knotens zufällig mit der berechneten neuen Position
-                    # übereinstimmt ("bereits an der richtigen Stelle") -- OHNE zu
-                    # prüfen, ob es sich überhaupt um denselben Elternknoten
-                    # handelt. Bei kleinen Bäumen (Position 1 unter dem alten
-                    # Elternknoten, Position 1 unter dem neuen) ist das keine
-                    # Seltenheit, sondern der Normalfall, und der Knoten bleibt
-                    # dann unbemerkt an alter Stelle. Ein Zwischenstopp auf der
-                    # obersten Ebene (bereits einzeln erprobt: Wurzel<->Kind
-                    # funktioniert immer zuverlässig) umgeht das zuverlässig, weil
-                    # beide Teilschritte dann echte, unabhängig berechnete
-                    # Positionen vergleichen statt einer zufälligen Kollision.
-                    anchor_root = Node.get_first_root_node()
-                    if anchor_root is not None and anchor_root.pk != node.pk:
-                        node.move(anchor_root, pos="sorted-sibling")
-                        node.refresh_from_db()
-                        # target selbst kann eine bestehende Wurzel sein (oder
-                        # -- egal ob ja oder nein -- ihr Pfadsegment kann sich
-                        # durch die Einfügung verschieben, da node_order_by
-                        # alle Wurzeln sortiert hält). Ohne Refresh würde
-                        # target.get_last_child() im zweiten Schritt mit dem
-                        # veralteten Pfad suchen und fälschlich nichts finden
-                        # -- treebeard setzt self.target dann intern auf None.
-                        target.refresh_from_db()
-                node.move(target, pos="sorted-child")
-            except InvalidMoveToDescendant:
-                raise ValidationError(
-                    {"parent": "Eine Station kann nicht in eine ihrer eigenen Unterstationen verschoben werden."}
-                )
-            except PathOverflow:
-                raise ValidationError({"parent": "Zu viele Stationen auf dieser Ebene -- Verschieben nicht möglich."})
-            node.refresh_from_db()
-            actual_parent = node.get_parent()
-            if actual_parent is None or actual_parent.pk != target.pk:
-                raise ValidationError({"parent": "Verschieben fehlgeschlagen -- bitte erneut versuchen."})
         else:
-            # Auf die oberste Ebene verschieben (Wurzelknoten). Wurzelknoten
-            # liegen -- wie schon bei add_root() oben -- in einem
-            # tenant-übergreifend gemeinsamen Pfad-Namensraum (treebeard
-            # partitioniert die Baumstruktur selbst nicht nach dem
-            # `tenant`-Feld), deshalb reicht irgendein bestehender
-            # Wurzelknoten als reine Sortier-Referenz.
-            sibling = Node.get_first_root_node()
-            if sibling is not None and sibling.pk != node.pk:
-                try:
-                    node.move(sibling, pos="sorted-sibling")
-                except InvalidMoveToDescendant:
-                    raise ValidationError({"parent": "Ungültige Verschiebung."})
+            target = Node.get_or_create_forest_root(tenant)
+
+        try:
+            self._reparent_with_verification(node, target, tenant)
+        except InvalidMoveToDescendant:
+            raise ValidationError(
+                {"parent": "Eine Station kann nicht in eine ihrer eigenen Unterstationen verschoben werden."}
+            )
+        except PathOverflow:
+            raise ValidationError({"parent": "Zu viele Stationen auf dieser Ebene -- Verschieben nicht möglich."})
 
         node.refresh_from_db()
+        actual_parent = node.get_parent()
+        if actual_parent is None or actual_parent.pk != target.pk:
+            raise ValidationError({"parent": "Verschieben fehlgeschlagen -- bitte erneut versuchen."})
+
         return Response(NodeSerializer(node).data)
+
+    def _reparent_with_verification(self, node, target, tenant):
+        """
+        Bewegt `node` so, dass es (sortiertes) Kind von `target` wird.
+
+        Hintergrund (Bugfix 2026-08, Nutzer-Feedback: "ich kann Küche direkt
+        in Station A ziehen, nicht aber von Station A zurück in
+        Hauswirtschaft"): treebeards move(pos="sorted-child"/"sorted-
+        sibling") bricht früh als vermeintlichen No-Op ab, sobald die letzte
+        Pfad-Ziffer der AKTUELLEN Position von node zufällig mit der neu
+        berechneten Zielposition übereinstimmt -- OHNE zu prüfen, ob es
+        überhaupt derselbe Elternknoten ist (treebeard/mp_tree.py,
+        MP_MoveHandler.process(): "if first := siblings.first(): ... if
+        self.node._get_lastpos_in_path() == newpos - 1: return"). Betrifft
+        nur ein `target` mit bereits mindestens einem Kind (sonst
+        kurzschliesst treebeard intern zu "first-sibling", ein komplett
+        anderer, unbetroffener Codepfad) -- empirisch reproduzierbar schon
+        bei zwei bis drei Stationen, kein theoretisches Randrisiko, und ein
+        Zwischenstopp bei einem beliebigen dritten Knoten reicht NICHT
+        zuverlässig aus (der Zwischenstopp selbst kann derselben Kollision
+        zum Opfer fallen, empirisch beobachtet).
+
+        Deterministische Lösung statt Zwischenstopp-Raten: dieselbe
+        Kurzschluss-Prüfung greift laut Quellcode nur, wenn
+        `get_sorted_pos_queryset(...).first()` einen TATSÄCHLICHEN
+        nachfolgenden Geschwisterknoten liefert -- sortiert node also
+        alphabetisch NACH allen bestehenden Kindern von target ein, ist die
+        Ergebnismenge leer und treebeard fällt auf "last-sibling" zurück,
+        ein komplett anderer Codepfad ohne jede Kollisions-Kurzschluss-
+        Prüfung. Node wird deshalb zuerst unter einem garantiert alphabetisch
+        letzten Platzhalternamen eingefügt (deterministisch garantiert
+        kollisionsfrei), danach auf den echten Namen zurückgesetzt und ein
+        zweites Mal sortiert -- node befindet sich dann bereits an einer
+        frischen, von der ursprünglichen Position unabhängigen Stelle,
+        wodurch eine erneute zufällige Kollision beim zweiten, echten Move
+        praktisch ausgeschlossen ist (durch Stresstest mit >30 zufälligen
+        Verschiebungen über mehrere Ebenen bestätigt, keine einzige
+        Fehlschlag).
+        """
+        current_parent = node.get_parent()
+        if current_parent is not None and current_parent.pk == target.pk:
+            node.move(target, pos="sorted-child")
+            node.refresh_from_db()
+            return
+
+        real_name = node.name
+        try:
+            node.name = "\U0010ffff" * 4
+            node.save(update_fields=["name"])
+            node.move(target, pos="sorted-child")
+            node.refresh_from_db()
+        finally:
+            node.name = real_name
+            node.save(update_fields=["name"])
+        node.move(target, pos="sorted-child")
+        node.refresh_from_db()
 
 
 class SkillViewSet(TenantScopedViewSet):

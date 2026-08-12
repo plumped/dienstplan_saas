@@ -68,8 +68,9 @@ def seed_demo_tenant(tenant):
     """
     from scheduling.models import AbsenceType, Employee, Employment, Node, TimeTemplate
 
-    pflege_tag = Node.add_root(name="Pflege Tag (Beispiel)", tenant=tenant)
-    pflege_nacht = Node.add_root(name="Pflege Nacht (Beispiel)", tenant=tenant)
+    forest_root = Node.get_or_create_forest_root(tenant)
+    pflege_tag = forest_root.add_child(name="Pflege Tag (Beispiel)", tenant=tenant)
+    pflege_nacht = forest_root.add_child(name="Pflege Nacht (Beispiel)", tenant=tenant)
 
     AbsenceType.objects.create(
         tenant=tenant, name="Ferien", color="#2b6e68", icon="F", deducts_vacation_days=True

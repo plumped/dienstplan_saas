@@ -5,7 +5,7 @@ from datetime import date, datetime, time, timedelta
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.db.models import Q
 from django.utils import timezone
 from simple_history.models import HistoricalRecords
@@ -137,6 +137,17 @@ class Node(MP_Node, TenantScopedModel):
     Organisationsknoten (Standort, Abteilung, Station, ...), beliebig
     verschachtelbar. Nutzt django-treebeard (Materialized Path) für
     effiziente Baumabfragen statt eines selbstgebauten parent-Felds.
+
+    Achtung Mandantentrennung: treebeard verwaltet EINEN einzigen, global
+    geteilten Namensraum für alle Wurzelknoten (path-Feld, DB-seitig
+    unique=True über die gesamte Tabelle, nicht pro Tenant) -- ohne
+    Gegenmassnahme wären alle Tenants buchstäblich Geschwister im selben
+    Baum. Deshalb bekommt jeder Tenant genau einen unsichtbaren
+    Wurzelknoten (is_forest_root=True, siehe get_or_create_forest_root()),
+    und JEDE echte Station wird als dessen Kind angelegt (add_child()),
+    NIE mehr direkt als treebeard-Wurzel (add_root()) -- Pfad-Vergabe
+    findet dadurch nur noch unter einem tenant-exklusiven Elternknoten
+    statt, nie mehr auf einer mit anderen Tenants geteilten Ebene.
     """
 
     name = models.CharField(max_length=200)
@@ -147,14 +158,58 @@ class Node(MP_Node, TenantScopedModel):
         "übergeordneten Station zu erben (siehe effective_cost_center()) -- ein Team ohne eigene "
         "Kostenstelle übernimmt so automatisch die seiner Station.",
     )
+    is_forest_root = models.BooleanField(
+        default=False,
+        help_text="Interner, für Endnutzer unsichtbarer Wurzelknoten -- genau einer pro Tenant "
+        "(siehe get_or_create_forest_root()). Echte Stationen werden nie mehr direkt als "
+        "treebeard-Wurzel angelegt, sondern immer als Kind dieses Knotens -- verhindert, dass "
+        "alle Tenants sich einen einzigen, global geteilten Namensraum auf Wurzelebene teilen.",
+    )
 
     node_order_by = ["name"]
 
     class Meta:
         ordering = ["path"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant"],
+                condition=models.Q(is_forest_root=True),
+                name="unique_forest_root_per_tenant",
+            ),
+        ]
 
     def __str__(self):
         return self.name
+
+    @classmethod
+    def get_or_create_forest_root(cls, tenant):
+        """
+        Holt den unsichtbaren Wurzelknoten des Tenants oder legt ihn beim
+        ersten Zugriff an. Die EINMALIGE add_root()-Erzeugung liegt noch auf
+        der geteilten treebeard-Wurzelebene (siehe Klassen-Docstring) und
+        kann deshalb theoretisch mit dem Wurzelknoten eines fremden Tenants
+        kollidieren (IntegrityError durch node_order_by-Sortierung) -- aber
+        nur EINMAL pro Tenant-Lebenszeit, nicht mehr bei jeder Stations-/
+        Team-Anlage wie zuvor. Ein erneutes Nachschlagen nach IntegrityError
+        deckt sowohl diesen seltenen Kollisionsfall als auch eine echte Race
+        Condition zwischen zwei gleichzeitigen Requests desselben Tenants ab
+        -- die UniqueConstraint oben verhindert in letzterem Fall
+        zuverlässig einen zweiten Wurzelknoten, exakt das gleiche
+        Retry-Muster wie core.onboarding.unique_tenant_slug.
+        """
+        existing = cls.all_objects.filter(tenant=tenant, is_forest_root=True).first()
+        if existing is not None:
+            return existing
+        for attempt in range(2):
+            try:
+                with transaction.atomic():
+                    return cls.add_root(name="Wurzel", tenant=tenant, is_forest_root=True)
+            except IntegrityError:
+                existing = cls.all_objects.filter(tenant=tenant, is_forest_root=True).first()
+                if existing is not None:
+                    return existing
+                if attempt == 1:
+                    raise
 
     def effective_cost_center(self):
         """

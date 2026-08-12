@@ -247,7 +247,7 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
               <option value="">— keine (oberste Ebene) —</option>
               {nodes.map((n) => (
                 <option key={n.id} value={n.id}>
-                  {"— ".repeat(Math.max(0, n.depth - 1))}
+                  {"— ".repeat(Math.max(0, n.depth - 2))}
                   {n.name}
                 </option>
               ))}
@@ -314,7 +314,7 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
                   dragSourceId === n.id ? " is-dragging" : ""
                 }`}
               >
-                <span className="entry-main" style={{ paddingLeft: `${Math.max(0, n.depth - 1) * 16}px` }}>
+                <span className="entry-main" style={{ paddingLeft: `${Math.max(0, n.depth - 2) * 16}px` }}>
                   <span className="drag-handle" title="Mit gedrückter Maustaste ziehen zum Verschieben">
                     ⠿
                   </span>

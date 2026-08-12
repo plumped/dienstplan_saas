@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../api.js";
 
-export default function LoginForm({ onSuccess }) {
+export default function LoginForm({ onSuccess, onBack }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -58,6 +58,14 @@ export default function LoginForm({ onSuccess }) {
         <button type="submit" disabled={busy}>
           {busy ? "Anmelden …" : "Anmelden"}
         </button>
+
+        {onBack && (
+          <p className="landing-login-link">
+            <button type="button" className="link-button" onClick={onBack}>
+              Zurück
+            </button>
+          </p>
+        )}
       </form>
     </div>
   );

@@ -132,6 +132,16 @@ export const api = {
     return data;
   },
 
+  // Self-Signup (README Block 3): Direkt-Registrierung ohne Magic-Link/
+  // E-Mail-Versand, siehe core.views.SignupView. Response enthält direkt ein
+  // Token -- kein zweiter Login-Schritt nötig, deshalb setToken() hier schon
+  // wie bei login() oben.
+  signup: async (payload) => {
+    const data = await request("/signup/", { method: "POST", body: payload });
+    setToken(data.token);
+    return data;
+  },
+
   getMe: () => request("/me/"),
   // Erzwungener Passwortwechsel nach admin-seitiger Direktanlage (Nutzer-
   // Feedback 2026-08, siehe core.views.ChangePasswordView).
@@ -222,6 +232,50 @@ export const api = {
   // Nutzer-Feedback (2026-08, Nachtrag): Gegenstück zu deactivateEmployee --
   // siehe scheduling.views.EmployeeViewSet.reactivate.
   reactivateEmployee: (id) => request(`/employees/${id}/reactivate/`, { method: "POST", affectsBalance: true }),
+  // Bislang nirgends exponiert (Standard-ModelViewSet.destroy) -- README
+  // Block 3, Setup-Wizard Schritt 4: Löschen der vorbefüllten Beispiel-
+  // Mitarbeitenden, siehe core.onboarding.seed_demo_tenant.
+  deleteEmployee: (id) => request(`/employees/${id}/`, { method: "DELETE", affectsBalance: true }),
+
+  // CSV-Mitarbeitenden-Import (README Block 3, Setup-Wizard Schritt 4), siehe
+  // scheduling.views.EmployeeViewSet.import_csv. request() kann kein
+  // FormData transportieren (JSONifiziert den Body immer) -- eigener
+  // fetch()-Aufruf ohne Content-Type-Header, der Browser setzt die
+  // multipart-Boundary selbst.
+  importEmployeesCsv: async (file) => {
+    const token = getToken();
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch(`${API_BASE}/employees/import-csv/`, {
+      method: "POST",
+      headers: token ? { Authorization: `Token ${token}` } : {},
+      body: formData,
+    });
+    if (res.status === 401) {
+      setToken(null);
+      throw new Error("unauthorized");
+    }
+    if (!res.ok) throw await parseErrorResponse(res);
+    notifyBalanceChanged();
+    return res.json();
+  },
+  // Beispiel-CSV zum Download, gleiches Blob-Muster wie downloadPayrollExportCsv.
+  downloadEmployeeCsvTemplate: async () => {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/employees/import-csv-template/`, {
+      headers: token ? { Authorization: `Token ${token}` } : {},
+    });
+    if (!res.ok) throw await parseErrorResponse(res);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "mitarbeitende-vorlage.csv";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  },
 
   getTimeTemplates: () => requestAllPages("/time-templates/"),
   // Stammdatenpflege (Nutzer-Feedback 2026-08): gleiches Muster wie

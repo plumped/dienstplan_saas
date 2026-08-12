@@ -256,7 +256,7 @@ entstanden sind, nicht neu sortiert nach Status):
 |---|---|---|---|
 | 1 | Schweizer Arbeitsgesetz (ArG) | ✅ 16 von 17 Punkten erledigt | Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 (Aufbewahrungspflicht) |
 | 2 | Kernfunktionen Praxisalltag | 31 von 32 Punkten erledigt | Automatisierte Planung (19) |
-| 3 | Onboarding & Self-Signup | Konzept steht, nichts umgesetzt | kompletter Block |
+| 3 | Onboarding & Self-Signup | ✅ Punkte 1-4 umgesetzt | Punkt 4: Setup-Wizard mit dem Direktanlage-Formular aus Block 2.1 verschmelzen statt separat zu lassen |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
 | 5 | Datenschutz (revDSG) & Rechtliches | nichts umgesetzt | kompletter Block (AVV, Löschkonzept, Betroffenenrechte) |
 | 6 | Abrechnung (nur falls kommerziell verkauft) | nichts umgesetzt | Zahlungsanbieter, Trial/Limits |
@@ -3080,35 +3080,47 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
 zu einem B2B-Vertical-SaaS für Heime/Kliniken, wo Datenschutz (revDSG) und ArG-Konformität eine
 höhere Vertrauenshürde als bei einem generischen Tool bedeuten. Landing Page mit zwei
 gleichwertigen CTAs ("Kostenlos testen" für Self-Serve, "Demo buchen" für Ketten/grössere Häuser,
-die vor dem Hochladen echter Mitarbeiterdaten mit jemandem sprechen wollen), Self-Serve-Pfad führt
-über einen vorbefüllten Demo-Tenant (Aha-Moment vor der Commitment-Hürde) in einen geführten
-Setup-Wizard statt direkt in den Django-Admin.
+die vor dem Hochladen echter Mitarbeiterdaten mit jemandem sprechen wollen).
 
-1. **Landing Page** (eigenständige Marketing-Seite ausserhalb der App, kein Login nötig):
-   Nutzenversprechen konkret statt generisch (z. B. "ArG-konforme Planung ohne Excel-Chaos" statt
-   "Software für Dienstpläne"). Zwei CTAs nebeneinander:
-   - **"Kostenlos testen"** → Self-Serve-Signup-Flow (Punkt 2).
-   - **"Demo buchen"** → Kontaktformular/Kalender-Link, sales-assistiertes Onboarding für grössere
-     Institutionen (kein Code-Task, aber als bewusster zweiter Pfad einzuplanen, nicht nachträglich
-     anzuflicken).
-2. **Self-Serve-Signup-Flow**: E-Mail-basiert, Magic Link statt Passwort-Ping-Pong beim ersten
-   Login (weniger Reibung als klassisches Passwort-Setzen). Landet nach dem Signup sofort in einem
-   vorbefüllten **Demo-Tenant** (Beispiel-Stationen/-Mitarbeitende/-Dienstplan zum Anfassen), bevor
-   der eigene, echte Tenant angelegt wird — senkt die Hürde, weil man das Produkt fühlt, bevor man
-   sich für echte Personendaten committen muss.
-3. **Geführter Setup-Wizard** für den eigenen Tenant (ersetzt die heutige Django-Admin-Pflicht):
-   Tenant-Name → Kanton (für Feiertagskalender, Block 1.4) → erste Station(en)/Teams → Schichttypen
-   (mit sinnvollen Vorlagen zur Auswahl statt Leerformular) → Mitarbeitende (CSV-Import statt
-   Einzelanlage). Mit sichtbarer Fortschritts-Checkliste (Muster: Linear/Notion-Onboarding) statt
-   alles auf einer langen Formularseite abzufragen.
+**Revision (2026-08, Nutzer-Feedback: "Reviewe aber den gesamten Task ob der noch sinn macht mit
+den bisherigen vergangenen entwicklungen")**: Punkt 2 skizzierte ursprünglich einen
+E-Mail-basierten Magic-Link-Signup -- das widersprach der seither mehrfach dokumentierten
+Grundsatzentscheidung gegen jeden E-Mail-Versand-Flow (siehe Punkt 6/Block 2.1: *"Applikationsmanager
+wird den Benutzer anlegen und nicht per Mail einladen"*). Umgesetzt wurde stattdessen ein
+**Direkt-Signup**: die Person setzt beim Signup sofort ihr eigenes Passwort (kein Magic-Link, keine
+E-Mail-Infrastruktur), wird direkt eingeloggt und landet in einem **einzigen, sofort
+vorbefüllten Tenant** mit Beispieldaten (statt zwei getrennter Demo-/Echt-Tenants mit späterem
+Wechsel) -- der Setup-Wizard bietet an, die Beispieldaten zu löschen/ersetzen.
+
+1. ✅ **Landing Page** (`LandingPage.jsx`, ausgeloggter Startbildschirm statt direkt der
+   Login-Maske): Nutzenversprechen konkret statt generisch ("ArG-konforme Dienstplanung ohne
+   Excel-Chaos"), vier Feature-Kacheln, zwei CTAs nebeneinander -- "Kostenlos testen" (→ Punkt 2)
+   und "Demo buchen" (reiner `mailto:`-Link, bewusst kein Code-Task, siehe Punkt 5 unten).
+2. ✅ **Self-Serve-Signup-Flow, direkt statt Magic-Link** (`SignupForm.jsx` +
+   `POST /api/signup/`, `core.views.SignupView`): erzeugt Tenant + User + Admin-Membership +
+   Beispieldaten in einem Zug (`core/onboarding.py::seed_demo_tenant` -- 2 Stationen, 3
+   Absenzarten, 3 Schichttypen, 2 Beispiel-Mitarbeitende, alle Demo-Objekte mit
+   `"(Beispiel)"`-Namenssuffix ausser den Absenzarten, die echte Dauerkonfiguration sind) und
+   loggt sofort per Token ein (`AllowAny`, neben `obtain_auth_token` der einzige unauthentifizierte
+   Schreib-Endpoint der API). `Tenant.onboarding_completed` (default `True`, nur hier `False`
+   gesetzt) steuert, ob das Frontend statt der normalen App den Setup-Wizard zeigt.
+3. ✅ **Geführter Setup-Wizard** (`OnboardingWizard.jsx` + `OnboardingStepCanton/Stations/
+   ShiftTypes/Employees.jsx`, ersetzt die vorherige Django-Admin-Pflicht für die Erstkonfiguration):
+   Kanton (Feiertagskalender, Block 2.7 Punkt 7) → Stationen (Demo-Stationen umbenennen oder
+   weitere hinzufügen) → Schichttypen (hartcodierte Presets zur Auswahl: Früh-/Spät-/Tag-/
+   Nachtdienst) → Mitarbeitende (CSV-Import via `POST /api/employees/import-csv/` mit
+   Zeilen-Fehlerbericht statt Komplettabbruch, `GET .../import-csv-template/` für die
+   Beispiel-Vorlage, plus die Möglichkeit, die Demo-Stationen/-Mitarbeitenden zu löschen).
+   Sichtbarer Fortschritts-Indikator, "Später fertigstellen" ist auf jedem Schritt klickbar (kein
+   Zwang, jedes Tenant-Feld hat sinnvolle Defaults) und setzt einfach `onboarding_completed=true`.
 4. **Konten für weitere Mitarbeitende anlegen** — inzwischen NICHT mehr per E-Mail-Einladung
    geplant (Grundsatzentscheid revidiert, siehe Punkt 6): Block 2.1 hat mit
    `EmployeeViewSet.setup_access`/`EmployeeSettings.jsx` (Direktanlage direkt im
    Mitarbeiter-Formular, siehe dort für die Historie inkl. der zwischenzeitlich wieder
    verworfenen separaten "Mitglieder"-Ansicht) bereits eine Direktanlage (Username + Rolle +
    einmalig angezeigtes Temp-Passwort, erzwungener Wechsel beim ersten Login) für den laufenden
-   Betrieb umgesetzt. Für Block 3 bleibt offen: dieselbe Direktanlage in den Setup-Wizard
-   (Punkt 3) integrieren, statt sie separat in "Einstellungen" zu suchen.
+   Betrieb umgesetzt. *Noch offen*: dieselbe Direktanlage in den Setup-Wizard (Punkt 3)
+   integrieren, statt sie separat in "Einstellungen" zu suchen.
 5. ✅ **Passwort-Reset bei vergessenem Passwort** (2026-08, Nutzer-Feedback: "Ja mach passwort
    reset"): wie hier ursprünglich skizziert läuft der Reset über den Applikationsmanager statt
    per Magic-Link/E-Mail (weiterhin keine E-Mail-Infrastruktur, siehe Punkt 6) --

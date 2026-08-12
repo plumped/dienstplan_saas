@@ -5,17 +5,20 @@ import AbsencePanel from "./components/AbsencePanel.jsx";
 import BalanceBadge from "./components/BalanceBadge.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import ForcePasswordChangeModal from "./components/ForcePasswordChangeModal.jsx";
+import LandingPage from "./components/LandingPage.jsx";
 import LoginForm from "./components/LoginForm.jsx";
 import MonthNav from "./components/MonthNav.jsx";
 import NodeSelector from "./components/NodeSelector.jsx";
+import OnboardingWizard from "./components/OnboardingWizard.jsx";
 import PlanGrid from "./components/PlanGrid.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
+import SignupForm from "./components/SignupForm.jsx";
 import TimeRecordOverview from "./components/TimeRecordOverview.jsx";
 import TimeRecordPanel from "./components/TimeRecordPanel.jsx";
 import TradeRequestOverview from "./components/TradeRequestOverview.jsx";
 import TradeRequestPanel from "./components/TradeRequestPanel.jsx";
 import YearPlan from "./components/YearPlan.jsx";
-import { canManageSchedule, canViewScheduleReports, ROLE_LABELS } from "./roles.js";
+import { canManageSchedule, canViewScheduleReports, isTenantAdmin, ROLE_LABELS } from "./roles.js";
 
 // Block 2.4: taskCountKey verweist auf GET /api/me/: task_counts (siehe
 // core.views._task_counts) -- Grundlage für die Zähler-Badges neben den
@@ -58,6 +61,10 @@ export function relevantNodeIds(nodes, nodeId) {
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(api.isLoggedIn());
+  // README Block 3: Bildschirm für ausgeloggte Besucher, bevor überhaupt ein
+  // Login-Formular erscheint -- "landing"|"login"|"signup", nur relevant
+  // solange !loggedIn (siehe Verzweigung unten).
+  const [screen, setScreen] = useState("landing");
   const [me, setMe] = useState(null);
   const [nodes, setNodes] = useState([]);
   const [nodeId, setNodeId] = useState(null);
@@ -138,26 +145,30 @@ export default function App() {
     if (year && month) setPeriod({ year, month });
   }
 
+  // Bugfix (Nutzer-Feedback 2026-08): App.jsx bleibt beim Login-Wechsel
+  // gemountet (nur `loggedIn` togglet) -- tab/nodeId von einer VORHERIGEN
+  // Sitzung blieben sonst stehen. Marco Bianchi landete so nach dem
+  // erzwungenen Passwortwechsel auf "Einstellungen", weil dort zuvor ein
+  // Admin unterwegs war, obwohl der Tab-Button für seine Rolle gar nicht
+  // sichtbar ist. Jeder frische Login/Signup startet deshalb explizit auf
+  // dem Planblatt; nodeId auf null setzt den untenstehenden
+  // Default-Auswahl-Effekt zurück, der dann automatisch die (bereits
+  // backend-seitig auf die eigene(n) Station(en) gescopte) erste Station
+  // wählt. Von LoginForm UND SignupForm aufgerufen (README Block 3).
+  function handleAuthSuccess() {
+    setTab("grid");
+    setNodeId(null);
+    setLoggedIn(true);
+  }
+
   if (!loggedIn) {
-    return (
-      <LoginForm
-        onSuccess={() => {
-          // Bugfix (Nutzer-Feedback 2026-08): App.jsx bleibt beim Login-
-          // Wechsel gemountet (nur `loggedIn` togglet) -- tab/nodeId von
-          // einer VORHERIGEN Sitzung blieben sonst stehen. Marco Bianchi
-          // landete so nach dem erzwungenen Passwortwechsel auf
-          // "Einstellungen", weil dort zuvor ein Admin unterwegs war,
-          // obwohl der Tab-Button für seine Rolle gar nicht sichtbar ist.
-          // Jeder frische Login startet deshalb explizit auf dem Planblatt;
-          // nodeId auf null setzt den untenstehenden Default-Auswahl-Effekt
-          // zurück, der dann automatisch die (bereits backend-seitig auf
-          // die eigene(n) Station(en) gescopte) erste Station wählt.
-          setTab("grid");
-          setNodeId(null);
-          setLoggedIn(true);
-        }}
-      />
-    );
+    if (screen === "signup") {
+      return <SignupForm onSuccess={handleAuthSuccess} onBack={() => setScreen("landing")} />;
+    }
+    if (screen === "login") {
+      return <LoginForm onSuccess={handleAuthSuccess} onBack={() => setScreen("landing")} />;
+    }
+    return <LandingPage onStart={() => setScreen("signup")} onLogin={() => setScreen("login")} />;
   }
 
   // Verteidigungslinie gegen genau dieses Szenario, falls `tab` aus
@@ -176,6 +187,22 @@ export default function App() {
     return (
       <ForcePasswordChangeModal
         onDone={() => setMe((prev) => ({ ...prev, must_change_password: false }))}
+      />
+    );
+  }
+
+  // README Block 3: frisch per Self-Signup angelegte Tenants (siehe
+  // core.views.SignupView) starten mit onboarding_completed=False -- die
+  // signup-erzeugte Admin-Membership sieht statt der normalen App zuerst den
+  // Einrichtungsassistenten. isTenantAdmin-Guard bewusst: ein hypothetischer
+  // Nicht-Admin mit onboarding_completed=false fällt sauber in die normale
+  // App durch statt in einem Wizard festzustecken, für den er keine Rechte
+  // hat (Node/TimeTemplate-Erzeugung braucht IsTenantManager, der
+  // Kanton-Schritt IsTenantAdmin).
+  if (me && me.tenant_onboarding_completed === false && isTenantAdmin(me)) {
+    return (
+      <OnboardingWizard
+        onFinished={() => setMe((prev) => ({ ...prev, tenant_onboarding_completed: true }))}
       />
     );
   }
@@ -242,6 +269,7 @@ export default function App() {
           onClick={() => {
             api.logout();
             setLoggedIn(false);
+            setScreen("landing");
             setTab("grid");
             setNodeId(null);
           }}

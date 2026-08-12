@@ -152,6 +152,7 @@ class MeViewTests(APITestCase):
             {
                 "role": None,
                 "tenant_name": None,
+                "tenant_onboarding_completed": None,
                 "employee": None,
                 "task_counts": {"absences": 0, "trades": 0, "time_records": 0},
             },

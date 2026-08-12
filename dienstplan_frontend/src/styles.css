@@ -3031,3 +3031,249 @@ thead .col-employee {
     padding: 12px;
   }
 }
+
+/* ---------- Landing / Signup / Onboarding (README Block 3) ---------- */
+
+.link-button {
+  border: none;
+  background: transparent;
+  color: var(--primary);
+  font-weight: 600;
+  padding: 0;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+.landing-screen {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 40px;
+  padding: 56px 24px;
+  background: linear-gradient(180deg, var(--bg) 0%, var(--primary-soft) 100%);
+}
+
+.landing-hero {
+  max-width: 560px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.landing-hero h1 {
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+.landing-sub {
+  color: var(--ink-muted);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.landing-cta-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.landing-cta-row .btn-primary {
+  padding: 10px 20px;
+  font-size: 14px;
+}
+
+.landing-login-link {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.landing-feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  max-width: 900px;
+  width: 100%;
+}
+
+.landing-feature-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  box-shadow: 0 8px 30px rgba(28, 35, 33, 0.05);
+}
+
+.landing-feature-tile h3 {
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.landing-feature-tile p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+  line-height: 1.5;
+}
+
+.signup-card {
+  width: 380px;
+}
+
+.signup-name-row {
+  display: flex;
+  gap: 12px;
+}
+
+.signup-name-row label {
+  flex: 1;
+}
+
+.signup-field-hint {
+  margin: -8px 0 0;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.onboarding-screen {
+  min-height: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 24px;
+  background: linear-gradient(180deg, var(--bg) 0%, var(--primary-soft) 100%);
+}
+
+.onboarding-card {
+  width: 480px;
+  max-width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  box-shadow: 0 8px 30px rgba(28, 35, 33, 0.06);
+}
+
+.onboarding-card h1 {
+  font-size: 20px;
+  text-align: center;
+}
+
+.onboarding-steps {
+  display: flex;
+  width: 100%;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.onboarding-step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  padding: 6px 4px;
+  border-bottom: 2px solid var(--border);
+}
+
+.onboarding-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 10px;
+}
+
+.onboarding-step.is-current {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.onboarding-step.is-current .onboarding-step-index {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+
+.onboarding-step.is-done {
+  color: var(--ink);
+}
+
+.onboarding-step.is-done .onboarding-step-index {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.onboarding-step-body {
+  width: 100%;
+}
+
+.onboarding-step-body h2 {
+  font-size: 16px;
+}
+
+.onboarding-node-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.onboarding-node-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.onboarding-node-row input {
+  flex: 1;
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.onboarding-preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.onboarding-import-result {
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.onboarding-import-errors {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--warn);
+  font-size: 12.5px;
+}
+
+.onboarding-footer {
+  margin-top: 4px;
+}

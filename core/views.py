@@ -1,23 +1,30 @@
+from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.crypto import get_random_string
 from rest_framework import viewsets
+from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.models import Membership, TenantHolidayOverride
+from core.models import Membership, Tenant, TenantHolidayOverride
+from core.onboarding import seed_demo_tenant, unique_tenant_slug
 from core.permissions import IsTenantAdmin
 from core.serializers import (
     MembershipCreateSerializer,
     MembershipSerializer,
+    SignupSerializer,
     TenantHolidayOverrideSerializer,
     TenantSerializer,
 )
 from core.tenancy import resolve_membership_for_user
+
+User = get_user_model()
 
 _EMPTY_TASK_COUNTS = {"absences": 0, "trades": 0, "time_records": 0}
 
@@ -130,7 +137,13 @@ class MeView(APIView):
         membership = resolve_membership_for_user(request.user)
         if not membership:
             return Response(
-                {"role": None, "tenant_name": None, "employee": None, "task_counts": dict(_EMPTY_TASK_COUNTS)}
+                {
+                    "role": None,
+                    "tenant_name": None,
+                    "tenant_onboarding_completed": None,
+                    "employee": None,
+                    "task_counts": dict(_EMPTY_TASK_COUNTS),
+                }
             )
 
         employee = Employee.all_objects.filter(tenant=membership.tenant, user=request.user).first()
@@ -138,6 +151,10 @@ class MeView(APIView):
             {
                 "role": membership.role,
                 "tenant_name": membership.tenant.name,
+                # Nutzer-Feedback (2026-08, README Block 3): Self-Signup landet direkt in
+                # OnboardingWizard.jsx, solange dieses Flag False ist -- siehe
+                # core.views.SignupView/core.onboarding.seed_demo_tenant.
+                "tenant_onboarding_completed": membership.tenant.onboarding_completed,
                 "must_change_password": request.user.must_change_password,
                 # Nutzer-Feedback (2026-08): "oben Links sollte auch noch der
                 # Name stehen, damit man weiss wer gerade eingeloggt ist" --
@@ -184,6 +201,60 @@ class ChangePasswordView(APIView):
         request.user.must_change_password = False
         request.user.save(update_fields=["password", "must_change_password"])
         return Response({"detail": "Passwort geändert."})
+
+
+class SignupView(APIView):
+    """
+    Self-Signup (README Block 3): erzeugt Tenant + User + Admin-Membership +
+    Demo-Daten in einem Zug und loggt sofort ein. Nutzer-Feedback (2026-08):
+    Direkt-Signup ohne Magic-Link/E-Mail-Versand, konsistent mit der
+    Grundsatzentscheidung in core.serializers.MembershipCreateSerializer --
+    hier setzt die anlegende Person direkt ihr eigenes Passwort statt ein
+    Temp-Passwort zu erhalten.
+
+    Bewusst KEIN TenantScopedAPIMixin (es existiert noch kein Tenant/keine
+    Membership für diesen Request) und AllowAny -- neben obtain_auth_token
+    der einzige bewusst unauthentifizierte Schreib-Endpoint der API.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = SignupSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        for _attempt in range(2):
+            slug = unique_tenant_slug(data["tenant_name"])
+            try:
+                with transaction.atomic():
+                    tenant = Tenant.objects.create(
+                        name=data["tenant_name"],
+                        slug=slug,
+                        canton=data.get("canton", ""),
+                        onboarding_completed=False,
+                    )
+                    user = User.objects.create_user(
+                        username=data["username"],
+                        password=data["password"],
+                        first_name=data.get("first_name", ""),
+                        last_name=data.get("last_name", ""),
+                        email=data.get("email", ""),
+                        must_change_password=False,
+                    )
+                    Membership.objects.create(user=user, tenant=tenant, role=Membership.Role.ADMIN)
+                    seed_demo_tenant(tenant)
+                    token, _created = Token.objects.get_or_create(user=user)
+                break
+            except IntegrityError:
+                continue
+        else:
+            raise ValidationError("Firma konnte nicht angelegt werden, bitte erneut versuchen.")
+
+        return Response(
+            {"token": token.key, "tenant_name": tenant.name, "username": user.username},
+            status=201,
+        )
 
 
 class TenantView(TenantScopedAPIMixin, APIView):

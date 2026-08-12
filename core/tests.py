@@ -10,8 +10,9 @@ from rest_framework.test import APITestCase
 from core.context import get_current_tenant, set_current_tenant
 from core.middleware import ADMIN_TENANT_SESSION_KEY, TenantContextCleanupMiddleware
 from core.models import Membership, Tenant, TenantHolidayOverride
+from core.onboarding import seed_demo_tenant, unique_tenant_slug
 from core.tenancy import resolve_tenant_for_user
-from scheduling.models import Employee, Node, Skill
+from scheduling.models import AbsenceType, Employee, Employment, Node, Skill, TimeTemplate
 
 User = get_user_model()
 
@@ -860,3 +861,207 @@ class ChangePasswordViewTests(APITestCase):
         self.user.refresh_from_db()
         self.assertFalse(self.user.must_change_password)
         self.assertTrue(self.user.check_password("ein-neues-sicheres-pw-99"))
+
+
+class SeedDemoTenantTests(TestCase):
+    """
+    Unit-Tests für core.onboarding.seed_demo_tenant() (README Block 3) --
+    unabhängig von SignupView gegen einen plain Tenant.objects.create()
+    aufgerufen, wie in der ganz überwiegenden Mehrheit der bestehenden Tests
+    dieser Datei.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Demo AG", slug="demo-ag-seed")
+        seed_demo_tenant(self.tenant)
+
+    def test_creates_two_beispiel_nodes(self):
+        names = set(Node.all_objects.filter(tenant=self.tenant).values_list("name", flat=True))
+        self.assertEqual(names, {"Pflege Tag (Beispiel)", "Pflege Nacht (Beispiel)"})
+
+    def test_creates_three_absence_types_without_beispiel_suffix(self):
+        types = AbsenceType.all_objects.filter(tenant=self.tenant)
+        self.assertEqual(types.count(), 3)
+        names = set(types.values_list("name", flat=True))
+        self.assertEqual(names, {"Ferien", "Krankheit", "Sonstiges"})
+        for name in names:
+            self.assertNotIn("(Beispiel)", name)
+        ferien = types.get(name="Ferien")
+        self.assertTrue(ferien.deducts_vacation_days)
+        krankheit = types.get(name="Krankheit")
+        self.assertTrue(krankheit.counts_as_sick_leave)
+
+    def test_creates_three_beispiel_time_templates(self):
+        names = set(TimeTemplate.all_objects.filter(tenant=self.tenant).values_list("name", flat=True))
+        self.assertEqual(
+            names,
+            {"Frühdienst (Beispiel)", "Spätdienst (Beispiel)", "Nachtdienst (Beispiel)"},
+        )
+
+    def test_creates_two_beispiel_employees_with_employments(self):
+        employees = Employee.all_objects.filter(tenant=self.tenant)
+        self.assertEqual(employees.count(), 2)
+        for employee in employees:
+            self.assertEqual(employee.last_name, "(Beispiel)")
+        self.assertEqual(Employment.objects.filter(tenant=self.tenant).count(), 2)
+        anna = employees.get(first_name="Anna")
+        self.assertEqual(anna.employment_pct, 100)
+        self.assertEqual(list(anna.nodes.values_list("name", flat=True)), ["Pflege Tag (Beispiel)"])
+        peter = employees.get(first_name="Peter")
+        self.assertEqual(peter.employment_pct, 80)
+        self.assertEqual(list(peter.nodes.values_list("name", flat=True)), ["Pflege Nacht (Beispiel)"])
+
+    def test_creates_no_shift_assignments(self):
+        from scheduling.models import ShiftAssignment
+
+        self.assertEqual(ShiftAssignment.all_objects.filter(tenant=self.tenant).count(), 0)
+
+
+class UniqueTenantSlugTests(TestCase):
+    """core.onboarding.unique_tenant_slug() -- Kollisionsauflösung mit numerischem Suffix."""
+
+    def test_derives_slug_from_name(self):
+        self.assertEqual(unique_tenant_slug("Sonnenhof AG"), "sonnenhof-ag")
+
+    def test_appends_suffix_on_collision(self):
+        Tenant.objects.create(name="Sonnenhof AG", slug="sonnenhof-ag")
+        self.assertEqual(unique_tenant_slug("Sonnenhof AG"), "sonnenhof-ag-2")
+        Tenant.objects.create(name="Sonnenhof AG", slug="sonnenhof-ag-2")
+        self.assertEqual(unique_tenant_slug("Sonnenhof AG"), "sonnenhof-ag-3")
+
+    def test_blank_name_falls_back_to_tenant(self):
+        self.assertEqual(unique_tenant_slug(""), "tenant")
+
+
+class SignupViewTests(APITestCase):
+    """
+    Self-Signup (README Block 3): Direkt-Registrierung ohne Magic-Link/
+    E-Mail-Versand, siehe core.views.SignupView-Docstring.
+    """
+
+    def _payload(self, **overrides):
+        payload = {
+            "tenant_name": "Sonnenhof AG",
+            "canton": "ZH",
+            "first_name": "Max",
+            "last_name": "Muster",
+            "email": "max@example.com",
+            "username": "maxmuster",
+            "password": "SuperSicher!2026",
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_signup_is_allowed_without_authentication(self):
+        response = self.client.post("/api/signup/", self._payload(), format="json")
+        self.assertEqual(response.status_code, 201)
+
+    def test_signup_creates_tenant_user_membership_and_seed_data(self):
+        response = self.client.post("/api/signup/", self._payload(), format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(set(response.data.keys()), {"token", "tenant_name", "username"})
+
+        tenant = Tenant.objects.get(slug="sonnenhof-ag")
+        self.assertFalse(tenant.onboarding_completed)
+        self.assertEqual(tenant.canton, "ZH")
+
+        user = User.objects.get(username="maxmuster")
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+        self.assertFalse(user.must_change_password)
+        self.assertEqual(user.email, "max@example.com")
+        self.assertTrue(user.check_password("SuperSicher!2026"))
+
+        membership = Membership.objects.get(tenant=tenant, user=user)
+        self.assertEqual(membership.role, Membership.Role.ADMIN)
+
+        self.assertEqual(Node.all_objects.filter(tenant=tenant).count(), 2)
+        self.assertEqual(AbsenceType.all_objects.filter(tenant=tenant).count(), 3)
+        self.assertEqual(TimeTemplate.all_objects.filter(tenant=tenant).count(), 3)
+        self.assertEqual(Employee.all_objects.filter(tenant=tenant).count(), 2)
+
+    def test_token_from_response_authenticates_immediately(self):
+        response = self.client.post("/api/signup/", self._payload(), format="json")
+        token = response.data["token"]
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token}")
+        me_response = self.client.get("/api/me/")
+        self.assertEqual(me_response.status_code, 200)
+        self.assertEqual(me_response.data["role"], Membership.Role.ADMIN)
+        self.assertFalse(me_response.data["tenant_onboarding_completed"])
+
+    def test_duplicate_username_is_rejected(self):
+        User.objects.create_user(username="maxmuster", password="irgendein-pw-123!")
+        response = self.client.post("/api/signup/", self._payload(), format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("username", response.data)
+
+    def test_weak_password_is_rejected(self):
+        response = self.client.post("/api/signup/", self._payload(password="1234"), format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("password", response.data)
+        self.assertFalse(User.objects.filter(username="maxmuster").exists())
+
+    def test_same_tenant_name_twice_gets_different_slugs(self):
+        first = self.client.post("/api/signup/", self._payload(username="erster"), format="json")
+        second = self.client.post(
+            "/api/signup/", self._payload(username="zweiter"), format="json"
+        )
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        slugs = set(Tenant.objects.filter(name="Sonnenhof AG").values_list("slug", flat=True))
+        self.assertEqual(slugs, {"sonnenhof-ag", "sonnenhof-ag-2"})
+
+    def test_optional_fields_may_be_omitted(self):
+        response = self.client.post(
+            "/api/signup/",
+            {"tenant_name": "Minimal AG", "username": "minimaluser", "password": "SuperSicher!2026"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        tenant = Tenant.objects.get(slug="minimal-ag")
+        self.assertEqual(tenant.canton, "")
+        user = User.objects.get(username="minimaluser")
+        self.assertEqual(user.email, "")
+
+
+class TenantOnboardingCompletedTests(APITestCase):
+    """
+    Tenant.onboarding_completed (README Block 3): default=True hält jeden
+    bestehenden Tenant.objects.create()-Aufruf (Django-Admin, Fixtures, alle
+    anderen Tests dieser Datei) unverändert sofort nutzbar -- nur
+    core.views.SignupView setzt es explizit auf False.
+    """
+
+    def test_plain_tenant_create_defaults_to_completed(self):
+        tenant = Tenant.objects.create(name="Klinik Default", slug="klinik-default-onb")
+        self.assertTrue(tenant.onboarding_completed)
+
+    def test_me_exposes_field(self):
+        tenant = Tenant.objects.create(name="Klinik Default", slug="klinik-default-onb-me")
+        user = User.objects.create_user(username="admin-onb", password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=tenant, role=Membership.Role.ADMIN)
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["tenant_onboarding_completed"])
+
+    def test_admin_can_patch_field(self):
+        tenant = Tenant.objects.create(name="Klinik Default", slug="klinik-default-onb-patch", onboarding_completed=False)
+        user = User.objects.create_user(username="admin-onb-patch", password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=tenant, role=Membership.Role.ADMIN)
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        response = self.client.patch("/api/tenant/", {"onboarding_completed": True}, format="json")
+        self.assertEqual(response.status_code, 200)
+        tenant.refresh_from_db()
+        self.assertTrue(tenant.onboarding_completed)
+
+    def test_non_admin_cannot_patch_field(self):
+        tenant = Tenant.objects.create(name="Klinik Default", slug="klinik-default-onb-non-admin", onboarding_completed=False)
+        user = User.objects.create_user(username="planner-onb", password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        response = self.client.patch("/api/tenant/", {"onboarding_completed": True}, format="json")
+        self.assertEqual(response.status_code, 403)

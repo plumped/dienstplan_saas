@@ -1,9 +1,11 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.validators import UnicodeUsernameValidator
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils.crypto import get_random_string
 from rest_framework import serializers
 
-from core.models import Membership, Tenant, TenantHolidayOverride
+from core.models import SWISS_CANTON_CHOICES, Membership, Tenant, TenantHolidayOverride
 
 User = get_user_model()
 
@@ -42,6 +44,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "sick_pay_scale",
             "sick_pay_waiting_days",
             "canton",
+            "onboarding_completed",
         ]
         read_only_fields = ["id", "name"]
 
@@ -155,3 +158,36 @@ class MembershipCreateSerializer(serializers.ModelSerializer):
         # getattr(), siehe Serializer-Docstring).
         membership.temporary_password = temp_password
         return membership
+
+
+class SignupSerializer(serializers.Serializer):
+    """
+    Self-Signup (README Block 3): reine Validierung für core.views.SignupView --
+    die eigentliche Erzeugung spannt vier Modelle auf (Tenant/User/Membership/
+    Demo-Daten) und gehört deshalb in die View, nicht in .create() hier.
+
+    Anders als MembershipCreateSerializer (Admin legt Konto für jemand anderen an,
+    Temp-Passwort) setzt hier die signup-ausführende Person direkt ihr eigenes
+    Passwort -- konsistent mit der Nutzer-Entscheidung gegen jeden
+    Magic-Link/E-Mail-Versand-Flow, siehe core/onboarding.py-Docstring.
+    """
+
+    tenant_name = serializers.CharField(max_length=200)
+    canton = serializers.ChoiceField(choices=SWISS_CANTON_CHOICES, required=False, default="", allow_blank=True)
+    first_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    last_name = serializers.CharField(max_length=150, required=False, allow_blank=True, default="")
+    email = serializers.EmailField(required=False, allow_blank=True, default="")
+    username = serializers.CharField(max_length=150, validators=[UnicodeUsernameValidator()])
+    password = serializers.CharField(write_only=True)
+
+    def validate_username(self, value):
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("Dieser Benutzername ist bereits vergeben.")
+        return value
+
+    def validate_password(self, value):
+        try:
+            validate_password(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages)
+        return value

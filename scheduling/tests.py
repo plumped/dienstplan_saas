@@ -2,6 +2,7 @@ from datetime import date, time, timedelta
 
 from django.contrib.auth import get_user_model
 from django.core import mail
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.exceptions import ValidationError
 from django.db import connection
@@ -4121,6 +4122,101 @@ class EmployeeAccessSetupTests(APITestCase):
         self.client.patch(f"/api/memberships/{membership_id}/", {"scoped_nodes": [node.id]}, format="json")
         detail = self.client.get(f"/api/employees/{self.employee.id}/")
         self.assertEqual(detail.data["scoped_nodes"], [node.id])
+
+
+class EmployeeCsvImportTests(APITestCase):
+    """
+    CSV-Mitarbeitenden-Import (README Block 3, Setup-Wizard Schritt 4), siehe
+    EmployeeViewSet.import_csv-Docstring.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-csv")
+        self.station = Node.add_root(name="Pflege Tag", tenant=self.tenant)
+        self.admin_user = User.objects.create_user(username="admin-csv", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.employee_user = User.objects.create_user(username="employee-csv", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _upload(self, content, filename="employees.csv"):
+        return SimpleUploadedFile(filename, content.encode("utf-8-sig"), content_type="text/csv")
+
+    def test_valid_rows_are_created(self):
+        self.auth_as(self.admin_user)
+        content = (
+            "first_name,last_name,employment_pct,employment_start_date,station\n"
+            "Anna,Muster,100,2026-01-01,Pflege Tag\n"
+            "Peter,Beispiel,80,,\n"
+        )
+        response = self.client.post(
+            "/api/employees/import-csv/", {"file": self._upload(content)}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["created"], 2)
+        self.assertEqual(response.data["errors"], [])
+        self.assertEqual(Employee.objects.filter(tenant=self.tenant).count(), 2)
+        anna = Employee.objects.get(tenant=self.tenant, first_name="Anna")
+        self.assertEqual(list(anna.nodes.values_list("id", flat=True)), [self.station.id])
+
+    def test_invalid_row_reported_without_aborting_others(self):
+        self.auth_as(self.admin_user)
+        content = (
+            "first_name,last_name,employment_pct,employment_start_date,station\n"
+            "Anna,Muster,100,,\n"
+            ",Fehlt,50,,\n"
+            "Peter,Beispiel,80,,\n"
+        )
+        response = self.client.post(
+            "/api/employees/import-csv/", {"file": self._upload(content)}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["created"], 2)
+        self.assertEqual(len(response.data["errors"]), 1)
+        # Header = Zeile 1, erste Datenzeile = Zeile 2 -- die fehlerhafte Zeile ist die dritte.
+        self.assertEqual(response.data["errors"][0]["row"], 3)
+        self.assertEqual(Employee.objects.filter(tenant=self.tenant).count(), 2)
+
+    def test_station_lookup_is_tenant_scoped(self):
+        self.auth_as(self.admin_user)
+        other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-csv")
+        Node.add_root(name="Fremde Station", tenant=other_tenant)
+        content = (
+            "first_name,last_name,employment_pct,employment_start_date,station\n"
+            "Anna,Muster,100,,Fremde Station\n"
+        )
+        response = self.client.post(
+            "/api/employees/import-csv/", {"file": self._upload(content)}, format="multipart"
+        )
+        self.assertEqual(response.data["created"], 0)
+        self.assertEqual(len(response.data["errors"]), 1)
+        self.assertIn("nicht gefunden", response.data["errors"][0]["message"])
+
+    def test_missing_required_column_returns_single_400(self):
+        self.auth_as(self.admin_user)
+        content = "first_name,last_name\nAnna,Muster\n"
+        response = self.client.post(
+            "/api/employees/import-csv/", {"file": self._upload(content)}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("file", response.data)
+
+    def test_employee_role_forbidden_on_post(self):
+        self.auth_as(self.employee_user)
+        content = "first_name,last_name,employment_pct\nAnna,Muster,100\n"
+        response = self.client.post(
+            "/api/employees/import-csv/", {"file": self._upload(content)}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_role_can_download_template(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get("/api/employees/import-csv-template/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "text/csv")
 
 
 class EmployeeDeactivateTests(APITestCase):

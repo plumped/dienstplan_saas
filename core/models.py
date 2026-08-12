@@ -96,6 +96,13 @@ class Tenant(models.Model):
     slug = models.SlugField(unique=True)
     created_at = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
+    onboarding_completed = models.BooleanField(
+        default=True,
+        help_text="False nur für frisch per Self-Signup angelegte Tenants (core.views.SignupView) "
+        "-- steuert, ob das Frontend den Einrichtungsassistenten (OnboardingWizard.jsx) statt der "
+        "normalen App zeigt. Über den Django-Admin oder Fixtures/Tests angelegte Tenants bleiben "
+        "unverändert sofort nutzbar (default True).",
+    )
 
     # Pro Tenant/Branche konfigurierbare Grenzwerte für die Regel-Engine
     # (scheduling.models.ShiftAssignment.clean). Defaults entsprechen dem

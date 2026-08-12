@@ -1,9 +1,11 @@
 import calendar
 import csv
+import io
 from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from django.db.models import Count, Q
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
@@ -706,6 +708,111 @@ class EmployeeViewSet(TenantScopedViewSet):
             employee.user.save(update_fields=["is_active"])
         serializer = self.get_serializer(employee)
         return Response(serializer.data)
+
+    @action(detail=False, methods=["post"], url_path="import-csv")
+    def import_csv(self, request):
+        """
+        CSV-Mitarbeitenden-Import (README Block 3, Setup-Wizard Schritt 4):
+        Massenanlage per Datei statt einzeln über das Formular, für Tenants,
+        die von einer bestehenden Excel-/CSV-Liste umsteigen. Gleiche
+        Berechtigung wie der Rest dieses ViewSets (IsTenantManager) -- anders
+        als setup_access/deactivate/reactivate wird hier nie ein
+        User/Membership/Login angefasst, nur Employee-Stammdaten.
+
+        Erwartet `multipart/form-data` mit Feld `file` (siehe
+        api.importEmployeesCsv -- request()/JSON kann kein FormData
+        transportieren). Encoding utf-8-sig (BOM-Toleranz für Excel-Exporte),
+        Delimiter wird erkannt (Komma oder Semikolon, Excel-DE-Exporte nutzen
+        oft Semikolon), mit Komma-Fallback falls die Erkennung selbst
+        scheitert (z. B. bei nur einer Spalte).
+
+        Pro Zeile ein eigener Savepoint (transaction.atomic() je Zeile) --
+        ohne das würde ein einzelner Fehler unter Djangos atomic-Semantik die
+        gesamte Transaktion vergiften und auch bereits valide Zeilen davor
+        verwerfen. Zeilennummern sind 1-basiert INKLUSIVE Kopfzeile (Zeile 2
+        = erste Datenzeile), damit sie exakt der Zeile entsprechen, die der
+        Nutzer in Excel sieht.
+
+        `station` ist ein optionaler Name-Lookup (kein Fremdschlüssel-Wert)
+        -- tenant-gescoped über Node.all_objects, sonst könnte ein gleich
+        benannter Knoten eines fremden Tenants matchen.
+        """
+        csv_file = request.FILES.get("file")
+        if not csv_file:
+            raise ValidationError({"file": "Pflichtfeld -- keine Datei hochgeladen."})
+
+        text_stream = io.TextIOWrapper(csv_file.file, encoding="utf-8-sig")
+        sample = text_stream.read(4096)
+        text_stream.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;")
+        except csv.Error:
+            dialect = csv.excel
+        reader = csv.DictReader(text_stream, dialect=dialect)
+
+        required_columns = {"first_name", "last_name", "employment_pct"}
+        missing_columns = required_columns - set(reader.fieldnames or [])
+        if missing_columns:
+            raise ValidationError(
+                {"file": f"Fehlende Pflichtspalte(n): {', '.join(sorted(missing_columns))}."}
+            )
+
+        created = 0
+        errors = []
+        for row_index, row in enumerate(reader, start=2):
+            first_name = (row.get("first_name") or "").strip()
+            last_name = (row.get("last_name") or "").strip()
+            employment_pct = (row.get("employment_pct") or "").strip()
+            if not first_name or not last_name or not employment_pct:
+                errors.append({"row": row_index, "message": "Vorname, Nachname und Pensum sind Pflichtfelder."})
+                continue
+
+            data = {"first_name": first_name, "last_name": last_name, "employment_pct": employment_pct}
+            start_date = (row.get("employment_start_date") or "").strip()
+            if start_date:
+                data["employment_start_date"] = start_date
+
+            station_name = (row.get("station") or "").strip()
+            employments = []
+            if station_name:
+                node = Node.all_objects.filter(tenant=request.tenant, name__iexact=station_name).first()
+                if not node:
+                    errors.append({"row": row_index, "message": f"Station '{station_name}' nicht gefunden."})
+                    continue
+                try:
+                    pensum = int(float(employment_pct))
+                except ValueError:
+                    errors.append({"row": row_index, "message": "Pensum muss eine Zahl sein."})
+                    continue
+                employments = [{"node": node.id, "pensum_pct": pensum}]
+            if employments:
+                data["employments"] = employments
+
+            try:
+                with transaction.atomic():
+                    serializer = EmployeeSerializer(data=data, context={"request": request})
+                    serializer.is_valid(raise_exception=True)
+                    serializer.save(tenant=request.tenant)
+                created += 1
+            except ValidationError as exc:
+                errors.append({"row": row_index, "message": str(exc.detail)})
+
+        return Response({"created": created, "errors": errors})
+
+    @action(detail=False, methods=["get"], url_path="import-csv-template")
+    def import_csv_template(self, request):
+        """
+        Beispiel-CSV zum Download für import_csv -- gleiches
+        csv.writer/HttpResponse/Content-Disposition-Muster wie
+        PayrollExportView/PlanExportView.
+        """
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="mitarbeitende-vorlage.csv"'
+        writer = csv.writer(response)
+        writer.writerow(["first_name", "last_name", "employment_pct", "employment_start_date", "station"])
+        writer.writerow(["Anna", "Muster", "100", "2026-01-01", "Pflege Tag"])
+        writer.writerow(["Peter", "Beispiel", "80", "", ""])
+        return response
 
 
 class AbsenceTypeViewSet(TenantScopedViewSet):

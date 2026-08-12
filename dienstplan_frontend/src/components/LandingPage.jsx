@@ -3,13 +3,15 @@
 // kein Konto hat, sieht zuerst, worum es geht, statt vor einem leeren
 // Login-Formular zu stehen. Rein statisch, keine API-Calls.
 //
-// Nutzer-Feedback (2026-08): "Die Landingpage ist ultra altbacken! Mach die
-// TOP modern! Richtiger Gallery Print!" -- kompletter visueller Neuaufbau
-// (Sticky-Nav, grosse Editorial-Typografie, Bento-Feature-Grid, Hero-Mockup,
-// Stat-Leiste, Closing-CTA-Band). Bildsprache bleibt an die bestehende Marke
-// gebunden (--primary/--font-display, dasselbe Teal wie überall sonst in der
-// App) -- nur die Anwendung davon ist jetzt zeitgemäss statt der alten,
-// symmetrischen Kachel-Reihe. Die Stat-Leiste zeigt bewusst reale
+// Nutzer-Feedback (2026-08): erst "TOP modern, richtiger Gallery Print"
+// (buntes Aurora-/Gradient-Design), dann konkretisiert auf ein
+// zurückhaltendes, whitespace-lastiges "Klinik-Flair" nach eigenem
+// Referenz-Layout -- zweispaltiger Hero (Text links, abstrakte
+// Puls-Grafik rechts), Serif-Headline mit genau EINEM farbigen Wort statt
+// Gradient-Text, dünne Trennlinien statt Schatten/Glow, ein einziger
+// Akzentton (--primary). Serif nur lokal für Headline/Stat-Werte über
+// System-Font-Stack (kein Font-Nachladen nötig) -- der Rest der App bleibt
+// auf --font-display/--font-body. Stat-Leiste zeigt weiterhin reale
 // Tenant-Default-Werte (core.models.Tenant.minimum_rest_hours/
 // maximum_weekly_hours/default_vacation_days_per_year) statt erfundener
 // Marketing-Zahlen oder fiktiver Kundenlogos/Testimonials.
@@ -18,7 +20,6 @@ const FEATURES = [
     title: "ArG-konforme Prüfung",
     text: "Ruhezeiten, Höchstarbeitszeit, Pausen und Wochenruhetage werden automatisch geprüft -- Konflikte fallen sofort auf, nicht erst am Monatsende.",
     icon: "shield",
-    accent: true,
   },
   {
     title: "Ferien- & Überzeitsaldo",
@@ -45,12 +46,12 @@ const STATS = [
 
 function FeatureIcon({ name }) {
   const common = {
-    width: 22,
-    height: 22,
+    width: 20,
+    height: 20,
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "currentColor",
-    strokeWidth: 1.6,
+    strokeWidth: 1.5,
     strokeLinecap: "round",
     strokeLinejoin: "round",
     "aria-hidden": true,
@@ -88,10 +89,31 @@ function FeatureIcon({ name }) {
   );
 }
 
+function PulseGraphic() {
+  return (
+    <svg
+      className="landing-pulse-svg"
+      viewBox="0 0 420 260"
+      fill="none"
+      aria-hidden="true"
+    >
+      <polyline
+        className="landing-pulse-line landing-pulse-line--muted"
+        points="10,150 90,150 120,178 150,120 180,168 210,150 340,150 410,150"
+      />
+      <polyline
+        className="landing-pulse-line landing-pulse-line--primary"
+        points="10,160 70,160 100,230 130,40 160,210 190,110 220,160 260,150 300,175 330,150 410,150"
+      />
+      <circle className="landing-pulse-dot" cx="130" cy="40" r="4" />
+    </svg>
+  );
+}
+
 export default function LandingPage({ onStart, onLogin }) {
   return (
     <div className="landing-screen">
-      <div className="landing-aurora" aria-hidden="true" />
+      <div className="landing-grid-bg" aria-hidden="true" />
 
       <nav className="landing-nav">
         <div className="landing-nav-brand">
@@ -106,58 +128,46 @@ export default function LandingPage({ onStart, onLogin }) {
       </nav>
 
       <header className="landing-hero">
-        <p className="landing-kicker">Für Schweizer Heime, Spitäler &amp; Pflegeeinrichtungen</p>
-        <h1>
-          Dienstplanung,
-          <br />
-          <span className="landing-headline-accent">die das Arbeitsgesetz gleich mitdenkt.</span>
-        </h1>
-        <p className="landing-sub">
-          Schichtplanung ohne Excel-Chaos -- inklusive automatischer Prüfung gegen das
-          Arbeitsgesetz, laufender Saldoführung und Lohn-Export.
-        </p>
+        <div className="landing-hero-grid">
+          <div className="landing-hero-copy">
+            <p className="landing-kicker">
+              <span className="landing-kicker-dot" aria-hidden="true" />
+              Für Schweizer Heime, Spitäler &amp; Pflegeeinrichtungen
+            </p>
+            <h1>
+              Dienstplanung, die das <span className="landing-headline-accent">Arbeitsgesetz</span> gleich
+              mitdenkt.
+            </h1>
+            <p className="landing-sub">
+              Schichtplanung ohne Excel-Chaos -- inklusive automatischer Prüfung gegen das
+              Arbeitsgesetz, laufender Saldoführung und Lohn-Export.
+            </p>
 
-        <div className="landing-cta-row">
-          <button type="button" className="landing-btn-primary" onClick={onStart}>
-            Kostenlos testen
-            <span aria-hidden="true">→</span>
-          </button>
-          <a className="landing-btn-ghost" href="mailto:demo@dienstplan.example">
-            Demo buchen
-          </a>
-        </div>
-
-        <p className="landing-login-link">
-          Bereits ein Konto?{" "}
-          <button type="button" className="link-button" onClick={onLogin}>
-            Anmelden
-          </button>
-        </p>
-
-        <div className="landing-hero-visual" aria-hidden="true">
-          <div className="landing-mockup">
-            <div className="landing-mockup-bar">
-              <span />
-              <span />
-              <span />
+            <div className="landing-cta-row">
+              <button type="button" className="landing-btn-primary" onClick={onStart}>
+                Kostenlos testen
+                <span aria-hidden="true">→</span>
+              </button>
+              <a className="landing-btn-ghost" href="mailto:demo@dienstplan.example">
+                Demo buchen
+              </a>
             </div>
-            <div className="landing-mockup-grid">
-              {Array.from({ length: 28 }).map((_, i) => {
-                const variant = [0, 3, 5, 9, 12, 14, 18, 21, 24].includes(i)
-                  ? "warn"
-                  : [2, 7, 11, 16, 20, 26].includes(i)
-                    ? "primary"
-                    : "empty";
-                return <div key={i} className={`landing-mockup-cell landing-mockup-cell--${variant}`} />;
-              })}
-            </div>
+
+            <p className="landing-login-link">
+              Bereits ein Konto?{" "}
+              <button type="button" className="link-button" onClick={onLogin}>
+                Anmelden
+              </button>
+            </p>
           </div>
-          <div className="landing-float-badge landing-float-badge--check">
-            <span>✓</span> ArG geprüft
+
+          <div className="landing-hero-graphic">
+            <PulseGraphic />
           </div>
-          <div className="landing-float-badge landing-float-badge--balance">Saldo +4.5h</div>
         </div>
       </header>
+
+      <div className="landing-divider" />
 
       <section className="landing-stats">
         {STATS.map((stat) => (
@@ -170,10 +180,7 @@ export default function LandingPage({ onStart, onLogin }) {
 
       <section className="landing-feature-grid">
         {FEATURES.map((feature) => (
-          <div
-            className={`landing-feature-tile${feature.span ? " landing-feature-tile--span" : ""}`}
-            key={feature.title}
-          >
+          <div className="landing-feature-tile" key={feature.title}>
             <div className="landing-feature-icon">
               <FeatureIcon name={feature.icon} />
             </div>

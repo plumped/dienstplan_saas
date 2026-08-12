@@ -216,11 +216,20 @@ button {
   padding: 4px 10px;
 }
 
-/* Block 2.7: Saldo-Anzeige (Topbar + Mitarbeiterliste, siehe BalanceBadge.jsx) */
+/* Block 2.7: Saldo-Anzeige (Topbar + Mitarbeiterliste, siehe BalanceBadge.jsx).
+   Nutzer-Feedback (2026-08): "Pills sollen immer gleich breit sein, damit
+   alles in Reihe und Glied steht" -- ohne feste Breite variiert die Pille
+   je nach Ziffernanzahl des Saldos/der Ferientage, wodurch die
+   "Bearbeiten"-Buttons in der Mitarbeitendenliste zeilenweise versetzt
+   standen. min-width statt width, damit ein ungewöhnlich langer Wert (sehr
+   grosser Saldo) nicht abgeschnitten wird -- in der Praxis ist der Wert
+   immer die bindende Breite, wirkt dadurch wie eine feste Spaltenbreite. */
 .balance-badge {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 6px;
+  min-width: 260px;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--ink-muted);
@@ -250,7 +259,9 @@ button {
 .fairness-badge {
   display: inline-flex;
   align-items: baseline;
+  justify-content: flex-start;
   gap: 4px;
+  min-width: 112px;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--ink-muted);
@@ -1540,14 +1551,22 @@ thead .col-employee {
 
 .settings-table th {
   text-align: left;
-  padding: 0;
+  /* Nutzer-Feedback (2026-08): "Stationsnamen/Zugang sind nicht sauber unter
+     dem Header" -- Ursache war, dass NUR sortierbare Spalten (via
+     .settings-table-sort-Button) ein Padding hatten, th selbst aber 0. Für
+     die beiden nicht sortierbaren Spalten (Station(en)/Zugang, reine <th>
+     ohne Button) fehlte dadurch das Padding komplett -- Header-Text klebte
+     links am Zellenrand, während die Werte darunter (td) das normale
+     Padding hatten. Jetzt trägt th selbst das Padding (identisch zu td),
+     der Sort-Button bekommt kein eigenes mehr, damit es nicht doppelt wird. */
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
 }
 
 .settings-table-sort {
   width: 100%;
   text-align: left;
-  padding: 8px 10px;
+  padding: 0;
   border: none;
   background: none;
   color: var(--ink-muted);

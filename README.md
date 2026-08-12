@@ -3058,6 +3058,22 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
       Feld im Formular, "Deaktivieren"-Button pro Zeile, nach Bestätigung erscheint "INAKTIV" im
       Status, Login-Zugang (`user.is_active`) tatsächlich gesperrt.
 
+      **Nachtrag (2026-08, Nutzer-Feedback: "Ja mach den Zusatz")**: Gegenstück `EmployeeViewSet.
+      reactivate` (POST `.../reactivate/`, Admin-only wie `deactivate`) -- ohne diesen Weg gäbe es
+      keine Möglichkeit, einen versehentlich deaktivierten oder wieder eingestellten Mitarbeitenden
+      inklusive Login zurückzuholen. Setzt `Employee.is_active = True` und, falls ein Login-Zugang
+      existiert, `user.is_active = True`. Setzt zusätzlich `termination_date` auf `None` zurück --
+      sonst würde ein noch gesetztes, bereits verstrichenes Austrittsdatum die gerade reaktivierte
+      Person beim nächsten Lauf von `deactivate_expired_employees` automatisch wieder deaktivieren,
+      eine stille Falle bei einer Wiedereinstellung oder einer Korrektur nach Fehlklick. Frontend:
+      der Zeilen-Button wechselt je nach `is_active` zwischen "Deaktivieren" (rot) und "Reaktivieren"
+      (neutral), beide mit `window.confirm()`-Bestätigung. Backend-Tests (Admin kann reaktivieren
+      inkl. Login, Planer darf nicht, Austrittsdatum wird zurückgesetzt -- mit Regressionstest, dass
+      ein nachfolgender `deactivate_expired_employees`-Lauf die Person NICHT erneut deaktiviert, ein
+      erneuter Login-Versuch nach Reaktivierung klappt tatsächlich). Volle Suite (600 Tests) grün, mit
+      Playwright verifiziert (Deaktivieren → Reaktivieren → Status wieder "Aktiv", Login-Zugang
+      tatsächlich wiederhergestellt).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

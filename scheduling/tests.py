@@ -4187,6 +4187,51 @@ class EmployeeDeactivateTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_admin_can_reactivate_employee_with_login(self):
+        self.auth_as(self.admin_user)
+        self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        response = self.client.post(f"/api/employees/{self.employee.id}/reactivate/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.employee_user.refresh_from_db()
+        self.assertTrue(self.employee.is_active)
+        self.assertTrue(self.employee_user.is_active)
+
+    def test_reactivate_clears_past_termination_date(self):
+        # Regressionstest für die stille Falle: ohne das Zurücksetzen würde
+        # deactivate_expired_employees die gerade reaktivierte Person beim
+        # nächsten Lauf sofort wieder deaktivieren.
+        self.employee.termination_date = date.today() - timedelta(days=1)
+        self.employee.is_active = False
+        self.employee.save(update_fields=["termination_date", "is_active"])
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/employees/{self.employee.id}/reactivate/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertIsNone(self.employee.termination_date)
+        call_command("deactivate_expired_employees")
+        self.employee.refresh_from_db()
+        self.assertTrue(self.employee.is_active)
+
+    def test_planner_cannot_reactivate_employee(self):
+        self.auth_as(self.admin_user)
+        self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/employees/{self.employee.id}/reactivate/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.employee.refresh_from_db()
+        self.assertFalse(self.employee.is_active)
+
+    def test_reactivated_employee_can_log_in_again(self):
+        self.auth_as(self.admin_user)
+        self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        self.client.post(f"/api/employees/{self.employee.id}/reactivate/")
+        self.client.credentials()
+        response = self.client.post(
+            "/api/auth/token/", {"username": "anna-deact", "password": "pw-not-real-123!"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
 
 class DeactivateExpiredEmployeesCommandTests(TestCase):
     """

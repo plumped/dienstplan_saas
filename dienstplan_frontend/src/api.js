@@ -219,6 +219,9 @@ export const api = {
   // diesen inklusive seines Logins!" -- siehe
   // scheduling.views.EmployeeViewSet.deactivate.
   deactivateEmployee: (id) => request(`/employees/${id}/deactivate/`, { method: "POST", affectsBalance: true }),
+  // Nutzer-Feedback (2026-08, Nachtrag): Gegenstück zu deactivateEmployee --
+  // siehe scheduling.views.EmployeeViewSet.reactivate.
+  reactivateEmployee: (id) => request(`/employees/${id}/reactivate/`, { method: "POST", affectsBalance: true }),
 
   getTimeTemplates: () => requestAllPages("/time-templates/"),
   // Stammdatenpflege (Nutzer-Feedback 2026-08): gleiches Muster wie

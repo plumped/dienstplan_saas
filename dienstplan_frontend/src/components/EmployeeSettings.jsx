@@ -358,13 +358,35 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
     if (
       !window.confirm(
         `${employee.first_name} ${employee.last_name} wirklich deaktivieren? Der Login-Zugang wird dabei ` +
-          "ebenfalls gesperrt. Diese Aktion lässt sich hier nicht rückgängig machen."
+          "ebenfalls gesperrt (über \"Reaktivieren\" später wieder rückgängig machbar)."
       )
     )
       return;
     setDeactivatingId(employee.id);
     try {
       await api.deactivateEmployee(employee.id);
+      reloadCurrentPage();
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setDeactivatingId(null);
+    }
+  }
+
+  // Nutzer-Feedback (2026-08, Nachtrag): Gegenstück zu handleDeactivate --
+  // reaktiviert zusätzlich den Login-Zugang (falls vorhanden) und setzt ein
+  // ggf. gesetztes Austrittsdatum zurück, siehe EmployeeViewSet.reactivate.
+  async function handleReactivate(employee) {
+    if (
+      !window.confirm(
+        `${employee.first_name} ${employee.last_name} wieder aktivieren? Der Login-Zugang wird dabei ` +
+          "reaktiviert (falls vorhanden) und ein gesetztes Austrittsdatum entfernt."
+      )
+    )
+      return;
+    setDeactivatingId(employee.id);
+    try {
+      await api.reactivateEmployee(employee.id);
       reloadCurrentPage();
     } catch (e) {
       onError(e.message);
@@ -543,7 +565,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                           <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
                             Bearbeiten
                           </button>
-                          {emp.is_active && (
+                          {emp.is_active ? (
                             <button
                               type="button"
                               className="btn-ghost btn-danger-ghost"
@@ -551,6 +573,15 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                               onClick={() => handleDeactivate(emp)}
                             >
                               {deactivatingId === emp.id ? "Wird deaktiviert …" : "Deaktivieren"}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn-ghost"
+                              disabled={deactivatingId === emp.id}
+                              onClick={() => handleReactivate(emp)}
+                            >
+                              {deactivatingId === emp.id ? "Wird reaktiviert …" : "Reaktivieren"}
                             </button>
                           )}
                         </span>

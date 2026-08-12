@@ -676,6 +676,37 @@ class EmployeeViewSet(TenantScopedViewSet):
         serializer = self.get_serializer(employee)
         return Response(serializer.data)
 
+    @action(detail=True, methods=["post"])
+    def reactivate(self, request, pk=None):
+        """
+        Gegenstück zu deactivate (Nutzer-Feedback 2026-08, Nachtrag: "Ja mach
+        den Zusatz" auf die Frage, ob ein Weg fehlt, einen versehentlich
+        deaktivierten oder wieder eingestellten Mitarbeitenden inklusive
+        Login zurückzuholen -- die "Aktiv"-Checkbox im normalen PATCH-
+        Formular setzt weiterhin bewusst nur Employee.is_active, nicht
+        user.is_active, siehe deactivate-Docstring).
+
+        Setzt zusätzlich termination_date auf None zurück: ein noch
+        gesetztes, bereits verstrichenes Austrittsdatum würde sonst beim
+        nächsten Lauf von deactivate_expired_employees die gerade
+        reaktivierte Person automatisch wieder deaktivieren -- eine stille
+        Falle bei einer Wiedereinstellung oder einer Korrektur nach
+        Fehlklick.
+
+        Admin-only wie deactivate/setup_access.
+        """
+        if request.membership.role != Membership.Role.ADMIN:
+            raise PermissionDenied("Nur Admin darf Mitarbeitende reaktivieren.")
+        employee = self.get_object()
+        employee.is_active = True
+        employee.termination_date = None
+        employee.save(update_fields=["is_active", "termination_date"])
+        if employee.user_id:
+            employee.user.is_active = True
+            employee.user.save(update_fields=["is_active"])
+        serializer = self.get_serializer(employee)
+        return Response(serializer.data)
+
 
 class AbsenceTypeViewSet(TenantScopedViewSet):
     """

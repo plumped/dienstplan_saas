@@ -93,12 +93,15 @@ class TenantAdmin(admin.ModelAdmin):
         "slug",
         "is_active",
         "onboarding_completed",
+        "subscription_status",
         "minimum_rest_hours",
         "maximum_weekly_hours",
         "maximum_daily_span_hours",
         "created_at",
     ]
+    list_filter = ["subscription_status"]
     prepopulated_fields = {"slug": ("name",)}
+    readonly_fields = ["stripe_customer_id", "stripe_subscription_id"]
     fieldsets = (
         (None, {"fields": ("name", "slug", "is_active")}),
         (
@@ -177,6 +180,23 @@ class TenantAdmin(admin.ModelAdmin):
                 "fields": ("sunday_shift_bonus_points_per_hour", "night_shift_bonus_points_per_hour"),
                 "description": "Grundlage für Employee.fairness_summary() -- rein interne "
                 "Transparenz-/Planungsgrösse, keine gesetzliche Vorgabe.",
+            },
+        ),
+        (
+            "Abrechnung (README Block 6, Stripe)",
+            {
+                "fields": (
+                    "subscription_status",
+                    "trial_ends_at",
+                    "trial_employee_limit",
+                    "stripe_customer_id",
+                    "stripe_subscription_id",
+                ),
+                "description": "subscription_status/trial_ends_at sind hier manuell überschreibbar "
+                "für Support-Fälle (z. B. Trial verlängern) -- im Normalbetrieb pflegt sich beides "
+                "selbst über core.billing.handle_webhook_event() aus Stripe-Webhook-Events. "
+                "stripe_customer_id/stripe_subscription_id sind rein informativ (read-only), da sie "
+                "ausschliesslich von core/billing.py gesetzt werden.",
             },
         ),
     )

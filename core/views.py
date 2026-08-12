@@ -1,3 +1,6 @@
+from datetime import timedelta
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -56,6 +59,10 @@ class TenantScopedAPIMixin:
 
         self.check_permissions(request)
         self.check_throttles(request)
+
+        from core.billing import enforce_billing_access
+
+        enforce_billing_access(request)
 
 
 def _task_counts(membership, employee):
@@ -233,6 +240,8 @@ class SignupView(APIView):
                         slug=slug,
                         canton=data.get("canton", ""),
                         onboarding_completed=False,
+                        subscription_status=Tenant.SubscriptionStatus.TRIALING,
+                        trial_ends_at=timezone.now() + timedelta(days=settings.TRIAL_PERIOD_DAYS),
                     )
                     user = User.objects.create_user(
                         username=data["username"],

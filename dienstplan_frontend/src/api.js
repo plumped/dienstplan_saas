@@ -156,6 +156,25 @@ export const api = {
   getTenant: () => request("/tenant/"),
   updateTenant: (payload) => request("/tenant/", { method: "PATCH", body: payload }),
 
+  // Abrechnung (README Block 6): siehe core/billing_views.py -- alle drei
+  // Admin-only. success_url/cancel_url/return_url werden hier mit
+  // window.location.origin gebildet, das Backend leitet nur weiter, ohne
+  // sie zu validieren (siehe CreateCheckoutSessionView-Docstring).
+  getBillingStatus: () => request("/billing/status/"),
+  createCheckoutSession: () =>
+    request("/billing/checkout/", {
+      method: "POST",
+      body: {
+        success_url: `${window.location.origin}/?billing=success`,
+        cancel_url: `${window.location.origin}/?billing=cancel`,
+      },
+    }),
+  createBillingPortalSession: () =>
+    request("/billing/portal/", {
+      method: "POST",
+      body: { return_url: window.location.origin },
+    }),
+
   // Feiertags-Overrides (Arbeitszeitmodell, Block 2.7 Punkt 7): Ausnahmen
   // zum kantonalen Kalender, siehe core.views.TenantHolidayOverrideViewSet.
   getTenantHolidayOverrides: () => requestAllPages("/tenant-holiday-overrides/"),

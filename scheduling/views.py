@@ -129,6 +129,10 @@ class TenantScopedViewSet(viewsets.ModelViewSet):
         self.check_permissions(request)
         self.check_throttles(request)
 
+        from core.billing import enforce_billing_access
+
+        enforce_billing_access(request)
+
     def get_queryset(self):
         tenant = self.request.tenant
         if tenant is None:
@@ -385,6 +389,18 @@ class EmployeeViewSet(TenantScopedViewSet):
         if is_active is not None:
             qs = qs.filter(is_active=is_active.lower() in ("1", "true", "yes"))
         return qs.distinct()
+
+    def perform_create(self, serializer):
+        # Abrechnung (README Block 6, 2026-08): jede neu angelegte aktive
+        # Mitarbeitende zählt sofort in Stripes Abo-Menge mit -- das
+        # Trial-Limit selbst wird bereits in EmployeeSerializer.validate()
+        # geprüft (Fehler kommt also nie hier an), sync_subscription_quantity
+        # ist ausserhalb der Trial-Phase (kein stripe_subscription_id) ein
+        # No-Op.
+        super().perform_create(serializer)
+        from core.billing import sync_subscription_quantity
+
+        sync_subscription_quantity(self.request.tenant)
 
     @action(detail=True, methods=["get"], url_path="weekly-overtime")
     def weekly_overtime(self, request, pk=None):
@@ -710,6 +726,11 @@ class EmployeeViewSet(TenantScopedViewSet):
         if employee.user_id:
             employee.user.is_active = False
             employee.user.save(update_fields=["is_active"])
+
+        from core.billing import sync_subscription_quantity
+
+        sync_subscription_quantity(request.tenant)
+
         serializer = self.get_serializer(employee)
         return Response(serializer.data)
 
@@ -741,6 +762,11 @@ class EmployeeViewSet(TenantScopedViewSet):
         if employee.user_id:
             employee.user.is_active = True
             employee.user.save(update_fields=["is_active"])
+
+        from core.billing import sync_subscription_quantity
+
+        sync_subscription_quantity(request.tenant)
+
         serializer = self.get_serializer(employee)
         return Response(serializer.data)
 
@@ -831,6 +857,11 @@ class EmployeeViewSet(TenantScopedViewSet):
                 created += 1
             except ValidationError as exc:
                 errors.append({"row": row_index, "message": str(exc.detail)})
+
+        if created:
+            from core.billing import sync_subscription_quantity
+
+            sync_subscription_quantity(request.tenant)
 
         return Response({"created": created, "errors": errors})
 

@@ -79,6 +79,13 @@ export default function App() {
   // in TimeRecordOverview (deren initialView-Default), auch wenn zuvor auf
   // "Noch nicht erfasst" umgeschaltet war.
   const [timeRecordTabNonce, setTimeRecordTabNonce] = useState(0);
+  // README Block 6 (Abrechnung): Admin bekommt einen dezenten Hinweis, sobald
+  // die Testphase abgelaufen ist bzw. kein aktives Abo mehr besteht (siehe
+  // Tenant.has_active_access()) -- ohne das müsste man erst zufällig in
+  // Einstellungen -> Abrechnung schauen, um den Grund für die dann bereits
+  // greifende 402-Sperre (core.billing.enforce_billing_access) zu verstehen.
+  // Nur für Admin geladen, da BillingStatusView ohnehin Admin-only ist.
+  const [billingBlocked, setBillingBlocked] = useState(false);
 
   useEffect(() => {
     if (!loggedIn) {
@@ -102,6 +109,17 @@ export default function App() {
     const unsubscribe = onTasksChanged(loadMe);
     return unsubscribe;
   }, [loggedIn]);
+
+  useEffect(() => {
+    if (!loggedIn || !isTenantAdmin(me)) {
+      setBillingBlocked(false);
+      return;
+    }
+    api
+      .getBillingStatus()
+      .then((data) => setBillingBlocked(!data.has_active_access))
+      .catch(() => {}); // still, kein zusätzlicher Fehlerbanner für einen reinen Info-Hinweis
+  }, [loggedIn, me]);
 
   useEffect(() => {
     if (!loggedIn) return;
@@ -283,6 +301,16 @@ export default function App() {
           {error}
           <button type="button" onClick={() => setError("")} aria-label="Meldung schliessen">
             ×
+          </button>
+        </div>
+      )}
+
+      {billingBlocked && (
+        <div className="banner-error" role="alert">
+          Die Testphase ist abgelaufen oder es besteht kein aktives Abo mehr -- neue Einträge sind
+          gesperrt, bis ein Abo abgeschlossen ist.
+          <button type="button" onClick={() => setTab("settings")}>
+            Zur Abrechnung
           </button>
         </div>
       )}

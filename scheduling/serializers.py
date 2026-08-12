@@ -186,6 +186,27 @@ class EmployeeSerializer(serializers.ModelSerializer):
             "scoped_nodes",
         ]
 
+    def validate(self, attrs):
+        # Abrechnung (README Block 6, 2026-08): Trial-Mitarbeiterlimit gegen
+        # Missbrauch der kostenlosen Phase mit einem grossen Team -- gilt nur
+        # für NEUE Mitarbeitende (self.instance is None) während TRIALING,
+        # nicht für Updates bestehender Datensätze. Zentral hier statt in
+        # EmployeeViewSet.perform_create, damit sowohl der normale POST-Weg
+        # als auch der CSV-Import (EmployeeViewSet.import_csv, nutzt
+        # denselben Serializer) mit einem einzigen Check abgedeckt sind.
+        if self.instance is None:
+            tenant = self.context["request"].tenant
+            if (
+                tenant is not None
+                and tenant.subscription_status == tenant.SubscriptionStatus.TRIALING
+                and tenant.active_employee_count() >= tenant.trial_employee_limit
+            ):
+                raise serializers.ValidationError(
+                    f"In der Testphase sind maximal {tenant.trial_employee_limit} aktive "
+                    "Mitarbeitende möglich -- für mehr bitte ein Abo abschliessen."
+                )
+        return attrs
+
     def _membership(self, obj):
         # Ein Lookup pro Objekt genügt für alle vier Felder -- da
         # EmployeeSerializer bislang nicht mit `select_related`/Prefetch auf

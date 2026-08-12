@@ -3180,9 +3180,59 @@ Wechsel) -- der Setup-Wizard bietet an, die Beispieldaten zu löschen/ersetzen.
 
 ### 6. Abrechnung (falls kommerziell verkauft)
 
-1. Zahlungsanbieter-Integration (z. B. Stripe) für ein Abo pro Praxis/Anzahl aktiver
-   Mitarbeitende.
-2. Trial-Phase und Plan-/Mitarbeiterlimits pro Tenant.
+✅ **Umgesetzt (2026-08)** -- Stripe Checkout + Billing Portal (redirect-gehostet, kein
+Kartendaten-Handling im eigenen Frontend/Backend), ein Plan mit Preis pro aktivem Mitarbeitenden
+(Nutzer-Entscheidung), 14 Tage Trial für per Self-Signup angelegte Tenants (Block 3), Trial-Limit
+15 aktive Mitarbeitende.
+
+- **Modell** (`core/models.py::Tenant`): `subscription_status` (ACTIVE/TRIALING/PAST_DUE/CANCELED/
+  INCOMPLETE), `trial_ends_at`, `trial_employee_limit`, `stripe_customer_id`,
+  `stripe_subscription_id`. Default bewusst "voller Zugriff, kein Trial" (analog
+  `onboarding_completed`) -- nur `core.views.SignupView` setzt TRIALING + `trial_ends_at` explizit,
+  Admin/Fixture/Test-Tenants bleiben unverändert sofort nutzbar. `Tenant.has_active_access()`
+  (ACTIVE oder laufende Trial-Frist) und `Tenant.active_employee_count()` sind die zentralen
+  Abfragen.
+- **`core/billing.py`**: Stripe-Integration hinter einer schmalen Funktions-Schicht --
+  `create_checkout_session`/`create_billing_portal_session` (Subscription-Menge = aktuelle aktive
+  Mitarbeitende, mind. 1), `sync_subscription_quantity` (best effort, Stripe-Fehler blockieren nie
+  eine normale Mitarbeitenden-Aktion), `handle_webhook_event` (checkout.session.completed,
+  customer.subscription.updated/deleted, invoice.payment_failed) und `enforce_billing_access`
+  (402 Payment Required für schreibende Requests eines Tenants ohne aktiven Zugriff, GET bleibt
+  immer offen). Fehlende Stripe-Konfiguration wirft `BillingNotConfigured` statt eines rohen
+  Stripe-Fehlers -- die Test-Suite läuft dadurch ohne echte Stripe-Keys.
+- **Zugriffssperre**: `enforce_billing_access()` läuft zentral in
+  `scheduling.views.TenantScopedViewSet.initial()` und `core.views.TenantScopedAPIMixin.initial()`
+  -- denselben Stellen, an denen `request.tenant` aufgelöst wird. Die Billing-Views selbst
+  (Checkout/Portal/Status) sind bewusst davon ausgenommen, sonst könnte sich ein gesperrter
+  Tenant nicht mehr selbst freischalten.
+- **Trial-Limit**: `EmployeeSerializer.validate()` weist neue Mitarbeitende ab, sobald
+  `active_employee_count() >= trial_employee_limit` UND `subscription_status == TRIALING` --
+  deckt sowohl den normalen POST-Weg als auch den CSV-Import (Block 3) mit einem Check ab. Kein
+  Limit mehr nach Abo-Abschluss (ACTIVE), dort wird stattdessen die Stripe-Menge bei jeder
+  relevanten Änderung (anlegen/deaktivieren/reaktivieren/CSV-Import) synchronisiert.
+- **API** (`core/billing_views.py`): `GET /api/billing/status/` (Abo-Status, Trial-Restzeit,
+  aktive Mitarbeitende), `POST /api/billing/checkout/`, `POST /api/billing/portal/` -- alle drei
+  Admin-only. `POST /api/billing/webhook/` ist ein reiner Django-View (kein DRF, roher Body für
+  die HMAC-Signaturprüfung nötig), `AllowAny` mit Absicherung ausschliesslich über
+  `STRIPE_WEBHOOK_SECRET`.
+- **Setup**: `python manage.py setup_stripe_billing` legt Product+Price einmalig an (muss auf
+  einer Maschine mit Zugriff auf `api.stripe.com` laufen) und gibt die Price-ID für `.env` aus.
+  Stripe-Keys/Preis-ID/Webhook-Secret kommen über `.env` (`python-dotenv`, siehe
+  `config/settings.py`) -- `.env` ist `.gitignore`d, nie committen.
+- **Frontend**: neues Settings-Modul "Abrechnung" (`BillingSettings.jsx`, Admin-only) mit
+  Status/Trial-Countdown und "Abo abschliessen"/"Abrechnung verwalten"-Buttons (Redirect auf die
+  Stripe-gehostete Seite). Dezenter Banner in der App-Kopfzeile für Admin, sobald kein aktiver
+  Zugriff mehr besteht.
+- **Tests**: `core/tests_billing.py` -- Modell-Methoden, `core/billing.py` mit gemockten
+  `stripe.*`-Aufrufen (keine echten Netzwerk-Calls), alle vier Webhook-Event-Typen, 402-Gate
+  End-to-End über einen echten `TenantScopedViewSet`-Endpoint, Trial-Limit, Billing-Views inkl.
+  Webhook-Signaturprüfung (echtes `stripe.Webhook.construct_event`, kein Mock).
+- **Nicht Teil dieser Runde**: der konkrete CHF-Betrag pro Mitarbeitendem/Monat ist ein
+  Platzhalter in `setup_stripe_billing` (`DEFAULT_AMOUNT_RAPPEN`) und muss vor dem Produktivumstieg
+  festgelegt werden; ein echter End-to-End-Smoke-Test gegen Stripe Test-Mode (Checkout
+  durchklicken, `stripe trigger ...`) wurde nicht gemacht, da die Entwicklungsumgebung keinen
+  Netzwerkzugriff auf `api.stripe.com`/`checkout.stripe.com` hatte -- vor dem produktiven Umstieg
+  nachholen.
 
 ### 7. Zeitmanagement
 

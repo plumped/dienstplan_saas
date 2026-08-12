@@ -285,11 +285,77 @@ class Tenant(models.Model):
         "automatischer Feiertagsabzug im Arbeitszeitmodell.",
     )
 
+    # Abrechnung (README Block 6, 2026-08): Stripe-Abo pro aktivem
+    # Mitarbeitenden, siehe core/billing.py für die eigentliche Integration.
+    # Defaults sind bewusst "voller Zugriff, kein Trial" (subscription_status
+    # ACTIVE, trial_ends_at leer) -- exakt dieselbe Logik wie schon bei
+    # onboarding_completed (Default True): über Admin/Fixtures/Tests
+    # angelegte Tenants bleiben unverändert sofort und uneingeschränkt
+    # nutzbar. Nur core.onboarding.seed_demo_tenant (Self-Signup-Pfad)
+    # setzt TRIALING + trial_ends_at explizit.
+    class SubscriptionStatus(models.TextChoices):
+        ACTIVE = "active", "Aktiv"
+        TRIALING = "trialing", "Testphase"
+        PAST_DUE = "past_due", "Zahlung überfällig"
+        CANCELED = "canceled", "Gekündigt"
+        INCOMPLETE = "incomplete", "Zahlung ausstehend"
+
+    subscription_status = models.CharField(
+        max_length=20,
+        choices=SubscriptionStatus.choices,
+        default=SubscriptionStatus.ACTIVE,
+        help_text="Spiegelt den Stripe-Subscription-Status (siehe core.billing.handle_webhook_event) "
+        "-- ACTIVE ist der sichere Default für nicht per Self-Signup angelegte Tenants (Admin/"
+        "Fixtures/Tests), analog onboarding_completed.",
+    )
+    trial_ends_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Ende der Testphase (nur gesetzt für per Self-Signup angelegte Tenants, siehe "
+        "core.onboarding.seed_demo_tenant). Leer = keine zeitliche Einschränkung.",
+    )
+    trial_employee_limit = models.PositiveSmallIntegerField(
+        default=15,
+        help_text="Maximal erlaubte aktive Mitarbeitende WÄHREND subscription_status=TRIALING "
+        "(verhindert Missbrauch der kostenlosen Phase). Nach Abschluss eines Abos (ACTIVE) gilt "
+        "kein Limit mehr -- Abrechnung erfolgt pro aktivem Mitarbeitenden.",
+    )
+    stripe_customer_id = models.CharField(max_length=255, blank=True, default="")
+    stripe_subscription_id = models.CharField(max_length=255, blank=True, default="")
+
     class Meta:
         ordering = ["name"]
 
     def __str__(self):
         return self.name
+
+    def has_active_access(self):
+        """
+        Zentrale Zugriffsprüfung fürs Abrechnungs-Gating (siehe
+        TenantScopedViewSet/TenantScopedAPIMixin.initial()). ACTIVE und eine
+        laufende TRIALING-Phase gewähren Zugriff, alles andere (abgelaufene
+        Trial, PAST_DUE/CANCELED/INCOMPLETE) nicht -- schreibende Requests
+        werden dann von core.billing.enforce_billing_access() blockiert.
+        """
+        if self.subscription_status == self.SubscriptionStatus.ACTIVE:
+            return True
+        if self.subscription_status == self.SubscriptionStatus.TRIALING:
+            from django.utils import timezone
+
+            return self.trial_ends_at is None or timezone.now() < self.trial_ends_at
+        return False
+
+    def active_employee_count(self):
+        """
+        Grundlage sowohl für die Trial-Limit-Prüfung als auch für die an
+        Stripe gemeldete Abo-Menge (core.billing.sync_subscription_quantity)
+        -- import lokal, um einen Zirkelimport core<->scheduling zu
+        vermeiden (Node/Employee liegen in scheduling.models, das seinerseits
+        core.models importiert).
+        """
+        from scheduling.models import Employee
+
+        return Employee.all_objects.filter(tenant=self, is_active=True).count()
 
     def public_holidays_with_names(self, year):
         """

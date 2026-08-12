@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule, isTenantAdmin } from "../roles.js";
 import AbsenceTypeSettings from "./AbsenceTypeSettings.jsx";
+import BillingSettings from "./BillingSettings.jsx";
 import EmployeeSettings from "./EmployeeSettings.jsx";
 import MembershipAccessSettings from "./MembershipAccessSettings.jsx";
 import MonthlySummaryPanel from "./MonthlySummaryPanel.jsx";
@@ -74,6 +75,15 @@ const MODULES = [
     id: "access",
     label: "Konten ohne Mitarbeiterprofil",
     description: "Seltener Sonderfall: Login-Konten, die zu keiner Person unter Mitarbeitende gehören.",
+    adminOnly: true,
+  },
+  // README Block 6: Admin-only wie "Regel-Engine & Zuschläge" -- Zahlungs-
+  // status ist keine Tagesgeschäft-Information für Planer/HR/Mitarbeitende
+  // (siehe core/billing_views.py::_IsTenantAdminStrict).
+  {
+    id: "billing",
+    label: "Abrechnung",
+    description: "Abo-Status, Testphase, Zahlungsmittel verwalten.",
     adminOnly: true,
   },
 ];
@@ -190,6 +200,7 @@ export default function SettingsPanel({ me, onError }) {
       {module === "payrollMapping" && isTenantAdmin(me) && <PayrollSettings onError={onError} />}
       {module === "tenant" && isTenantAdmin(me) && <TenantSettings onError={onError} />}
       {module === "access" && isTenantAdmin(me) && <MembershipAccessSettings nodes={nodes} onError={onError} />}
+      {module === "billing" && isTenantAdmin(me) && <BillingSettings onError={onError} />}
     </div>
   );
 }

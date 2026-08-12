@@ -3,6 +3,12 @@ from django.urls import include, path
 from rest_framework.authtoken.views import obtain_auth_token
 
 from core.admin_views import tenant_switch
+from core.billing_views import (
+    BillingStatusView,
+    CreateBillingPortalSessionView,
+    CreateCheckoutSessionView,
+    stripe_webhook,
+)
 from core.views import ChangePasswordView, MeView, SignupView, TenantHolidaysView, TenantView
 from scheduling.views import PayrollExportView, PlanExportView, UnderstaffedShiftsView
 
@@ -34,5 +40,10 @@ urlpatterns = [
     # siehe core.views.SignupView-Docstring -- neben obtain_auth_token der
     # einzige bewusst unauthentifizierte Schreib-Endpoint.
     path('api/signup/', SignupView.as_view()),
+    # README Block 6: Abrechnung -- siehe core/billing_views.py-Docstrings.
+    path('api/billing/status/', BillingStatusView.as_view()),
+    path('api/billing/checkout/', CreateCheckoutSessionView.as_view()),
+    path('api/billing/portal/', CreateBillingPortalSessionView.as_view()),
+    path('api/billing/webhook/', stripe_webhook),
     path('api-auth/', include('rest_framework.urls')),
 ]

@@ -3369,6 +3369,12 @@ thead .col-employee {
   margin-bottom: 18px;
   border: 1px solid var(--border);
   color: var(--primary);
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.landing-feature-tile:hover .landing-feature-icon {
+  border-color: var(--primary);
+  transform: translateY(-2px);
 }
 
 .landing-feature-tile h3 {
@@ -3467,6 +3473,13 @@ thead .col-employee {
   border-radius: 12px;
   overflow: hidden;
   background: var(--surface);
+  transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.landing-showcase-frame:hover {
+  border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+  transform: translateY(-3px);
+  box-shadow: 0 16px 40px rgba(28, 35, 33, 0.08);
 }
 
 .landing-showcase-frame-bar {
@@ -3487,6 +3500,11 @@ thead .col-employee {
   display: block;
   width: 100%;
   height: auto;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.landing-showcase-frame:hover img {
+  transform: scale(1.015);
 }
 
 .landing-checklist {
@@ -3607,6 +3625,78 @@ thead .col-employee {
   }
   50% {
     transform: translateY(-8px);
+  }
+}
+
+@keyframes landing-pulse-draw {
+  from {
+    stroke-dashoffset: 1400;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes landing-pulse-dot-in {
+  from {
+    opacity: 0;
+    transform: scale(0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Scroll-Reveal + Puls-Zeichnen nur bei erlaubter Bewegung -- Basiswerte
+   oben (z. B. .landing-pulse-dot { fill: ... }) zeigen bei reduzierter
+   Bewegung immer sofort den fertigen Endzustand, hier wird nur der
+   "unsichtbare Start" + die Animation selbst ergänzt. */
+@media (prefers-reduced-motion: no-preference) {
+  .landing-pulse-line--primary {
+    stroke-dasharray: 1400;
+    stroke-dashoffset: 1400;
+    animation: landing-pulse-draw 1.6s cubic-bezier(0.16, 1, 0.3, 1) 0.3s forwards;
+  }
+
+  .landing-pulse-dot {
+    transform-box: fill-box;
+    transform-origin: center;
+    opacity: 0;
+    transform: scale(0);
+    animation: landing-pulse-dot-in 0.3s ease-out 1.75s forwards;
+  }
+
+  .landing-reveal {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .landing-reveal--visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* Feature-Grid/Checkliste: der Rahmen selbst bleibt stehen, nur die
+     Kacheln/Zeilen kaskadieren -- sonst würde die Border mitverschwinden. */
+  .landing-feature-grid.landing-reveal,
+  .landing-checklist.landing-reveal {
+    opacity: 1;
+    transform: none;
+  }
+
+  .landing-feature-grid .landing-feature-tile,
+  .landing-checklist-grid li {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .landing-feature-grid.landing-reveal--visible .landing-feature-tile,
+  .landing-checklist.landing-reveal--visible .landing-checklist-grid li {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

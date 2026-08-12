@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+
 import screenshotPlanblatt from "../assets/landing/screenshot-planblatt.png";
 import screenshotSettings from "../assets/landing/screenshot-settings.png";
 
@@ -28,6 +30,16 @@ import screenshotSettings from "../assets/landing/screenshot-settings.png";
 // über das Feature aussagen -- siehe assets/landing/). Dazu eine
 // Checkliste mit weiteren, tatsächlich vorhandenen Funktionen (siehe
 // README) statt erfundener Zusatzclaims.
+//
+// Nutzer-Feedback (2026-08, 3. Runde): "jetzt noch fancy shit wie
+// transformation, einfliegen etc. aber mit Gefühl, nicht zu verspielt" --
+// Scroll-Reveal je Sektion (siehe Reveal-Komponente unten, einmalig per
+// IntersectionObserver, keine Library), Feature-Kacheln und Checklisten-
+// Zeilen kaskadieren leicht versetzt statt als ein Block. Dazu ein einmaliges
+// "Zeichnen" der Puls-Linie im Hero (stroke-dashoffset) und dezente
+// Hover-Effekte auf Screenshot-Rahmen/Feature-Icons -- alles in styles.css
+// unter @media (prefers-reduced-motion: no-preference) gekapselt, damit
+// reduzierte Bewegung den Inhalt immer sofort und vollständig zeigt.
 const FEATURES = [
   {
     title: "ArG-konforme Prüfung",
@@ -133,6 +145,44 @@ function FeatureIcon({ name }) {
   );
 }
 
+// Scroll-Reveal (Nutzer-Feedback: "fancy shit wie transformation, einfliegen
+// -- aber mit Gefühl, nicht zu verspielt") -- ein einziges IntersectionObserver
+// pro Sektion, feuert einmalig, keine Library nötig. Der "unsichtbare"
+// Ausgangszustand (opacity/transform) ist bewusst in styles.css unter
+// @media (prefers-reduced-motion: no-preference) gekapselt: wer reduzierte
+// Bewegung eingestellt hat, sieht den Inhalt immer sofort vollständig --
+// unabhängig davon, ob/wann der Observer feuert.
+function Reveal({ as: Tag = "div", className = "", children, ...rest }) {
+  const ref = useRef(null);
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return undefined;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.15 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  const classes = ["landing-reveal", visible ? "landing-reveal--visible" : "", className]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <Tag ref={ref} className={classes} {...rest}>
+      {children}
+    </Tag>
+  );
+}
+
 function PulseGraphic() {
   return (
     <svg
@@ -213,16 +263,16 @@ export default function LandingPage({ onStart, onLogin }) {
 
       <div className="landing-divider" />
 
-      <section className="landing-stats">
+      <Reveal as="section" className="landing-stats">
         {STATS.map((stat) => (
           <div className="landing-stat" key={stat.label}>
             <span className="landing-stat-value">{stat.value}</span>
             <span className="landing-stat-label">{stat.label}</span>
           </div>
         ))}
-      </section>
+      </Reveal>
 
-      <section className="landing-showcase">
+      <Reveal as="section" className="landing-showcase">
         <div className="landing-showcase-copy">
           <p className="landing-showcase-eyebrow">Planblatt</p>
           <h2>Alles auf einen Blick planen</h2>
@@ -245,11 +295,11 @@ export default function LandingPage({ onStart, onLogin }) {
           </div>
           <img src={screenshotPlanblatt} alt="Planblatt mit Schichtplanung, farbcodierten Diensten und automatischen Konflikthinweisen" />
         </div>
-      </section>
+      </Reveal>
 
-      <section className="landing-feature-grid">
-        {FEATURES.map((feature) => (
-          <div className="landing-feature-tile" key={feature.title}>
+      <Reveal as="section" className="landing-feature-grid">
+        {FEATURES.map((feature, index) => (
+          <div className="landing-feature-tile" key={feature.title} style={{ transitionDelay: `${index * 0.08}s` }}>
             <div className="landing-feature-icon">
               <FeatureIcon name={feature.icon} />
             </div>
@@ -257,9 +307,9 @@ export default function LandingPage({ onStart, onLogin }) {
             <p>{feature.text}</p>
           </div>
         ))}
-      </section>
+      </Reveal>
 
-      <section className="landing-showcase landing-showcase--reverse">
+      <Reveal as="section" className="landing-showcase landing-showcase--reverse">
         <div className="landing-showcase-copy">
           <p className="landing-showcase-eyebrow">Einstellungen</p>
           <h2>Vollständig konfigurierbar, ohne Support-Ticket</h2>
@@ -282,21 +332,21 @@ export default function LandingPage({ onStart, onLogin }) {
           </div>
           <img src={screenshotSettings} alt="Einstellungsübersicht mit Modulen für Schichttypen, Absenzarten, Mitarbeitende, Stationen, Skills, Lohnarten und Regel-Engine" />
         </div>
-      </section>
+      </Reveal>
 
-      <section className="landing-checklist">
+      <Reveal as="section" className="landing-checklist">
         <h2>Und ausserdem</h2>
         <ul className="landing-checklist-grid">
-          {CHECKLIST.map((item) => (
-            <li key={item}>
+          {CHECKLIST.map((item, index) => (
+            <li key={item} style={{ transitionDelay: `${index * 0.05}s` }}>
               <CheckIcon />
               {item}
             </li>
           ))}
         </ul>
-      </section>
+      </Reveal>
 
-      <section className="landing-cta-band">
+      <Reveal as="section" className="landing-cta-band">
         <div className="landing-cta-band-inner">
           <h2>Bereit für den ersten Dienstplan ohne Excel?</h2>
           <p>In wenigen Minuten eingerichtet, mit Beispieldaten zum Anfassen.</p>
@@ -305,7 +355,7 @@ export default function LandingPage({ onStart, onLogin }) {
             <span aria-hidden="true">→</span>
           </button>
         </div>
-      </section>
+      </Reveal>
 
       <footer className="landing-footer">
         <span className="brand-mark-lg landing-nav-mark" aria-hidden="true">

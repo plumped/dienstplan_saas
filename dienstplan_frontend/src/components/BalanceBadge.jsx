@@ -110,7 +110,7 @@ export default function BalanceBadge({ employeeId, variant = "pill", data: provi
         <span className="balance-progress-fill" style={{ width: `${progressPct}%` }} />
       </span>
       <span className="balance-badge-sep">·</span>
-      <span>{balance.vacation_remaining_days} Ferientage</span>
+      <span className="balance-badge-vacation">{balance.vacation_remaining_days} Ferientage</span>
     </span>
   );
 }

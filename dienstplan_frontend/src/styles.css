@@ -243,6 +243,16 @@ button {
   color: var(--border);
 }
 
+/* Nutzer-Feedback (2026-08): Ferientage rechtsbündig an den Pill-Rand --
+   seit .balance-badge ein festes min-width hat (einheitliche Pill-Breite,
+   siehe oben), lässt ein kurzer Saldo sonst sichtbaren Leerraum VOR den
+   Ferientagen statt am Ende der Pille. margin-left: auto schiebt das
+   Element im Flex-Layout an den rechten Rand, ohne den Rest der Pille zu
+   beeinflussen. */
+.balance-badge-vacation {
+  margin-left: auto;
+}
+
 .balance-badge .is-positive {
   color: var(--primary);
   font-weight: 700;

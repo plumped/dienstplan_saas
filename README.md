@@ -261,7 +261,7 @@ entstanden sind, nicht neu sortiert nach Status):
 | 5 | Datenschutz (revDSG) & Rechtliches | nichts umgesetzt | kompletter Block (AVV, Löschkonzept, Betroffenenrechte) |
 | 6 | Abrechnung (nur falls kommerziell verkauft) | nichts umgesetzt | Zahlungsanbieter, Trial/Limits |
 | 7 | Zeitmanagement | ✅ vollständig umgesetzt | — |
-| 8 | Öffentliche/Partner-API für externe Integrationen (read-only) | nichts umgesetzt | kompletter Block (read-only API-Credentials, Rate-Limiting, OpenAPI-Doku, Cursor-Pagination, Fehlerformat, Versionierung, Webhooks) |
+| 8 | Öffentliche/Partner-API für externe Integrationen (Lesen + Schreiben) | nichts umgesetzt | kompletter Block (scoped API-Credentials, Rate-Limiting, Idempotency, OpenAPI-Doku, Fehlerformat, Konflikt-sicheres Schreiben, Versionierung, Webhooks) |
 
 Reihenfolge aktuell: Block 1 ist mit Punkt 16 (Lohnfortzahlung Krankheit) inhaltlich fertig, Block 2
 Punkt 30/31 (Lohn-Export) ebenfalls (Nutzerentscheid 2026-08: "näher am Verkaufsargument" als der
@@ -2979,65 +2979,75 @@ externe Middlewares ohne koordinierten Deploy dagegen entwickeln sollen. Wichtig
 Fehlerformat, Page-Number- statt Cursor-Pagination, unbegrenzt gültige Tokens) wie ein Grossteil
 aller DRF-Apps beim Start.
 
-**Bewusste Scope-Entscheidung (Nutzer-Vorgabe 2026-08): rein lesender Datenabzug, keine
-Schreibzugriffe für Dritte.** Externe Middlewares sollen "alles mögliche an Daten ziehen" können,
-nicht Änderungen am Tool vornehmen. Das vereinfacht das Vorhaben deutlich gegenüber einer vollen
-Read/Write-Partner-API -- insbesondere entfällt jede Idempotency-/Schreibkonflikt-Problematik
-komplett, und das Scope-Modell wird trivial (jedes externe Credential ist per Definition
-read-only, keine feingranularen Schreibrechte nötig). Wichtig: das muss **systemisch** durchgesetzt
-werden -- ein externes API-Credential lehnt POST/PUT/PATCH/DELETE grundsätzlich auf
-Authentifizierungs-/Permission-Ebene ab, bevor eine einzelne View überhaupt erreicht wird, nicht
-nur informell "wir bauen halt keine Schreib-Endpunkte dafür an".
+**Scope: voller Lese- UND Schreibzugriff (Nutzer-Vorgabe 2026-08).** Externe Middlewares sollen
+über die API nicht nur Daten ziehen, sondern auch aktualisieren/erstellen/löschen können --
+also dieselben Operationen, die heute das eigene Frontend über die bestehenden ViewSets ausführt,
+nur eben von einem Client, dessen Deploy-Zyklus man nicht kontrolliert. Die bestehende
+Regel-Engine (`ShiftAssignment.clean()`, Ruhezeit/Höchstarbeitszeit/Jugendschutz/
+Mutterschutz-Prüfungen etc.) greift dabei bereits unabhängig vom Aufrufer -- ein Schreibzugriff
+über eine externe Middleware unterliegt denselben Validierungen wie einer über das eigene
+Frontend, das muss nicht neu gebaut werden. Was fehlt, ist die sichere **Einfassung** dieses
+Zugriffs für einen Client, den man nicht kontrolliert:
 
-**Zuerst (Eintrittskarte für jeden sicheren externen Datenabzug):**
+**Zuerst (Eintrittskarte für jede sichere Fremdintegration mit Schreibzugriff):**
 
-1. **Eigene, read-only API-Credentials statt User-Token**: aktuell genau ein nicht ablaufender,
-   nicht scoped DRF-Token pro `User` (`rest_framework.authtoken`, `POST /api/auth/token/`) -- ein
-   Token ist immer der volle Lese-/Schreibzugriff eines menschlichen Logins. Für externe
-   Middleware braucht es ein Service-Account-/API-Key-Konzept, unabhängig von einem Login, hart
-   auf sichere HTTP-Methoden (GET/HEAD/OPTIONS) beschränkt, individuell widerrufbar/rotierbar.
+1. **Eigene, granular scoped API-Credentials statt User-Token**: aktuell genau ein nicht
+   ablaufender, nicht scoped DRF-Token pro `User` (`rest_framework.authtoken`,
+   `POST /api/auth/token/`) -- ein Token ist immer der volle Lese-/Schreibzugriff eines
+   menschlichen Logins. Für externe Middleware braucht es ein Service-Account-/API-Key-Konzept,
+   unabhängig von einem Login, mit granularen Scopes pro Ressource/Aktion (z. B. "Dienstplan
+   lesen + schreiben", "Lohn-Export nur lesen"), individuell widerrufbar/rotierbar -- gerade WEIL
+   Schreibzugriff möglich ist, ist das feingranulare Scope-Modell hier keine Nebensache, sondern
+   der Kern der Absicherung.
 2. **Rate-Limiting**: `REST_FRAMEWORK.DEFAULT_THROTTLE_CLASSES` ist aktuell leer -- keinerlei
-   Schutz vor einer fehlerhaften oder zu aggressiven externen Integration.
-3. **OpenAPI-Schema** (z. B. `drf-spectacular`): aktuell keine maschinenlesbare API-Doku, kein
+   Schutz vor einer fehlerhaften oder zu aggressiven externen Integration, bei Schreibzugriffen
+   potenziell mit echten Datenfolgen statt nur Serverlast.
+3. **Idempotency-Key** auf den schreibenden Endpunkten, die eine Middleware typischerweise
+   aufruft (`ShiftAssignment`, `TimeRecord`, `Absence`) -- ein Netzwerk-Retry von aussen kann sonst
+   Duplikate erzeugen (z. B. doppelt angelegte Zuweisungen).
+4. **OpenAPI-Schema** (z. B. `drf-spectacular`): aktuell keine maschinenlesbare API-Doku, kein
    Schema-Endpoint -- ein externer Entwickler müsste den Quellcode lesen statt gegen einen
-   Vertrag zu bauen.
-4. **Cursor- statt Page-Number-Pagination** für Listen-Endpunkte: bei "möglichst viel Daten
-   ziehen" ist das vollständige, korrekte Durchpaginieren der Kernanwendungsfall, nicht nur ein
-   Randfall. Aktuell `PageNumberPagination`, `PAGE_SIZE=50`, `requestAllPages()` im Frontend folgt
-   den `next`-Links -- bei parallelen Schreibvorgängen (durch die eigenen Nutzer:innen, während
-   eine Middleware gerade abzieht) können Einträge übersprungen oder doppelt geliefert werden.
+   Vertrag zu bauen. Bei Schreibzugriff umso wichtiger, damit Partner die Validierungsregeln
+   (Pflichtfelder, erlaubte Werte) nicht durch Trial-and-Error herausfinden müssen.
 
 **Danach (Robustheit im laufenden Betrieb mit externen Clients):**
 
 5. **Einheitliches Fehlerformat**: DRF liefert je nach Fehlerart `{"detail": ...}`,
    `{"feld": [...]}` oder `{"non_field_errors": [...]}` -- das eigene Frontend patcht das bereits
    clientseitig zusammen (`dienstplan_frontend/src/api.js: parseErrorResponse`), ein externer
-   Integrator müsste dasselbe nachbauen. Ein `EXCEPTION_HANDLER` mit festem Envelope behebt das
-   zentral. Bei reinem Lesezugriff seltener relevant (v. a. 401/403/404 statt komplexer
-   Validierungsfehler), aber für Query-Parameter-Fehler (z. B. `?month=`) weiterhin nützlich.
-6. **Sparse-Fieldsets** (`?fields=...`): bei "alles mögliche an Daten ziehen" wollen Partner oft
-   nur wenige Felder pro Objekt statt jedes Mal der vollen Payload -- aktuell hat jeder Serializer
-   eine fixe `Meta.fields`-Liste, keine dynamische Feldauswahl.
-7. **API-Versionierung** (`/api/v1/...`): aktuell keine, jede künftige Breaking Change trifft
+   Integrator müsste dasselbe nachbauen. Bei Schreibzugriff besonders relevant, da
+   Validierungsfehler der Regel-Engine (z. B. Ruhezeit-Verletzung) strukturiert zurückkommen
+   müssen, damit eine Middleware den Grund einer abgelehnten Schreibung programmatisch auswerten
+   kann. Ein `EXCEPTION_HANDLER` mit festem Envelope behebt das zentral.
+6. **Konflikt-sicheres Schreiben** (`ETag`/`If-Match` oder ein Versionsfeld): wenn sowohl das
+   eigene Frontend als auch eine externe Middleware denselben Datensatz ändern können, drohen
+   verlorene Änderungen ("lost update") ohne eine Form von optimistischem Locking beim Schreiben.
+7. **Cursor- statt Page-Number-Pagination** für Listen-Endpunkte, die eine Middleware vollständig
+   durchpaginiert (aktuell `PageNumberPagination`, `PAGE_SIZE=50`, `requestAllPages()` im
+   Frontend folgt den `next`-Links) -- bei parallelen Schreibvorgängen während des Durchblätterns
+   können Einträge übersprungen oder doppelt geliefert werden.
+8. **API-Versionierung** (`/api/v1/...`): aktuell keine, jede künftige Breaking Change trifft
    sofort alle Clients gleichzeitig. Am einfachsten VOR dem ersten produktiven externen Client
    einführen, danach wird das Nachziehen aufwendiger.
 
 **Später, sobald erste Partner produktiv sind:**
 
-8. **Webhooks** (z. B. "Absenz genehmigt", "Plan veröffentlicht") als Ergänzung zum Polling --
-   aktuell gibt es ausser synchronen, best-effort E-Mails (`core/notifications.py`) keinen
-   Event-/Push-Mechanismus für Dritte. Bei explizit pull-basiertem Datenabzug niedrigere Priorität
-   als bei einer Read/Write-API, aber reduziert unnötiges Polling-Volumen (siehe Rate-Limiting
-   oben), sobald ein Partner öfter als nötig abfragt.
-9. **Sandbox-Tenant** zum Testen ohne Produktivdaten.
-10. **API-Zugriffs-Audit-Log** (wer/welches Credential hat wann welchen Endpoint aufgerufen) --
-    heute gibt es nur modellbezogene Änderungshistorie (`django-simple-history`), kein Log der
-    rohen API-Aufrufe selbst.
+9. **Webhooks** (z. B. "Absenz genehmigt", "Plan veröffentlicht") statt Polling -- aktuell gibt
+   es ausser synchronen, best-effort E-Mails (`core/notifications.py`) keinen Event-/
+   Push-Mechanismus für Dritte.
+10. **Sandbox-Tenant** zum Testen von Schreibzugriffen ohne Produktivdaten zu gefährden.
+11. **API-Zugriffs-Audit-Log** (wer/welches Credential hat wann welchen Endpoint mit welchem
+    Ergebnis aufgerufen) -- heute gibt es nur modellbezogene Änderungshistorie
+    (`django-simple-history`), kein Log der rohen API-Aufrufe selbst. Bei Schreibzugriff Dritter
+    für die Nachvollziehbarkeit ("wer hat diese Schicht wirklich verändert") relevanter als bei
+    reinem Lesezugriff.
+12. **Sparse-Fieldsets** (`?fields=...`) für Partner, die nur wenige Felder pro Objekt brauchen.
 
-Bewusst zurückgestellt, bis relevant: ETag/Caching-Header, Mehrfach-Mandantschaft pro User (aktuell
-exakt ein `Membership` pro `User` vorausgesetzt, siehe `core/tenancy.py:
-resolve_membership_for_user`), Idempotency-Keys (entfallen durch die Read-only-Scope-Entscheidung
-komplett -- nur relevant, falls der Scope später auf Schreibzugriffe erweitert wird). Teilweise
-Überschneidung mit Block 4 (Produktionsreife) Punkt 2 ("Auth härten") -- dort ist der Fokus jedoch
-der eigene Frontend-Client (Token-Ablauf), hier der fremde Client (eigene Read-only-Credentials);
+Bewusst zurückgestellt, bis relevant: ETag/Caching-Header für reine Lese-Performance (Punkt 6 oben
+deckt den sicherheitsrelevanten Teil ab), Mehrfach-Mandantschaft pro User (aktuell exakt ein
+`Membership` pro `User` vorausgesetzt, siehe `core/tenancy.py: resolve_membership_for_user`),
+Bulk-Endpunkte (aktuell ein Datensatz pro Schreibrequest wie im übrigen ViewSet-Design -- erst
+nachziehen, falls ein Partner tatsächlich grosse Batches schreiben muss). Teilweise Überschneidung
+mit Block 4 (Produktionsreife) Punkt 2 ("Auth härten") -- dort ist der Fokus jedoch der eigene
+Frontend-Client (Token-Ablauf), hier der fremde Client (eigene, granular scoped Credentials);
 beide Punkte sind bei der Umsetzung gemeinsam zu betrachten, aber unterschiedlich motiviert.

@@ -420,7 +420,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
   // Spezialitäten-Zuweisungen (Pikett-Modus).
   async function applyToolToCell(tool, date, slot0, slot1, specials = [], absenceHandled = false) {
     if (tool.kind === "template") {
-      if (placementMode === "pikett") {
+      if (placementMode === "special") {
         const existing = specials.find((s) => s.template === tool.id);
         if (existing) await removeSpecial(existing.id);
         else await addSpecial(date, tool.id);
@@ -444,7 +444,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
     }
 
     if (tool.kind === "empty") {
-      if (placementMode === "pikett") {
+      if (placementMode === "special") {
         for (const special of specials) await removeSpecial(special.id);
         return;
       }
@@ -512,7 +512,7 @@ export default function YearPlan({ nodeId, nodes, employees, me, onError }) {
         datesWithHandledAbsence.add(date);
         continue;
       }
-      if (placementMode === "pikett") continue; // Pikett betrifft nie Absenzen
+      if (placementMode === "special") continue; // Pikett betrifft nie Absenzen
       const existingPortion = absence.day_portion ?? "full";
       if (existingPortion === "full") {
         if (absence.start_date === absence.end_date) {

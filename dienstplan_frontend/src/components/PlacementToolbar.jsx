@@ -4,7 +4,7 @@ const MODES = [
   { value: "full", label: "Alles" },
   { value: "top", label: "Oben" },
   { value: "bottom", label: "Unten" },
-  { value: "pikett", label: "Pikett" },
+  { value: "special", label: "Spezialdienste" },
 ];
 
 // Workflow-Redesign (2026-08, Nutzer-Feedback: "erst Tage markieren, dann
@@ -27,7 +27,7 @@ export default function PlacementToolbar({
   onApplyTool,
   onClearMarked,
 }) {
-  const isPikett = placementMode === "pikett";
+  const isPikett = placementMode === "special";
   const disabled = markedCount === 0;
 
   return (

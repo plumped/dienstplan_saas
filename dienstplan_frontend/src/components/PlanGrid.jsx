@@ -672,7 +672,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // einmal (Analogie zu "Ganz" bei Diensten).
   async function applyToolToCell(tool, employeeId, date, rowNodeId, slot0, slot1, specials = [], absenceHandled = false) {
     if (tool.kind === "template") {
-      if (placementMode === "pikett") {
+      if (placementMode === "special") {
         const existing = specials.find((s) => s.template === tool.id);
         if (existing) await handleRemoveSpecial(existing.id);
         else await handleAddSpecial(employeeId, date, rowNodeId, tool.id);
@@ -702,7 +702,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
 
     if (tool.kind === "empty") {
-      if (placementMode === "pikett") {
+      if (placementMode === "special") {
         for (const special of specials) await handleRemoveSpecial(special.id);
         return;
       }
@@ -865,7 +865,7 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
         datesWithHandledAbsence.add(date);
         continue;
       }
-      if (placementMode === "pikett") continue; // Pikett betrifft nie Absenzen
+      if (placementMode === "special") continue; // Pikett betrifft nie Absenzen
       const existingPortion = absence.day_portion ?? "full";
       if (existingPortion === "full") {
         if (absence.start_date === absence.end_date) {

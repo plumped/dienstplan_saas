@@ -724,6 +724,12 @@ steht.
    über dem Planblatt-Grid (`PlanGrid.jsx`), für alle Rollen sichtbar (nicht hinter `canManage`
    versteckt). 10 neue Backend-Tests (Pflichtparameter, Format-Validierung, Stations-Scoping für
    Admin/Planer/Mitarbeitende, PDF-Content-Type, CSV-Inhalt inkl. Absenzen), volle Suite grün.
+
+   **Nachbesserung (Nutzer-Feedback):** die Buttons hatten anfangs nur die Browser-Default-
+   Darstellung (`.plan-export-bar button` ohne eigenes CSS -- klobiger 3D-Rand, kein
+   Border-Radius) und wirkten neben der fein gestylten `PlacementToolbar` direkt darunter
+   deplatziert. Jetzt dieselbe Ghost-Pill-Sprache wie `.balance-badge`/`.fairness-badge` (schlanker
+   Rand, runde Form, Akzentfarbe erst bei Hover statt dauerhaftem Rahmen-Kontrast).
 6. ✅ **Monatsauswertung Soll/Ist-Stunden pro Mitarbeiter** (2026-08, inkl. Nacht-/
    Sonntagszuschläge, Überzeit) als Basis für den Lohnlauf -- bewusst getrennt von Block 1.11
    (strikt wöchentlich für den Art.-13-ArG-Zuschlag) und Block 2.7 (laufender Jahressaldo, für
@@ -1987,7 +1993,14 @@ steht.
       täglich gleitend: die letzten 365 Tage ab dem Stichtag, kein fixer Reset-Zeitpunkt.
     - **Vergleichsbasis**: Durchschnitt über alle aktiven Mitarbeitenden, die mindestens eine
       Station mit der Person teilen (`Employee.nodes`-Schnittmenge, dieselbe Abgrenzung wie bei
-      `effective_cost_center()`, Punkt 31), inkl. der Person selbst.
+      `effective_cost_center()`, Punkt 31), inkl. der Person selbst -- **auf Vollzeit (100%)
+      normalisiert** (Nutzer-Feedback nach Erstauslieferung: "wird das Pensum berücksichtigt?").
+      Ein roher Punkte-Vergleich hätte Teilzeit-Mitarbeitende systematisch benachteiligt -- wer 40%
+      arbeitet, hat schlicht weniger Gelegenheit, Sonntags-/Nachtschichten zu übernehmen, unabhängig
+      davon, ob die Verteilung untereinander fair ist. Der Team-Durchschnitt wird deshalb je
+      Kolleg:in auf Punkte/100%-Pensum umgerechnet, gemittelt und danach auf das eigene Pensum
+      zurückskaliert -- bleibt dadurch direkt mit `points` vergleichbar, ohne eine zusätzliche,
+      erklärungsbedürftige Kennzahl in der Badge anzuzeigen.
     - **Transparente Bausteine statt einer Blackbox-Zahl**: `Employee.fairness_summary()`
       (`scheduling/models.py`, Aufbau analog `night_work_summary()`) liefert Sonntagsstunden,
       Nachtstunden, deren Einzelpunktzahlen sowie die Summe und den Team-Durchschnitt getrennt --
@@ -2007,6 +2020,13 @@ steht.
       Zielfunktions-Term berücksichtigen -- wer zuletzt überdurchschnittlich oft Sonntag/Nacht
       gemacht hat, wird bei der nächsten automatischen Zuteilung tendenziell übersprungen, ohne
       dass das je hart erzwungen würde.
+    - **Performance-Fix**: die ursprüngliche Team-Durchschnitt-Berechnung hat pro Kolleg:in zwei
+      eigene Datenbankabfragen ausgelöst (O(Teamgrösse) Queries bei JEDEM `fairness_summary()`-
+      Aufruf) -- bei z. B. 20 Mitarbeitenden auf derselben Station also ~40 zusätzliche Abfragen
+      *pro Badge* auf der Mitarbeitendenliste, spürbar langsam ab ca. 15-20 Mitarbeitenden.
+      `Employee._bulk_fairness_points()` ersetzt das durch je eine Query für alle Zuweisungen/
+      Wunschdienste der ganzen Vergleichsgruppe, danach in Python pro Mitarbeiter aggregiert --
+      konstant statt quadratisch mit der Teamgrösse.
 
 21. ✅ **Dashboard/Übersicht für Admin/Planer** (2026-08). Nutzer-Anfrage: eine zentrale Seite,
     auf der auf einen Blick sichtbar ist, was gerade Handlungsbedarf hat -- offene Genehmigungen,

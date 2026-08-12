@@ -1,4 +1,5 @@
 import calendar
+from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
 from django.conf import settings
@@ -557,6 +558,19 @@ class Employee(TenantScopedModel):
         Person selbst. `team_average_points` ist None, falls die Person
         keiner Station zugeordnet ist.
 
+        Nutzer-Feedback (2026-08, "wird das Pensum berücksichtigt?"): ein
+        roher Punkte-Vergleich benachteiligt Teilzeit-Mitarbeitende
+        systematisch -- wer 40% arbeitet, hat schlicht weniger Gelegenheit,
+        Sonntags-/Nachtschichten zu übernehmen, unabhängig davon, ob die
+        Verteilung untereinander fair ist. Der Team-Durchschnitt wird
+        deshalb auf Vollzeit-Basis (100%) gebildet und danach auf das
+        eigene Pensum zurückgerechnet -- dadurch bleibt er direkt mit
+        `points` vergleichbar (gleiche Einheit), ohne dass die Badge eine
+        zusätzliche, erklärungsbedürftige Kennzahl anzeigen muss.
+        Mitarbeitende mit employment_pct=0 (Dateninkonsistenz, Feld erlaubt
+        es technisch) werden von der Normalisierung ausgeschlossen statt
+        eine Division durch 0 zu riskieren.
+
         Rein informativ wie night_work_summary() selbst -- kein Bestandteil
         der Regel-Engine, kein Lohnbestandteil.
         """
@@ -567,14 +581,19 @@ class Employee(TenantScopedModel):
         )
         points = round(sunday_points + night_points, 2)
 
-        colleagues = Employee.objects.filter(
-            tenant=self.tenant, is_active=True, nodes__in=self.nodes.all()
-        ).distinct()
-        colleague_totals = [
-            round(sum(c._fairness_points(window_start, reference_date)[2:]), 2) for c in colleagues
+        colleagues = list(
+            Employee.objects.filter(tenant=self.tenant, is_active=True, nodes__in=self.nodes.all()).distinct()
+        )
+        colleague_points = Employee._bulk_fairness_points(colleagues, window_start, reference_date)
+        colleague_points_per_fte = [
+            colleague_points[c.id] / (c.employment_pct / 100) for c in colleagues if c.employment_pct > 0
         ]
         team_average_points = (
-            round(sum(colleague_totals) / len(colleague_totals), 2) if colleague_totals else None
+            round(
+                (sum(colleague_points_per_fte) / len(colleague_points_per_fte)) * (self.employment_pct / 100), 2
+            )
+            if colleague_points_per_fte and self.employment_pct > 0
+            else None
         )
 
         return {
@@ -586,6 +605,55 @@ class Employee(TenantScopedModel):
             "night_points": night_points,
             "points": points,
             "team_average_points": team_average_points,
+        }
+
+    @staticmethod
+    def _bulk_fairness_points(employees, window_start, window_end):
+        """
+        Wie _fairness_points(), aber für mehrere Mitarbeitende auf einmal --
+        Performance-Fix für fairness_summary(): die vorherige Variante hat
+        pro Team-Mitglied zwei eigene Queries ausgelöst (O(Teamgrösse)
+        Queries bei JEDEM einzelnen fairness_summary()-Aufruf, multipliziert
+        mit der Anzahl Badges auf der Mitarbeitendenliste -- spürbar
+        langsam ab ca. 15-20 Mitarbeitenden). Stattdessen je eine Query für
+        alle Zuweisungen/Wunschdienste der ganzen Gruppe, danach in Python
+        pro Mitarbeiter aggregiert.
+        """
+        if not employees:
+            return {}
+        employee_ids = [e.id for e in employees]
+        tenant = employees[0].tenant
+        sunday_rate = tenant.sunday_shift_bonus_points_per_hour
+        night_rate = tenant.night_shift_bonus_points_per_hour
+
+        wished_by_employee = defaultdict(set)
+        for employee_id, wished_date in ShiftPreference.all_objects.filter(
+            employee_id__in=employee_ids,
+            type=ShiftPreference.Type.SHIFT,
+            date__gte=window_start,
+            date__lte=window_end,
+        ).values_list("employee_id", "date"):
+            wished_by_employee[employee_id].add(wished_date)
+
+        sunday_hours_by_employee = defaultdict(float)
+        night_hours_by_employee = defaultdict(float)
+        assignments = ShiftAssignment.all_objects.filter(
+            employee_id__in=employee_ids, date__gte=window_start, date__lte=window_end
+        ).select_related("template")
+        for assignment in assignments:
+            if assignment.date in wished_by_employee[assignment.employee_id]:
+                continue
+            if assignment.is_sunday:
+                sunday_hours_by_employee[assignment.employee_id] += ShiftAssignment._shift_hours(
+                    assignment.date, assignment.template
+                )
+            night_hours_by_employee[assignment.employee_id] += assignment.night_hours
+
+        return {
+            e.id: round(
+                sunday_hours_by_employee[e.id] * sunday_rate + night_hours_by_employee[e.id] * night_rate, 2
+            )
+            for e in employees
         }
 
     def _effective_weekly_hours(self):

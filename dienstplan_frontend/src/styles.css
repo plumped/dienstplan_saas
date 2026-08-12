@@ -1207,11 +1207,38 @@ thead .col-employee {
 }
 
 /* MVP-Fahrplan Block 2, Punkt 5: Planblatt-Export -- schmale Button-Leiste
-   direkt über dem Grid, für alle Rollen sichtbar (siehe PlanGrid.jsx). */
+   direkt über dem Grid, für alle Rollen sichtbar (siehe PlanGrid.jsx).
+   Nutzer-Feedback (2026-08): die Buttons hatten nur die Browser-Default-
+   Darstellung (kein Border-Radius, klobiger 3D-Rand) und wirkten neben der
+   fein gestylten PlacementToolbar direkt darunter deplatziert -- jetzt
+   dieselbe Ghost-Pill-Sprache wie .balance-badge/.fairness-badge
+   (schlanker Rand, runde Form, Akzentfarbe erst bei Hover statt
+   dauerhaftem Rahmen-Kontrast). */
 .plan-export-bar {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.plan-export-bar button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 999px;
+}
+
+.plan-export-bar button:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.plan-export-bar button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 .panel-form-row {

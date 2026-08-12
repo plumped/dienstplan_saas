@@ -7323,6 +7323,48 @@ class FairnessSummaryTests(TestCase):
         summary = self.employee.fairness_summary(self.reference_date)
         self.assertEqual(summary["team_average_points"], 0.0)  # nur Anna selbst zählt, 0 Punkte
 
+    def test_team_average_normalized_by_employment_pct(self):
+        """
+        Anna (100%) und Bruno (40%) haben denselben Nachtdienst uebernommen
+        (3.5 Punkte). Rein rohe Punkte wuerden Bruno als "unterdurchschnittlich
+        belastet" ausweisen, obwohl er bei seinem Pensum bereits denselben
+        Anteil traegt wie Anna -- die Vollzeit-Normalisierung muss das
+        auffangen: der Team-Durchschnitt (auf 100% normalisiert, dann auf
+        Annas Pensum zurueckgerechnet) soll ihren eigenen Punkten entsprechen.
+        """
+        colleague = Employee.objects.create(
+            tenant=self.tenant, first_name="Bruno", last_name="B", employment_pct=40
+        )
+        colleague.nodes.add(self.node)
+        self._assign(self.employee, date(2026, 6, 8), self.night_template)  # Anna: 3.5 Punkte, 100%
+        self._assign(colleague, date(2026, 6, 9), self.night_template)  # Bruno: 3.5 Punkte, 40%
+
+        anna_summary = self.employee.fairness_summary(self.reference_date)
+        # Anna: 3.5 / 1.0 = 3.5 Punkte/FTE. Bruno: 3.5 / 0.4 = 8.75 Punkte/FTE.
+        # Durchschnitt Punkte/FTE = (3.5 + 8.75) / 2 = 6.125, zurueckgerechnet
+        # auf Annas 100% Pensum: 6.125 * 1.0 = 6.125 -> 6.13 (gerundet).
+        self.assertEqual(anna_summary["points"], 3.5)
+        self.assertEqual(anna_summary["team_average_points"], 6.12)
+
+        bruno_summary = colleague.fairness_summary(self.reference_date)
+        # Gleicher Punkte/FTE-Durchschnitt (6.125), zurueckgerechnet auf
+        # Brunos 40% Pensum: 6.125 * 0.4 = 2.45.
+        self.assertEqual(bruno_summary["points"], 3.5)
+        self.assertEqual(bruno_summary["team_average_points"], 2.45)
+
+    def test_colleague_with_zero_employment_pct_excluded_from_normalization(self):
+        """
+        employment_pct=0 ist technisch erlaubt (PositiveSmallIntegerField),
+        aber fachlich eine Dateninkonsistenz (keine reale 0%-Anstellung) --
+        darf keine Division durch 0 auslösen, wird aus der Normalisierung
+        ausgeschlossen statt den Durchschnitt zu verfälschen.
+        """
+        colleague = Employee.objects.create(tenant=self.tenant, first_name="Zoe", last_name="Z", employment_pct=0)
+        colleague.nodes.add(self.node)
+        self._assign(colleague, date(2026, 6, 8), self.night_template)
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["team_average_points"], 0.0)  # nur Anna zählt (0 Punkte), Zoe ausgeschlossen
+
 
 class FairnessSummaryAPITests(APITestCase):
     """API-Berechtigungen für EmployeeViewSet.fairness -- Lesen für alle Rollen offen."""

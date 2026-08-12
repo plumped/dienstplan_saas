@@ -43,7 +43,7 @@ export default function FairnessBadge({ employeeId }) {
     `(${night_points} Pkt). ` +
     (team_average_points === null
       ? "Kein Team-Durchschnitt verfügbar (keine Station zugeordnet)."
-      : `Team-Durchschnitt: ${team_average_points} Pkt. `) +
+      : `Team-Durchschnitt (auf dein Pensum umgerechnet): ${team_average_points} Pkt. `) +
     "Wunschdienste zählen nicht als Belastung. Rein informativ, kein Lohnbestandteil.";
 
   return (

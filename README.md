@@ -261,7 +261,7 @@ entstanden sind, nicht neu sortiert nach Status):
 | 5 | Datenschutz (revDSG) & Rechtliches | nichts umgesetzt | kompletter Block (AVV, Löschkonzept, Betroffenenrechte) |
 | 6 | Abrechnung (nur falls kommerziell verkauft) | nichts umgesetzt | Zahlungsanbieter, Trial/Limits |
 | 7 | Zeitmanagement | ✅ vollständig umgesetzt | — |
-| 8 | Öffentliche/Partner-API für externe Integrationen | nichts umgesetzt | kompletter Block (API-Credentials/Scopes, Rate-Limiting, OpenAPI-Doku, Fehlerformat, Idempotency, Versionierung, Webhooks) |
+| 8 | Öffentliche/Partner-API für externe Integrationen (read-only) | nichts umgesetzt | kompletter Block (read-only API-Credentials, Rate-Limiting, OpenAPI-Doku, Cursor-Pagination, Fehlerformat, Versionierung, Webhooks) |
 
 Reihenfolge aktuell: Block 1 ist mit Punkt 16 (Lohnfortzahlung Krankheit) inhaltlich fertig, Block 2
 Punkt 30/31 (Lohn-Export) ebenfalls (Nutzerentscheid 2026-08: "näher am Verkaufsargument" als der
@@ -2971,60 +2971,73 @@ Nie am 1. Januar ein rohes "-2267h" ohne Kontext zeigen — rechnerisch korrekt,
 Vorsorglich (2026-08, Nutzer-Vorgabe: "ich will das meine applikation so modern wie möglich
 anbindbar ist"), nicht durch einen konkreten Integrationspartner ausgelöst. Ausgangspunkt war ein
 Audit des aktuellen `/api/`-Surface (siehe unten je Punkt): die App wurde bisher konsequent für
-**einen** selbstkontrollierten Client (das eigene Frontend) gebaut -- das war für diesen Zweck
-richtig bemessen (kein Overengineering), reicht aber nicht, sobald beliebige externe Middlewares
-ohne koordinierten Deploy dagegen entwickeln sollen. Wichtig: nichts davon ist "schlecht gebaut" --
-DRFs Standardverhalten ohne Zusatzarbeit sieht exakt so aus (uneinheitliches Fehlerformat,
-Page-Number- statt Cursor-Pagination, unbegrenzt gültige Tokens) wie ein Grossteil aller
-DRF-Apps beim Start.
+**einen** selbstkontrollierten Client (das eigene Frontend, dessen Deploy-Zyklus man selbst
+kontrolliert -- eine Breaking Change und der angepasste Client landen im selben Release) gebaut --
+das war für diesen Zweck richtig bemessen (kein Overengineering), reicht aber nicht, sobald
+externe Middlewares ohne koordinierten Deploy dagegen entwickeln sollen. Wichtig: nichts davon ist
+"schlecht gebaut" -- DRFs Standardverhalten ohne Zusatzarbeit sieht exakt so aus (uneinheitliches
+Fehlerformat, Page-Number- statt Cursor-Pagination, unbegrenzt gültige Tokens) wie ein Grossteil
+aller DRF-Apps beim Start.
 
-**Zuerst (Eintrittskarte für jede sichere Fremdintegration):**
+**Bewusste Scope-Entscheidung (Nutzer-Vorgabe 2026-08): rein lesender Datenabzug, keine
+Schreibzugriffe für Dritte.** Externe Middlewares sollen "alles mögliche an Daten ziehen" können,
+nicht Änderungen am Tool vornehmen. Das vereinfacht das Vorhaben deutlich gegenüber einer vollen
+Read/Write-Partner-API -- insbesondere entfällt jede Idempotency-/Schreibkonflikt-Problematik
+komplett, und das Scope-Modell wird trivial (jedes externe Credential ist per Definition
+read-only, keine feingranularen Schreibrechte nötig). Wichtig: das muss **systemisch** durchgesetzt
+werden -- ein externes API-Credential lehnt POST/PUT/PATCH/DELETE grundsätzlich auf
+Authentifizierungs-/Permission-Ebene ab, bevor eine einzelne View überhaupt erreicht wird, nicht
+nur informell "wir bauen halt keine Schreib-Endpunkte dafür an".
 
-1. **Eigene API-Credentials statt User-Token**: aktuell genau ein nicht ablaufender, nicht
-   scoped DRF-Token pro `User` (`rest_framework.authtoken`, `POST /api/auth/token/`) -- ein Token
-   ist immer der volle Zugriff eines menschlichen Logins. Für externe Middleware braucht es ein
-   Service-Account-/API-Key-Konzept, unabhängig von einem Login, mit Scopes (z. B. "nur
-   Lohn-Export lesen" vs. voller Zugriff) und individuell widerrufbar/rotierbar.
+**Zuerst (Eintrittskarte für jeden sicheren externen Datenabzug):**
+
+1. **Eigene, read-only API-Credentials statt User-Token**: aktuell genau ein nicht ablaufender,
+   nicht scoped DRF-Token pro `User` (`rest_framework.authtoken`, `POST /api/auth/token/`) -- ein
+   Token ist immer der volle Lese-/Schreibzugriff eines menschlichen Logins. Für externe
+   Middleware braucht es ein Service-Account-/API-Key-Konzept, unabhängig von einem Login, hart
+   auf sichere HTTP-Methoden (GET/HEAD/OPTIONS) beschränkt, individuell widerrufbar/rotierbar.
 2. **Rate-Limiting**: `REST_FRAMEWORK.DEFAULT_THROTTLE_CLASSES` ist aktuell leer -- keinerlei
    Schutz vor einer fehlerhaften oder zu aggressiven externen Integration.
 3. **OpenAPI-Schema** (z. B. `drf-spectacular`): aktuell keine maschinenlesbare API-Doku, kein
    Schema-Endpoint -- ein externer Entwickler müsste den Quellcode lesen statt gegen einen
    Vertrag zu bauen.
+4. **Cursor- statt Page-Number-Pagination** für Listen-Endpunkte: bei "möglichst viel Daten
+   ziehen" ist das vollständige, korrekte Durchpaginieren der Kernanwendungsfall, nicht nur ein
+   Randfall. Aktuell `PageNumberPagination`, `PAGE_SIZE=50`, `requestAllPages()` im Frontend folgt
+   den `next`-Links -- bei parallelen Schreibvorgängen (durch die eigenen Nutzer:innen, während
+   eine Middleware gerade abzieht) können Einträge übersprungen oder doppelt geliefert werden.
 
 **Danach (Robustheit im laufenden Betrieb mit externen Clients):**
 
-4. **Einheitliches Fehlerformat**: DRF liefert je nach Fehlerart `{"detail": ...}`,
+5. **Einheitliches Fehlerformat**: DRF liefert je nach Fehlerart `{"detail": ...}`,
    `{"feld": [...]}` oder `{"non_field_errors": [...]}` -- das eigene Frontend patcht das bereits
    clientseitig zusammen (`dienstplan_frontend/src/api.js: parseErrorResponse`), ein externer
    Integrator müsste dasselbe nachbauen. Ein `EXCEPTION_HANDLER` mit festem Envelope behebt das
-   zentral.
-5. **Idempotency-Key** auf den schreibenden Endpunkten, die eine Middleware typischerweise
-   aufruft (`ShiftAssignment`, `TimeRecord`) -- ein Netzwerk-Retry von aussen kann sonst
-   Duplikate erzeugen.
-6. **API-Versionierung** (`/api/v1/...`): aktuell keine, jede künftige Breaking Change trifft
+   zentral. Bei reinem Lesezugriff seltener relevant (v. a. 401/403/404 statt komplexer
+   Validierungsfehler), aber für Query-Parameter-Fehler (z. B. `?month=`) weiterhin nützlich.
+6. **Sparse-Fieldsets** (`?fields=...`): bei "alles mögliche an Daten ziehen" wollen Partner oft
+   nur wenige Felder pro Objekt statt jedes Mal der vollen Payload -- aktuell hat jeder Serializer
+   eine fixe `Meta.fields`-Liste, keine dynamische Feldauswahl.
+7. **API-Versionierung** (`/api/v1/...`): aktuell keine, jede künftige Breaking Change trifft
    sofort alle Clients gleichzeitig. Am einfachsten VOR dem ersten produktiven externen Client
    einführen, danach wird das Nachziehen aufwendiger.
 
 **Später, sobald erste Partner produktiv sind:**
 
-7. **Webhooks** (z. B. "Absenz genehmigt", "Plan veröffentlicht") statt Polling -- aktuell gibt
-   es ausser synchronen, best-effort E-Mails (`core/notifications.py`) keinen
-   Event-/Push-Mechanismus für Dritte.
-8. **Sandbox-Tenant** zum Testen ohne Produktivdaten.
-9. **Cursor- statt Page-Number-Pagination** für Listen-Endpunkte, die eine Middleware
-   vollständig durchpaginiert (aktuell `PageNumberPagination`, `PAGE_SIZE=50`,
-   `requestAllPages()` im Frontend folgt den `next`-Links) -- bei parallelen Schreibvorgängen
-   während des Durchblätterns können Einträge übersprungen oder doppelt geliefert werden, ein
-   bekannter, aber bei den heutigen Datenmengen (Dienstplan einer Station/eines Monats)
-   praxisrelevant seltener Randfall.
+8. **Webhooks** (z. B. "Absenz genehmigt", "Plan veröffentlicht") als Ergänzung zum Polling --
+   aktuell gibt es ausser synchronen, best-effort E-Mails (`core/notifications.py`) keinen
+   Event-/Push-Mechanismus für Dritte. Bei explizit pull-basiertem Datenabzug niedrigere Priorität
+   als bei einer Read/Write-API, aber reduziert unnötiges Polling-Volumen (siehe Rate-Limiting
+   oben), sobald ein Partner öfter als nötig abfragt.
+9. **Sandbox-Tenant** zum Testen ohne Produktivdaten.
 10. **API-Zugriffs-Audit-Log** (wer/welches Credential hat wann welchen Endpoint aufgerufen) --
     heute gibt es nur modellbezogene Änderungshistorie (`django-simple-history`), kein Log der
     rohen API-Aufrufe selbst.
 
-Bewusst zurückgestellt, bis relevant: Sparse-Fieldsets (`?fields=`), ETag/Caching-Header,
-Mehrfach-Mandantschaft pro User (aktuell exakt ein `Membership` pro `User` vorausgesetzt, siehe
-`core/tenancy.py: resolve_membership_for_user`) -- alles Verfeinerungen, die erst bei tatsächlicher
-externer Nutzung ihren Nutzen zeigen. Teilweise Überschneidung mit Block 4 (Produktionsreife) Punkt
-2 ("Auth härten") -- dort ist der Fokus jedoch der eigene Frontend-Client (Token-Ablauf), hier der
-fremde Client (eigene Credentials/Scopes); beide Punkte sind bei der Umsetzung gemeinsam zu
-betrachten, aber unterschiedlich motiviert.
+Bewusst zurückgestellt, bis relevant: ETag/Caching-Header, Mehrfach-Mandantschaft pro User (aktuell
+exakt ein `Membership` pro `User` vorausgesetzt, siehe `core/tenancy.py:
+resolve_membership_for_user`), Idempotency-Keys (entfallen durch die Read-only-Scope-Entscheidung
+komplett -- nur relevant, falls der Scope später auf Schreibzugriffe erweitert wird). Teilweise
+Überschneidung mit Block 4 (Produktionsreife) Punkt 2 ("Auth härten") -- dort ist der Fokus jedoch
+der eigene Frontend-Client (Token-Ablauf), hier der fremde Client (eigene Read-only-Credentials);
+beide Punkte sind bei der Umsetzung gemeinsam zu betrachten, aber unterschiedlich motiviert.

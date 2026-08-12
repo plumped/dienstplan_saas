@@ -92,6 +92,7 @@ class TenantAdmin(admin.ModelAdmin):
         "name",
         "slug",
         "is_active",
+        "onboarding_completed",
         "minimum_rest_hours",
         "maximum_weekly_hours",
         "maximum_daily_span_hours",
@@ -100,6 +101,16 @@ class TenantAdmin(admin.ModelAdmin):
     prepopulated_fields = {"slug": ("name",)}
     fieldsets = (
         (None, {"fields": ("name", "slug", "is_active")}),
+        (
+            "Self-Signup / Onboarding",
+            {
+                "fields": ("onboarding_completed",),
+                "description": "False nur für frisch per Self-Signup angelegte Tenants (core.views."
+                "SignupView) -- steuert, ob das Frontend den Einrichtungsassistenten (OnboardingWizard."
+                "jsx) statt der normalen App zeigt. Hier manuell auf True setzbar, falls ein Tenant im "
+                "Assistenten feststeckt (Support-Fall).",
+            },
+        ),
         (
             "Regel-Engine (Schweizer Arbeitsgesetz, siehe README)",
             {
@@ -115,9 +126,12 @@ class TenantAdmin(admin.ModelAdmin):
         (
             "Überzeitarbeit (Art. 13 ArG)",
             {
-                "fields": ("standard_weekly_hours", "overtime_surcharge_pct"),
+                "fields": ("standard_weekly_hours", "overtime_surcharge_pct", "flextime_corridor_hours"),
                 "description": "standard_weekly_hours ist die Normalarbeitszeit eines 100%-Pensums "
-                "(Soll), nicht die gesetzliche Höchstgrenze (maximum_weekly_hours oben).",
+                "(Soll), nicht die gesetzliche Höchstgrenze (maximum_weekly_hours oben). "
+                "flextime_corridor_hours ist die Gleitzeit-Bandbreite, innerhalb der sich der laufende "
+                "Saldo frei bewegt, ohne Zuschlag/Auszahlung auszulösen (siehe Employee."
+                "time_account_summary()).",
             },
         ),
         (
@@ -137,12 +151,16 @@ class TenantAdmin(admin.ModelAdmin):
             {
                 "fields": (
                     "night_work_surcharge_pct",
+                    "occasional_night_work_surcharge_pct",
                     "night_work_regular_threshold_nights",
                     "night_work_permit_confirmed",
                     "sunday_work_surcharge_pct",
                 ),
                 "description": "Zuschläge/Schwellenwerte für Employee.night_work_summary() und "
-                "weekly_hours_summary() (siehe README).",
+                "weekly_hours_summary() (siehe README). night_work_surcharge_pct ist die "
+                "Zeitgutschrift bei REGELMÄSSIGER Nachtarbeit (Art. 17b Abs. 1), "
+                "occasional_night_work_surcharge_pct der Lohnzuschlag bei GELEGENTLICHER "
+                "Nachtarbeit (Art. 17b Abs. 2).",
             },
         ),
         (

@@ -351,7 +351,7 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
               {selectedIds.size > 0 && (
                 <span className="settings-table-bulk-bar">
                   <span>{selectedIds.size} ausgewählt</span>
-                  <button type="button" onClick={handleBulkConfirm} disabled={bulkConfirming}>
+                  <button type="button" className="btn-primary" onClick={handleBulkConfirm} disabled={bulkConfirming}>
                     {bulkConfirming ? "Bestätigt …" : "Ausgewählte bestätigen"}
                   </button>
                 </span>
@@ -431,7 +431,7 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                                 <button type="button" className="btn-ghost" onClick={() => openCorrect(r)}>
                                   Korrigieren
                                 </button>
-                                <button type="button" onClick={() => handleConfirm(r)}>
+                                <button type="button" className="btn-primary" onClick={() => handleConfirm(r)}>
                                   Bestätigen
                                 </button>
                               </span>
@@ -531,7 +531,7 @@ export default function TimeRecordOverview({ nodes, initialView = "confirm", onE
                             <td>{template?.name ?? `#${a.template}`}</td>
                             <td>
                               <span className="settings-table-actions">
-                                <button type="button" onClick={() => openCapture(a)}>
+                                <button type="button" className="btn-primary" onClick={() => openCapture(a)}>
                                   Erfassen
                                 </button>
                               </span>

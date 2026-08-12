@@ -192,7 +192,7 @@ export default function AbsenceForm({ employees, canManage, me, absenceTypes, on
           Tage im laufenden Dienstjahr erfasst.
         </p>
       )}
-      <button type="submit" disabled={saving || !form.employee}>
+      <button type="submit" className="btn-primary" disabled={saving || !form.employee}>
         {saving ? "Speichert …" : "Anlegen"}
       </button>
     </form>

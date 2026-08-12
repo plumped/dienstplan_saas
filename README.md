@@ -2944,6 +2944,25 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     anfangs nicht konsequent für HR aus), Mitarbeiter behält die unveränderte
     Self-Service-Ansicht.
 
+38. ✅ **Einheitliches Button-Styling für Abwesenheiten/Diensttausch/Zeiterfassung** (2026-08,
+    Nutzer-Feedback: "Kannst du bitte alle Buttons schön stylen auf Abwesenheiten,
+    Zeiterfassung"). Bis hierhin gab es im ganzen Frontend ausser `.btn-ghost` keine eigene
+    Button-Klasse -- jede primäre Aktion (Genehmigen, Freigeben, Annehmen, Bestätigen, Erfassen,
+    Anlegen, "+ Absenz erfassen") war ein `<button>` ohne eigenes Styling, reiner
+    Browser-Default-Look. Neue `.btn-primary`-Klasse (gefüllt, `--primary`-Farbe, dezenter
+    Hover/Active-Zustand über `filter: brightness()`) deckt jetzt jede Hauptaktion in
+    `AbsenceOverview.jsx`/`TradeRequestOverview.jsx`/`AbsenceForm.jsx` sowie
+    `TimeRecordOverview.jsx`/`TimeRecordPanel.jsx`/`TimeRecordSegmentEditor.jsx` ab (Genehmigen,
+    Freigeben, Annehmen, Bestätigen, Erfassen, Speichern, Anlegen, die Massenaktions-Buttons in
+    den Bulk-Bars). Neue `.btn-ghost.btn-danger-ghost`-Modifikatorklasse tönt destruktive
+    Ghost-Buttons (Ablehnen, Löschen) beim Hover warnfarben (`--warn`/`--warn-soft`) statt
+    primärfarben, ohne eine zweite, optisch schwerere Button-Klasse einzuführen -- neutrale
+    Ghost-Aktionen wie Korrigieren/Abbrechen/Zurückziehen bleiben unverändert. Globales
+    `button:disabled` (reduzierte Deckkraft, `cursor: not-allowed`) sorgt dafür, dass z. B. der
+    Speichern-Button im Segment-Editor bei einem Blöcke-überlappen-sich-Fehler sichtbar deaktiviert
+    wirkt statt weiterhin klickbar auszusehen. Mit Playwright gegen echte Testheim-Daten für alle
+    drei Tabs verifiziert (Zu-genehmigen-/Offen-/Zu-bestätigen-Zeilen, Bulk-Bar, Korrektur-Modal).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

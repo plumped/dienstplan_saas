@@ -224,14 +224,14 @@ export default function AbsenceOverview({ nodes, me, onError }) {
             ))}
           </select>
           {canManage && (
-            <button type="button" onClick={() => setFormOpen(true)}>
+            <button type="button" className="btn-primary" onClick={() => setFormOpen(true)}>
               + Absenz erfassen
             </button>
           )}
           {view === "pending" && canManage && selectedIds.size > 0 && (
             <span className="settings-table-bulk-bar">
               <span>{selectedIds.size} ausgewählt</span>
-              <button type="button" onClick={handleBulkApprove} disabled={bulkApproving}>
+              <button type="button" className="btn-primary" onClick={handleBulkApprove} disabled={bulkApproving}>
                 {bulkApproving ? "Genehmigt …" : "Ausgewählte genehmigen"}
               </button>
             </span>
@@ -312,10 +312,14 @@ export default function AbsenceOverview({ nodes, me, onError }) {
                       <td>
                         {a.status === "pending" && canManage && (
                           <span className="settings-table-actions">
-                            <button type="button" onClick={() => handleApprove(a.id)}>
+                            <button type="button" className="btn-primary" onClick={() => handleApprove(a.id)}>
                               Genehmigen
                             </button>
-                            <button type="button" className="btn-ghost" onClick={() => handleReject(a.id)}>
+                            <button
+                              type="button"
+                              className="btn-ghost btn-danger-ghost"
+                              onClick={() => handleReject(a.id)}
+                            >
                               Ablehnen
                             </button>
                           </span>

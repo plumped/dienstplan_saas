@@ -218,6 +218,7 @@ export default function TradeRequestOverview({ nodes, me, onError }) {
                             <span className="settings-table-actions">
                               <button
                                 type="button"
+                                className="btn-primary"
                                 disabled={busyId === r.id}
                                 onClick={() => runAction(r.id, api.approveShiftTradeRequest)}
                               >
@@ -225,7 +226,7 @@ export default function TradeRequestOverview({ nodes, me, onError }) {
                               </button>
                               <button
                                 type="button"
-                                className="btn-ghost"
+                                className="btn-ghost btn-danger-ghost"
                                 disabled={busyId === r.id}
                                 onClick={() => runAction(r.id, api.rejectShiftTradeRequest)}
                               >
@@ -237,6 +238,7 @@ export default function TradeRequestOverview({ nodes, me, onError }) {
                             <span className="settings-table-actions">
                               <button
                                 type="button"
+                                className="btn-primary"
                                 disabled={busyId === r.id}
                                 onClick={() => runAction(r.id, api.acceptShiftTradeRequest)}
                               >
@@ -244,7 +246,7 @@ export default function TradeRequestOverview({ nodes, me, onError }) {
                               </button>
                               <button
                                 type="button"
-                                className="btn-ghost"
+                                className="btn-ghost btn-danger-ghost"
                                 disabled={busyId === r.id}
                                 onClick={() => runAction(r.id, api.declineShiftTradeRequest)}
                               >

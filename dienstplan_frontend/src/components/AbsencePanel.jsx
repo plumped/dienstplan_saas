@@ -123,7 +123,7 @@ export default function AbsencePanel({ employees, me, onError }) {
                     {isOwnPending && (
                       <button
                         type="button"
-                        className="btn-ghost"
+                        className="btn-ghost btn-danger-ghost"
                         onClick={() => handleDelete(a.id)}
                         aria-label="Abwesenheit löschen"
                       >

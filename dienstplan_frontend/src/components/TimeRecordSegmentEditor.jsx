@@ -123,14 +123,14 @@ export default function TimeRecordSegmentEditor({
       />
 
       <div className="entry-actions">
-        <button type="button" disabled={saving || !complete || overlap} onClick={handleSave}>
+        <button type="button" className="btn-primary" disabled={saving || !complete || overlap} onClick={handleSave}>
           Speichern
         </button>
         <button type="button" className="btn-ghost" onClick={onCancel}>
           Abbrechen
         </button>
         {canDelete && onDelete && (
-          <button type="button" className="btn-ghost" onClick={onDelete}>
+          <button type="button" className="btn-ghost btn-danger-ghost" onClick={onDelete}>
             Löschen
           </button>
         )}

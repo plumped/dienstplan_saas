@@ -223,7 +223,7 @@ export default function TimeRecordPanel({ nodeId, year, month, employees, me, on
                       </button>
                     )}
                     {canManage && record && record.status === "submitted" && (
-                      <button type="button" onClick={() => handleConfirm(record)}>
+                      <button type="button" className="btn-primary" onClick={() => handleConfirm(record)}>
                         Bestätigen
                       </button>
                     )}

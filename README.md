@@ -2992,6 +2992,16 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     Playwright erneut gegen alle sechs Module verifiziert (inkl. Regressionscheck der zuvor
     verifizierten Abwesenheiten-/Zeiterfassungs-Screens).
 
+    **Weiterer Nachtrag (2026-08, Nutzer-Feedback: "Konten ohne Mitarbeiterprofil sieht nicht gut
+    aus! Platziere den Button besser!")**: die korrekt ausgerichtete `align-items: center`-Zeile
+    aus dem vorherigen Fix (Titel + Button nebeneinander) sah bei mehrzeiligem Beschreibungstext
+    darunter trotzdem unbalanciert aus -- der Button klebte oben rechts am Titel, während rechts
+    neben den umgebrochenen Zeilen der Beschreibung ein grosser, ungenutzter Leerraum entstand.
+    `.panel-list-header` (Titel+Button nebeneinander) entfernt, stattdessen fliessen Titel und
+    Beschreibung normal untereinander, der Button bekommt danach eine eigene, rechtsbündige Zeile
+    (neue `.panel-list-actions`-Klasse) -- liest sich jetzt als klar abgesetzte Aktion statt als
+    Kopfzeilen-Dekoration neben unausgeglichenem Fliesstext.
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

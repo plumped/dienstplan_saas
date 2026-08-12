@@ -1277,18 +1277,18 @@ thead .col-employee {
   margin-bottom: 4px;
 }
 
-/* Nutzer-Feedback (2026-08): "Applikationsmanager legt den Benutzer direkt
-   an" -- Kopfzeile mit Titel + "+ Hinzufügen"-Button nebeneinander statt
-   untereinander (MembershipAccessSettings.jsx). */
-.panel-list-header {
+/* Nutzer-Feedback (2026-08, zweite Runde): Titel + "+ Hinzufügen"-Button
+   nebeneinander (siehe vorherige Fassung dieses Kommentars) liess den Button
+   bei mehrzeiligem Beschreibungstext darunter (MembershipAccessSettings.jsx)
+   unbalanciert wirken -- der Button klebte am Titel, während rechts neben
+   den umgebrochenen Zeilen der Beschreibung ein grosser Leerraum entstand.
+   Jetzt: Titel und Beschreibung fliessen normal untereinander, der Button
+   bekommt eine eigene, rechtsbündige Zeile danach -- liest sich als klar
+   abgesetzte Aktion statt als Kopfzeilen-Dekoration. */
+.panel-list-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.panel-list-header h2 {
-  margin-bottom: 0;
+  justify-content: flex-end;
+  margin-top: 4px;
 }
 
 /* MVP-Fahrplan Block 2, Punkt 5: Planblatt-Export -- schmale Button-Leiste

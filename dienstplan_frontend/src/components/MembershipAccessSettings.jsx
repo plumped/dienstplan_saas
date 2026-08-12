@@ -129,17 +129,17 @@ export default function MembershipAccessSettings({ nodes, onError }) {
   return (
     <div className="side-panel">
       <div className="panel-list panel-list--full">
-        <div className="panel-list-header">
-          <h2>Konten ohne Mitarbeiterprofil</h2>
-          <button type="button" className="btn-primary" onClick={() => setCreateFormOpen(true)}>
-            + Konto hinzufügen
-          </button>
-        </div>
+        <h2>Konten ohne Mitarbeiterprofil</h2>
         <p className="panel-hint">
           Seltener Sonderfall: ein Login-Konto, das zu KEINER Person unter "Mitarbeitende" gehört (z. B.
           externe IT-Administration). Für Mitarbeitende mit eigenem Profil wird der Login-Zugang direkt in
           deren Bearbeiten-Formular unter "Mitarbeitende" eingerichtet/verwaltet.
         </p>
+        <div className="panel-list-actions">
+          <button type="button" className="btn-primary" onClick={() => setCreateFormOpen(true)}>
+            + Konto hinzufügen
+          </button>
+        </div>
         {!orphanMemberships.length ? (
           <p className="empty-state">Keine Konten ohne Mitarbeiterprofil vorhanden.</p>
         ) : (

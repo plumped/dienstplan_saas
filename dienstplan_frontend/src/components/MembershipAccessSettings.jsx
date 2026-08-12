@@ -131,7 +131,7 @@ export default function MembershipAccessSettings({ nodes, onError }) {
       <div className="panel-list panel-list--full">
         <div className="panel-list-header">
           <h2>Konten ohne Mitarbeiterprofil</h2>
-          <button type="button" onClick={() => setCreateFormOpen(true)}>
+          <button type="button" className="btn-primary" onClick={() => setCreateFormOpen(true)}>
             + Konto hinzufügen
           </button>
         </div>
@@ -248,7 +248,7 @@ export default function MembershipAccessSettings({ nodes, onError }) {
               <button type="button" className="btn-ghost" onClick={() => setCreateFormOpen(false)}>
                 Abbrechen
               </button>
-              <button type="submit" disabled={creating}>
+              <button type="submit" className="btn-primary" disabled={creating}>
                 {creating ? "Wird angelegt …" : "Anlegen"}
               </button>
             </div>
@@ -275,7 +275,7 @@ export default function MembershipAccessSettings({ nodes, onError }) {
               </p>
             </div>
             <div className="modal-footer">
-              <button type="button" onClick={() => setNewCredentials(null)}>
+              <button type="button" className="btn-primary" onClick={() => setNewCredentials(null)}>
                 Verstanden, schliessen
               </button>
             </div>
@@ -308,7 +308,7 @@ export default function MembershipAccessSettings({ nodes, onError }) {
               <button type="button" className="btn-ghost" onClick={closeEditing}>
                 Abbrechen
               </button>
-              <button type="button" onClick={handleSave} disabled={saving}>
+              <button type="button" className="btn-primary" onClick={handleSave} disabled={saving}>
                 {saving ? "Speichert …" : "Speichern"}
               </button>
             </div>

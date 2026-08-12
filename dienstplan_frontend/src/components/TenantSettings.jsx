@@ -329,7 +329,7 @@ export default function TenantSettings({ onError }) {
 
       <HolidayOverridesEditor onError={onError} />
 
-      <button type="submit" disabled={saving}>
+      <button type="submit" className="btn-primary" disabled={saving}>
         {saving ? "Speichert …" : saved ? "Gespeichert ✓" : "Speichern"}
       </button>
     </form>
@@ -406,7 +406,7 @@ function HolidayOverridesEditor({ onError }) {
                 {o.date} -- {o.kind === "add" ? "zusätzlicher Feiertag" : "kein Feiertag"}
                 {o.name ? ` (${o.name})` : ""}
               </span>
-              <button type="button" className="btn-ghost" onClick={() => handleDelete(o.id)}>
+              <button type="button" className="btn-ghost btn-danger-ghost" onClick={() => handleDelete(o.id)}>
                 Entfernen
               </button>
             </li>
@@ -441,7 +441,7 @@ function HolidayOverridesEditor({ onError }) {
           </select>
         </label>
       </div>
-      <button type="button" onClick={handleAdd} disabled={adding}>
+      <button type="button" className="btn-primary" onClick={handleAdd} disabled={adding}>
         {adding ? "Speichert …" : "Hinzufügen"}
       </button>
     </fieldset>

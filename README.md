@@ -2963,6 +2963,24 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
     wirkt statt weiterhin klickbar auszusehen. Mit Playwright gegen echte Testheim-Daten für alle
     drei Tabs verifiziert (Zu-genehmigen-/Offen-/Zu-bestätigen-Zeilen, Bulk-Bar, Korrektur-Modal).
 
+    **Nachtrag (2026-08, Nutzer-Feedback: "Gleiches gilt für Lohnarten, Regel-Engine & Zuschläge
+    und Konten ohne Mitarbeiterprofil")**: dieselbe `.btn-primary`/`.btn-ghost.btn-danger-ghost`-
+    Behandlung auf die drei verbliebenen Admin-only-Settings-Module ausgeweitet --
+    `PayrollSettings.jsx` (die Speichern-Buttons pro Lohnart-Zeile + "CSV herunterladen"),
+    `TenantSettings.jsx` (Speichern, "Hinzufügen" bei den Feiertags-Ausnahmen, "Entfernen" als
+    Danger-Ghost) und `MembershipAccessSettings.jsx` ("+ Konto hinzufügen", "Anlegen",
+    "Verstanden, schliessen", Speichern im Stationen-Modal). Dabei einen Bug aufgedeckt und
+    behoben, der durch `.btn-primary` erst sichtbar wurde: `.panel-form-group` ist ein
+    `display: flex; flex-direction: column`-Container mit dem Flex-Default `align-items: stretch`
+    -- ein Button darin wurde schon vorher auf die volle Breite gestreckt, fiel als unstyled
+    grauer Rahmen aber kaum auf. Mit gefülltem `--primary`-Hintergrund war der Effekt (z. B.
+    "Hinzufügen" bei den Feiertags-Ausnahmen) deutlich sichtbar falsch. Fix: `.btn-primary`
+    bekommt `align-self: flex-start`, damit er sich in jedem Flex-Container an seinem Inhalt
+    orientiert statt am Container zu strecken -- in den bereits verifizierten Flex-Row-Kontexten
+    (Toolbar, Bulk-Bar, Tabellenzellen) ändert das nichts sichtbar, da dort keine Höhen-/
+    Breitenstreckung auftrat. Mit Playwright erneut gegen alle sechs Module verifiziert (inkl.
+    Regressionscheck der zuvor verifizierten Abwesenheiten-/Zeiterfassungs-Screens).
+
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 
 **Grundsatzentscheid (2026-08)**: kein reines Consumer-Self-Signup, sondern ein Hybrid — passend

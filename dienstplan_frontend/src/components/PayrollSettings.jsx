@@ -177,6 +177,7 @@ export default function PayrollSettings({ onError }) {
                     <td>
                       <button
                         type="button"
+                        className="btn-primary"
                         onClick={() => handleSave(key, { category: opt.value }, existing)}
                         disabled={savingKey === key}
                       >
@@ -211,6 +212,7 @@ export default function PayrollSettings({ onError }) {
                     <td>
                       <button
                         type="button"
+                        className="btn-primary"
                         onClick={() => handleSave(key, { specialTemplateId: t.id }, existing)}
                         disabled={savingKey === key}
                       >
@@ -245,6 +247,7 @@ export default function PayrollSettings({ onError }) {
                     <td>
                       <button
                         type="button"
+                        className="btn-primary"
                         onClick={() => handleSave(key, { absenceTypeId: t.id }, existing)}
                         disabled={savingKey === key}
                       >
@@ -277,7 +280,7 @@ export default function PayrollSettings({ onError }) {
             Monat
             <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
           </label>
-          <button type="button" onClick={handleExport} disabled={exporting}>
+          <button type="button" className="btn-primary" onClick={handleExport} disabled={exporting}>
             {exporting ? "Wird erstellt …" : "CSV herunterladen"}
           </button>
         </div>

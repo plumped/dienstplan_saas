@@ -216,6 +216,11 @@ button {
    optisch schwerere Button-Klasse für sie einzuführen. */
 .btn-primary {
   display: inline-flex;
+  /* Verhindert, dass der Button in einem flex-column-Container (z. B.
+     .panel-form-group, dessen Default align-items: stretch ist) auf die
+     volle Breite gezogen wird -- bei einem gefüllten Button fällt das
+     deutlich mehr auf als beim vorherigen unstyled <button>. */
+  align-self: flex-start;
   align-items: center;
   justify-content: center;
   gap: 6px;

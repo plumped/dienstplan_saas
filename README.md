@@ -3221,6 +3221,15 @@ Kartendaten-Handling im eigenen Frontend/Backend), ein Plan mit Preis pro aktive
   einer Maschine mit Zugriff auf `api.stripe.com` laufen) und gibt die Price-ID für `.env` aus.
   Stripe-Keys/Preis-ID/Webhook-Secret kommen über `.env` (`python-dotenv`, siehe
   `config/settings.py`) -- `.env` ist `.gitignore`d, nie committen.
+- **Lokale Entwicklung & Webhook**: `stripe_customer_id` wird sofort beim Checkout-Start im
+  Backend selbst angelegt, `stripe_subscription_id` dagegen erst über das
+  `checkout.session.completed`-Webhook-Event -- `http://localhost:8000` ist von Stripe aus nicht
+  erreichbar, ohne Weiterleitung bleibt die Subscription-Verknüpfung also leer (Status zeigt z. B.
+  weiterhin nur "Aktiv" ohne die Live-Details Preis/nächste Abrechnung/Zahlungsmittel). Für lokale
+  Tests: `stripe listen --forward-to localhost:8000/api/billing/webhook/` (Stripe CLI) liefert ein
+  lokal gültiges Webhook-Secret für `.env`. `python manage.py sync_stripe_subscriptions` trägt bei
+  bereits betroffenen Tenants (Customer vorhanden, Subscription fehlt) die Verknüpfung nachträglich
+  über die Stripe-API nach.
 - **Frontend**: neues Settings-Modul "Abrechnung" (`BillingSettings.jsx`, Admin-only) mit
   Status/Trial-Countdown und "Abo abschliessen"/"Abrechnung verwalten"-Buttons (Redirect auf die
   Stripe-gehostete Seite). Dezenter Banner in der App-Kopfzeile für Admin, sobald kein aktiver

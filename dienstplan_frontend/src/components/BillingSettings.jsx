@@ -82,6 +82,10 @@ export default function BillingSettings({ onError }) {
         <p>
           <strong>{STATUS_LABELS[status.subscription_status] ?? status.subscription_status}</strong>
         </p>
+        <p>
+          Aktive Mitarbeitende: {status.active_employee_count}
+          {status.subscription_status === "trialing" && ` / ${status.trial_employee_limit}`}
+        </p>
         {status.subscription_status === "trialing" && (
           <p>
             {trialDaysLeft === null
@@ -89,7 +93,6 @@ export default function BillingSettings({ onError }) {
               : trialDaysLeft > 0
                 ? `Noch ${trialDaysLeft} Tag${trialDaysLeft === 1 ? "" : "e"} Testphase.`
                 : "Die Testphase ist abgelaufen."}
-            {" "}Aktive Mitarbeitende: {status.active_employee_count} / {status.trial_employee_limit}.
           </p>
         )}
         {!status.has_active_access && (

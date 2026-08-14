@@ -1423,6 +1423,104 @@ thead .col-employee {
   color: var(--ink-muted);
 }
 
+/* README Block 6 (Abrechnung): Nutzer-Feedback "das sieht traurig aus" --
+   Status-Kopfzeile mit Badge (wiederverwendet .status-badge, siehe unten im
+   File, statt einer weiteren Farbpalette), Stat-Kacheln fürs Wichtigste auf
+   einen Blick, und eine Detail-Liste für Zahlungsmittel/letzte Rechnung
+   statt einzelner <p>-Zeilen, siehe BillingSettings.jsx. */
+.billing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.billing-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.billing-stat {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.billing-stat-label {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-muted);
+}
+
+.billing-stat-value {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 19px;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.billing-stat-value small {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+
+.billing-details {
+  display: flex;
+  flex-direction: column;
+}
+
+.billing-detail-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.billing-detail-row:first-child {
+  border-top: none;
+}
+
+.billing-detail-label {
+  color: var(--ink-muted);
+}
+
+.billing-detail-value {
+  font-weight: 600;
+  color: var(--ink);
+  text-align: right;
+}
+
+.billing-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.billing-warning {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
 /* Block 2.6: Monatsauswertung (Lohnlauf-Basis) -- schlichte Kennzahlen-Tabelle. */
 .monthly-summary-table {
   border-collapse: collapse;
@@ -2217,6 +2315,30 @@ thead .col-employee {
 .status-badge--confirmed {
   background: #e3f3e6;
   color: #2e7d32;
+}
+
+/* README Block 6: Abrechnungsstatus -- dieselbe Farbsprache wie die
+   Absenz-/Diensttausch-Status oben, eigene Modifier-Namen statt die
+   bestehenden zweckzuentfremden. */
+.status-badge--active {
+  background: #e3f3e6;
+  color: #2e7d32;
+}
+
+.status-badge--trialing {
+  background: #fff4e0;
+  color: #a15c00;
+}
+
+.status-badge--past_due,
+.status-badge--incomplete {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.status-badge--canceled {
+  background: #eee;
+  color: var(--ink-muted);
 }
 
 /* Block 1.12: Segment-Editor (Zeiterfassungs-Tab und Inline-Popover im Grid,

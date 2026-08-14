@@ -48,10 +48,15 @@ function formatDate(isoDate) {
 // Nutzer-Feedback (2026-08): "Das ist viel zu wenig Info, ich will
 // möglichst viel Informationen zur subscription sehen" -- neben den reinen
 // Tenant-Feldern (subscription_status, active_employee_count) zeigt dieser
-// Screen jetzt zusätzlich die LIVE-Stripe-Subscription-Details
-// (status.subscription, siehe core.billing.get_subscription_details):
-// nächste Abrechnung, Preis × Menge, Zahlungsmittel, letzte Rechnung.
-// status.subscription ist null, solange noch kein Abo abgeschlossen wurde.
+// Screen zusätzlich die LIVE-Stripe-Subscription-Details (status.subscription,
+// siehe core.billing.get_subscription_details): nächste Abrechnung,
+// Preis × Menge, Zahlungsmittel, letzte Rechnung. status.subscription ist
+// null, solange noch kein Abo abgeschlossen wurde.
+//
+// Nutzer-Feedback (2026-08, Nachtrag): "das sieht ja traurig aus" -- Stat-
+// Kacheln + Status-Badge (wiederverwendet die bestehende .status-badge-
+// Farbsprache aus AbsenceOverview/TradeRequestOverview) statt einer Liste
+// von <p>-Zeilen.
 export default function BillingSettings({ onError }) {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -97,10 +102,17 @@ export default function BillingSettings({ onError }) {
   const trialDaysLeft = status.subscription_status === "trialing" ? daysUntil(status.trial_ends_at) : null;
   const sub = status.subscription;
   const intervalLabel = sub ? (INTERVAL_LABELS[sub.price_interval] ?? sub.price_interval) : null;
+  const totalPerInterval =
+    sub && sub.price_amount != null ? formatMoney(sub.price_amount * sub.quantity, sub.price_currency) : null;
 
   return (
     <div className="panel-form">
-      <h2>Abrechnung</h2>
+      <div className="billing-header">
+        <h2 style={{ margin: 0 }}>Abrechnung</h2>
+        <span className={`status-badge status-badge--${status.subscription_status}`}>
+          {STATUS_LABELS[status.subscription_status] ?? status.subscription_status}
+        </span>
+      </div>
       <p className="panel-hint">
         Ein Abo, Preis pro aktivem Mitarbeitenden/Monat -- Zahlungsabwicklung läuft komplett über
         Stripe, keine Kartendaten werden von dieser App gespeichert.
@@ -112,65 +124,94 @@ export default function BillingSettings({ onError }) {
         </p>
       )}
 
-      <fieldset className="panel-form-group">
-        <h3>Status</h3>
-        <p>
-          <strong>{STATUS_LABELS[status.subscription_status] ?? status.subscription_status}</strong>
-        </p>
-        <p>
-          Aktive Mitarbeitende: {status.active_employee_count}
-          {status.subscription_status === "trialing" && ` / ${status.trial_employee_limit}`}
-        </p>
-        {status.subscription_status === "trialing" && (
-          <p>
-            {trialDaysLeft === null
-              ? "Keine zeitliche Einschränkung."
-              : trialDaysLeft > 0
-                ? `Noch ${trialDaysLeft} Tag${trialDaysLeft === 1 ? "" : "e"} Testphase.`
-                : "Die Testphase ist abgelaufen."}
-          </p>
-        )}
-        {!status.has_active_access && (
-          <p className="field-error">
-            Kein aktiver Zugriff mehr -- neue Einträge (z. B. neue Dienste, Mitarbeitende) sind
-            gesperrt, bis ein Abo abgeschlossen ist. Bestehende Daten bleiben einsehbar.
-          </p>
-        )}
-      </fieldset>
-
-      {sub && (
-        <fieldset className="panel-form-group">
-          <h3>Aktuelles Abo</h3>
-          <p>
-            {formatMoney(sub.price_amount, sub.price_currency)} pro Mitarbeitendem/{intervalLabel} ×{" "}
-            {sub.quantity} Mitarbeitende = <strong>
-              {formatMoney(sub.price_amount != null ? sub.price_amount * sub.quantity : null, sub.price_currency)}
-            </strong>{" "}
-            / {intervalLabel}
-          </p>
-          {sub.current_period_end && (
-            <p>
-              Nächste Abrechnung: {formatDate(sub.current_period_end)}
-              {sub.cancel_at_period_end && " -- wird danach NICHT verlängert (Kündigung aktiv)"}
-            </p>
-          )}
-          {sub.payment_method && (
-            <p>
-              Zahlungsmittel: {sub.payment_method.brand.toUpperCase()} •••• {sub.payment_method.last4}
-            </p>
-          )}
-          {sub.latest_invoice_status && (
-            <p>
-              Letzte Rechnung: {INVOICE_STATUS_LABELS[sub.latest_invoice_status] ?? sub.latest_invoice_status}
-              {sub.latest_invoice_status === "open" && sub.latest_invoice_amount_due
-                ? ` -- offener Betrag: ${formatMoney(sub.latest_invoice_amount_due, sub.price_currency)}`
-                : ""}
-            </p>
-          )}
-        </fieldset>
+      {!status.has_active_access && (
+        <div className="billing-warning">
+          Kein aktiver Zugriff mehr -- neue Einträge (z. B. neue Dienste, Mitarbeitende) sind
+          gesperrt, bis ein Abo abgeschlossen ist. Bestehende Daten bleiben einsehbar.
+        </div>
       )}
 
-      <div className="panel-form-group">
+      <div className="billing-stats">
+        <div className="billing-stat">
+          <p className="billing-stat-label">Aktive Mitarbeitende</p>
+          <p className="billing-stat-value">
+            {status.active_employee_count}
+            {status.subscription_status === "trialing" && <small> / {status.trial_employee_limit}</small>}
+          </p>
+        </div>
+
+        {sub && (
+          <div className="billing-stat">
+            <p className="billing-stat-label">Preis pro Mitarbeitendem</p>
+            <p className="billing-stat-value">
+              {formatMoney(sub.price_amount, sub.price_currency)}
+              <small> / {intervalLabel}</small>
+            </p>
+          </div>
+        )}
+
+        {sub && totalPerInterval && (
+          <div className="billing-stat">
+            <p className="billing-stat-label">Gesamt pro {intervalLabel}</p>
+            <p className="billing-stat-value">
+              {totalPerInterval}
+              <small> × {sub.quantity}</small>
+            </p>
+          </div>
+        )}
+
+        {sub && sub.current_period_end && (
+          <div className="billing-stat">
+            <p className="billing-stat-label">Nächste Abrechnung</p>
+            <p className="billing-stat-value">{formatDate(sub.current_period_end)}</p>
+          </div>
+        )}
+
+        {status.subscription_status === "trialing" && (
+          <div className="billing-stat">
+            <p className="billing-stat-label">Testphase</p>
+            <p className="billing-stat-value">
+              {trialDaysLeft === null
+                ? "unbefristet"
+                : trialDaysLeft > 0
+                  ? `noch ${trialDaysLeft} Tag${trialDaysLeft === 1 ? "" : "e"}`
+                  : "abgelaufen"}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {sub && sub.cancel_at_period_end && (
+        <div className="billing-warning">
+          Das Abo wird zum {formatDate(sub.current_period_end)} NICHT verlängert (Kündigung aktiv).
+        </div>
+      )}
+
+      {sub && (sub.payment_method || sub.latest_invoice_status) && (
+        <div className="billing-details">
+          {sub.payment_method && (
+            <div className="billing-detail-row">
+              <span className="billing-detail-label">Zahlungsmittel</span>
+              <span className="billing-detail-value">
+                {sub.payment_method.brand.toUpperCase()} •••• {sub.payment_method.last4}
+              </span>
+            </div>
+          )}
+          {sub.latest_invoice_status && (
+            <div className="billing-detail-row">
+              <span className="billing-detail-label">Letzte Rechnung</span>
+              <span className="billing-detail-value">
+                {INVOICE_STATUS_LABELS[sub.latest_invoice_status] ?? sub.latest_invoice_status}
+                {sub.latest_invoice_status === "open" && sub.latest_invoice_amount_due
+                  ? ` (${formatMoney(sub.latest_invoice_amount_due, sub.price_currency)} offen)`
+                  : ""}
+              </span>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="billing-actions">
         {status.billing_configured && !sub && (
           <button type="button" className="btn-primary" onClick={handleCheckout} disabled={redirecting}>
             Abo abschliessen

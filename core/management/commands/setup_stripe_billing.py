@@ -7,7 +7,7 @@ from django.core.management.base import BaseCommand, CommandError
 # Bewusst als eigene Konstante statt in settings.py, damit --amount die
 # Kommandozeile als offensichtlichen Override-Weg zeigt, statt still einen
 # falschen Betrag zu übernehmen.
-DEFAULT_AMOUNT_RAPPEN = 900  # CHF 9.00 -- Platzhalter, vor dem Live-Umstieg mit dem Nutzer klären.
+DEFAULT_AMOUNT_RAPPEN = 300  # CHF 9.00 -- Platzhalter, vor dem Live-Umstieg mit dem Nutzer klären.
 
 
 class Command(BaseCommand):
@@ -57,7 +57,7 @@ class Command(BaseCommand):
         amount = options["amount"]
 
         product = stripe.Product.create(
-            name="Dienstplan Abo",
+            name="neravo Abo",
             description="Abo pro aktivem Mitarbeitenden/Monat.",
         )
         price = stripe.Price.create(

@@ -27,7 +27,7 @@ export default function LoginForm({ onSuccess, onBack }) {
         <div className="brand-mark-lg" aria-hidden="true">
           ◒
         </div>
-        <h1>Dienstplan</h1>
+        <h1>neravo</h1>
         <p className="login-sub">Anmelden, um das Planblatt zu öffnen.</p>
 
         <label>

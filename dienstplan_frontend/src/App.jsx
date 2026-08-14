@@ -232,7 +232,7 @@ export default function App() {
           <span className="brand-mark" aria-hidden="true">
             ◒
           </span>
-          Dienstplan
+          neravo
           {/* Nutzer-Feedback (2026-08): "oben Links sollte auch noch der
               Name stehen, damit man weiss wer gerade eingeloggt ist" --
               Employee-Name bevorzugt (lesbarer als der Login-Benutzername),

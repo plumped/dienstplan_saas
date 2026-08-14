@@ -71,7 +71,7 @@ export default function OnboardingWizard({ onFinished }) {
         <div className="brand-mark-lg" aria-hidden="true">
           ◒
         </div>
-        <h1>Willkommen bei Dienstplan</h1>
+        <h1>Willkommen bei neravo</h1>
         <p className="login-sub">
           Ein paar Schritte, um Ihre Station, Schichttypen und Mitarbeitenden einzurichten --
           jederzeit überspringbar.

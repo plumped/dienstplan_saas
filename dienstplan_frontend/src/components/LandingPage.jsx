@@ -229,7 +229,7 @@ export default function LandingPage({ onStart, onLogin }) {
           <span className="brand-mark-lg landing-nav-mark" aria-hidden="true">
             ◒
           </span>
-          Dienstplan
+          neravo
         </div>
         <button type="button" className="landing-nav-login" onClick={onLogin}>
           Anmelden
@@ -377,7 +377,7 @@ export default function LandingPage({ onStart, onLogin }) {
         <span className="brand-mark-lg landing-nav-mark" aria-hidden="true">
           ◒
         </span>
-        Dienstplan -- gebaut für Schweizer Schichtbetriebe.
+        neravo -- gebaut für Schweizer Schichtbetriebe.
       </footer>
     </div>
   );

@@ -171,7 +171,7 @@ export default function BillingSettings({ onError }) {
       )}
 
       <div className="panel-form-group">
-        {status.billing_configured && status.subscription_status !== "active" && (
+        {status.billing_configured && !sub && (
           <button type="button" className="btn-primary" onClick={handleCheckout} disabled={redirecting}>
             Abo abschliessen
           </button>

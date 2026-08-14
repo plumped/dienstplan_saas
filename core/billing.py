@@ -155,16 +155,22 @@ def get_subscription_details(tenant):
     active_employee_count) allein reichten nicht.
 
     None, wenn (noch) keine Subscription existiert, Stripe nicht
-    konfiguriert ist, oder der Stripe-Call fehlschlägt -- "best effort"
-    analog sync_subscription_quantity: ein Stripe-Fehler hier darf die
-    übrige Status-Anzeige nicht blockieren, GET-Requests laufen ausserdem
-    nie durch enforce_billing_access.
+    konfiguriert ist, oder der Stripe-Call fehlschlägt/die Antwort nicht wie
+    erwartet aussieht -- "best effort" analog sync_subscription_quantity:
+    ein Stripe-Fehler hier darf die übrige Status-Anzeige nicht blockieren,
+    GET-Requests laufen ausserdem nie durch enforce_billing_access.
 
-    Bracket-Zugriff (subscription["items"]) statt .get() durchgängig --
-    stripe.StripeObject unterstützt in stripe-python 15.x KEIN .get() mehr
-    (siehe handle_webhook_event-Kommentar), Bracket-Indexing dagegen schon
-    und liefert bei fehlendem/nicht angefordertem Feld None statt eines
-    KeyError (Stripe liefert dokumentierte Felder immer mit, ggf. als null).
+    _safe() statt rohem Bracket-Zugriff: anders als zunächst angenommen
+    liefert stripe.StripeObject.__getitem__ bei einem wirklich fehlenden
+    Key einen KeyError (kein stilles None) -- betraf hier konkret
+    current_period_end, das Stripe in neueren API-Versionen vom
+    Subscription-Objekt auf die einzelnen Subscription-Items verschoben hat
+    (siehe Fallback unten). .get() ist keine Alternative, stripe.StripeObject
+    unterstützt das in stripe-python 15.x nicht (siehe
+    handle_webhook_event-Kommentar). Der ganze Parse-Block läuft ausserdem
+    in einem eigenen try/except -- eine weitere, heute noch unbekannte
+    API-Versions-Abweichung soll höchstens diesen Detailblock leer lassen,
+    nicht die ganze Abrechnungsseite mit einem 500er blockieren.
     """
     if not is_configured() or not tenant.stripe_subscription_id:
         return None
@@ -178,32 +184,47 @@ def get_subscription_details(tenant):
         logger.exception("Stripe-Subscription-Details fehlgeschlagen für Tenant %s", tenant.id)
         return None
 
-    item = subscription["items"]["data"][0]
-    price = item["price"]
-    recurring = price["recurring"]
+    def _safe(obj, key, default=None):
+        try:
+            return obj[key]
+        except (KeyError, TypeError, IndexError):
+            return default
 
-    payment_method = subscription["default_payment_method"]
-    payment_method_info = None
-    if payment_method and payment_method["type"] == "card":
-        card = payment_method["card"]
-        payment_method_info = {"brand": card["brand"], "last4": card["last4"]}
+    try:
+        item = _safe(subscription, "items")["data"][0]
+        price = _safe(item, "price") or {}
+        recurring = _safe(price, "recurring")
 
-    latest_invoice = subscription["latest_invoice"]
-    current_period_end = subscription["current_period_end"]
+        payment_method = _safe(subscription, "default_payment_method")
+        payment_method_info = None
+        if payment_method and _safe(payment_method, "type") == "card":
+            card = _safe(payment_method, "card") or {}
+            payment_method_info = {"brand": _safe(card, "brand"), "last4": _safe(card, "last4")}
 
-    return {
-        "current_period_end": (
-            datetime.fromtimestamp(current_period_end, tz=dt_timezone.utc) if current_period_end else None
-        ),
-        "cancel_at_period_end": bool(subscription["cancel_at_period_end"]),
-        "price_amount": price["unit_amount"],
-        "price_currency": price["currency"],
-        "price_interval": recurring["interval"] if recurring else None,
-        "quantity": item["quantity"],
-        "payment_method": payment_method_info,
-        "latest_invoice_status": latest_invoice["status"] if latest_invoice else None,
-        "latest_invoice_amount_due": latest_invoice["amount_due"] if latest_invoice else None,
-    }
+        latest_invoice = _safe(subscription, "latest_invoice")
+
+        # current_period_end sass früher direkt auf der Subscription, liegt
+        # in neueren Stripe-API-Versionen stattdessen auf dem Item -- beide
+        # Stellen versuchen, damit es unabhängig von der Account-API-Version
+        # funktioniert.
+        current_period_end = _safe(subscription, "current_period_end") or _safe(item, "current_period_end")
+
+        return {
+            "current_period_end": (
+                datetime.fromtimestamp(current_period_end, tz=dt_timezone.utc) if current_period_end else None
+            ),
+            "cancel_at_period_end": bool(_safe(subscription, "cancel_at_period_end")),
+            "price_amount": _safe(price, "unit_amount"),
+            "price_currency": _safe(price, "currency"),
+            "price_interval": _safe(recurring, "interval") if recurring else None,
+            "quantity": _safe(item, "quantity"),
+            "payment_method": payment_method_info,
+            "latest_invoice_status": _safe(latest_invoice, "status") if latest_invoice else None,
+            "latest_invoice_amount_due": _safe(latest_invoice, "amount_due") if latest_invoice else None,
+        }
+    except Exception:
+        logger.exception("Stripe-Subscription-Antwort konnte nicht geparst werden für Tenant %s", tenant.id)
+        return None
 
 
 def handle_webhook_event(event):

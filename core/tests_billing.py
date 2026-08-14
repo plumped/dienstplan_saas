@@ -261,6 +261,43 @@ class GetSubscriptionDetailsTests(TestCase):
         self.assertIsNone(details["current_period_end"])
         self.assertTrue(details["cancel_at_period_end"])
 
+    @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PRICE_ID="price_dummy")
+    @patch("core.billing.stripe")
+    def test_current_period_end_falls_back_to_item_when_missing_on_subscription(self, mock_stripe):
+        # Regression: neuere Stripe-API-Versionen liefern current_period_end
+        # nicht mehr auf der Subscription selbst (KeyError bei Bracket-
+        # Zugriff, kein stilles None) -- der Fallback aufs Item muss auch
+        # dann greifen, wenn der Key auf der Subscription komplett FEHLT
+        # (nicht nur None ist).
+        self.tenant.stripe_subscription_id = "sub_123"
+        self.tenant.save(update_fields=["stripe_subscription_id"])
+        mock_stripe.Subscription.retrieve.return_value = {
+            "items": {
+                "data": [
+                    {
+                        "quantity": 1,
+                        "price": {"unit_amount": 900, "currency": "chf", "recurring": {"interval": "month"}},
+                        "current_period_end": 1893456000,
+                    }
+                ]
+            },
+            "cancel_at_period_end": False,
+            "default_payment_method": None,
+            "latest_invoice": None,
+            # "current_period_end" bewusst nicht vorhanden (nicht einmal None).
+        }
+        details = billing.get_subscription_details(self.tenant)
+        self.assertIsNotNone(details)
+        self.assertEqual(details["current_period_end"].year, 2030)
+
+    @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PRICE_ID="price_dummy")
+    @patch("core.billing.stripe")
+    def test_unparseable_response_returns_none_instead_of_raising(self, mock_stripe):
+        self.tenant.stripe_subscription_id = "sub_123"
+        self.tenant.save(update_fields=["stripe_subscription_id"])
+        mock_stripe.Subscription.retrieve.return_value = {}  # "items" fehlt komplett
+        self.assertIsNone(billing.get_subscription_details(self.tenant))
+
 
 class WebhookEventHandlingTests(TestCase):
     def setUp(self):

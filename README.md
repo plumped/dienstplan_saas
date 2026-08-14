@@ -3211,10 +3211,12 @@ Kartendaten-Handling im eigenen Frontend/Backend), ein Plan mit Preis pro aktive
   Limit mehr nach Abo-Abschluss (ACTIVE), dort wird stattdessen die Stripe-Menge bei jeder
   relevanten Änderung (anlegen/deaktivieren/reaktivieren/CSV-Import) synchronisiert.
 - **API** (`core/billing_views.py`): `GET /api/billing/status/` (Abo-Status, Trial-Restzeit,
-  aktive Mitarbeitende), `POST /api/billing/checkout/`, `POST /api/billing/portal/` -- alle drei
-  Admin-only. `POST /api/billing/webhook/` ist ein reiner Django-View (kein DRF, roher Body für
-  die HMAC-Signaturprüfung nötig), `AllowAny` mit Absicherung ausschliesslich über
-  `STRIPE_WEBHOOK_SECRET`.
+  aktive Mitarbeitende, plus -- sobald ein Abo läuft -- die LIVE-Stripe-Subscription-Details über
+  `core.billing.get_subscription_details()`: nächstes Rechnungsdatum, Preis × Menge, Zahlungsmittel
+  Marke/Endziffern, Status + offener Betrag der letzten Rechnung), `POST /api/billing/checkout/`,
+  `POST /api/billing/portal/` -- alle drei Admin-only. `POST /api/billing/webhook/` ist ein reiner
+  Django-View (kein DRF, roher Body für die HMAC-Signaturprüfung nötig), `AllowAny` mit
+  Absicherung ausschliesslich über `STRIPE_WEBHOOK_SECRET`.
 - **Setup**: `python manage.py setup_stripe_billing` legt Product+Price einmalig an (muss auf
   einer Maschine mit Zugriff auf `api.stripe.com` laufen) und gibt die Price-ID für `.env` aus.
   Stripe-Keys/Preis-ID/Webhook-Secret kommen über `.env` (`python-dotenv`, siehe

@@ -84,6 +84,7 @@ class BillingStatusView(_TenantScopedNoBillingGateMixin, APIView):
                 "has_active_access": tenant.has_active_access(),
                 "active_employee_count": tenant.active_employee_count(),
                 "billing_configured": billing.is_configured(),
+                "subscription": billing.get_subscription_details(tenant),
             }
         )
 

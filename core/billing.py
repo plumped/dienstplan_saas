@@ -19,6 +19,7 @@ unabhängig von Stripe lauffähig.
 """
 
 import logging
+from datetime import datetime, timezone as dt_timezone
 
 import stripe
 from django.conf import settings
@@ -142,6 +143,67 @@ def sync_subscription_quantity(tenant):
             stripe.SubscriptionItem.modify(item["id"], quantity=quantity)
     except stripe.error.StripeError:
         logger.exception("Stripe-Mengen-Sync fehlgeschlagen für Tenant %s", tenant.id)
+
+
+def get_subscription_details(tenant):
+    """
+    Liefert Detailinfos zur laufenden Stripe-Subscription (nächstes
+    Rechnungsdatum, Preis/Menge, Zahlungsmittel, letzte Rechnung) fürs
+    Abrechnungs-Dashboard (BillingStatusView) -- Nutzer-Feedback (2026-08):
+    "Das ist viel zu wenig Info, ich will möglichst viel Informationen zur
+    subscription sehen", die reinen Tenant-Felder (subscription_status,
+    active_employee_count) allein reichten nicht.
+
+    None, wenn (noch) keine Subscription existiert, Stripe nicht
+    konfiguriert ist, oder der Stripe-Call fehlschlägt -- "best effort"
+    analog sync_subscription_quantity: ein Stripe-Fehler hier darf die
+    übrige Status-Anzeige nicht blockieren, GET-Requests laufen ausserdem
+    nie durch enforce_billing_access.
+
+    Bracket-Zugriff (subscription["items"]) statt .get() durchgängig --
+    stripe.StripeObject unterstützt in stripe-python 15.x KEIN .get() mehr
+    (siehe handle_webhook_event-Kommentar), Bracket-Indexing dagegen schon
+    und liefert bei fehlendem/nicht angefordertem Feld None statt eines
+    KeyError (Stripe liefert dokumentierte Felder immer mit, ggf. als null).
+    """
+    if not is_configured() or not tenant.stripe_subscription_id:
+        return None
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    try:
+        subscription = stripe.Subscription.retrieve(
+            tenant.stripe_subscription_id,
+            expand=["default_payment_method", "latest_invoice"],
+        )
+    except stripe.error.StripeError:
+        logger.exception("Stripe-Subscription-Details fehlgeschlagen für Tenant %s", tenant.id)
+        return None
+
+    item = subscription["items"]["data"][0]
+    price = item["price"]
+    recurring = price["recurring"]
+
+    payment_method = subscription["default_payment_method"]
+    payment_method_info = None
+    if payment_method and payment_method["type"] == "card":
+        card = payment_method["card"]
+        payment_method_info = {"brand": card["brand"], "last4": card["last4"]}
+
+    latest_invoice = subscription["latest_invoice"]
+    current_period_end = subscription["current_period_end"]
+
+    return {
+        "current_period_end": (
+            datetime.fromtimestamp(current_period_end, tz=dt_timezone.utc) if current_period_end else None
+        ),
+        "cancel_at_period_end": bool(subscription["cancel_at_period_end"]),
+        "price_amount": price["unit_amount"],
+        "price_currency": price["currency"],
+        "price_interval": recurring["interval"] if recurring else None,
+        "quantity": item["quantity"],
+        "payment_method": payment_method_info,
+        "latest_invoice_status": latest_invoice["status"] if latest_invoice else None,
+        "latest_invoice_amount_due": latest_invoice["amount_due"] if latest_invoice else None,
+    }
 
 
 def handle_webhook_event(event):

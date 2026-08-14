@@ -178,6 +178,90 @@ class BillingStripeCallsTests(TestCase):
         billing.sync_subscription_quantity(self.tenant)  # darf nicht werfen
 
 
+class GetSubscriptionDetailsTests(TestCase):
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+
+    @override_settings(STRIPE_SECRET_KEY="", STRIPE_PRICE_ID="")
+    def test_returns_none_without_config(self):
+        self.tenant.stripe_subscription_id = "sub_123"
+        self.assertIsNone(billing.get_subscription_details(self.tenant))
+
+    @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PRICE_ID="price_dummy")
+    def test_returns_none_without_subscription_id(self):
+        self.assertIsNone(billing.get_subscription_details(self.tenant))
+
+    @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PRICE_ID="price_dummy")
+    @patch("core.billing.stripe")
+    def test_returns_none_on_stripe_error(self, mock_stripe):
+        import stripe as real_stripe
+
+        self.tenant.stripe_subscription_id = "sub_123"
+        self.tenant.save(update_fields=["stripe_subscription_id"])
+        mock_stripe.error = real_stripe.error
+        mock_stripe.Subscription.retrieve.side_effect = real_stripe.error.StripeError("boom")
+        self.assertIsNone(billing.get_subscription_details(self.tenant))
+
+    @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PRICE_ID="price_dummy")
+    @patch("core.billing.stripe")
+    def test_full_details_happy_path(self, mock_stripe):
+        self.tenant.stripe_subscription_id = "sub_123"
+        self.tenant.save(update_fields=["stripe_subscription_id"])
+        mock_stripe.Subscription.retrieve.return_value = {
+            "items": {
+                "data": [
+                    {
+                        "quantity": 20,
+                        "price": {
+                            "unit_amount": 900,
+                            "currency": "chf",
+                            "recurring": {"interval": "month"},
+                        },
+                    }
+                ]
+            },
+            "current_period_end": 1893456000,  # 2030-01-01T00:00:00Z
+            "cancel_at_period_end": False,
+            "default_payment_method": {"type": "card", "card": {"brand": "visa", "last4": "4242"}},
+            "latest_invoice": {"status": "paid", "amount_due": 0},
+        }
+        details = billing.get_subscription_details(self.tenant)
+        self.assertEqual(details["price_amount"], 900)
+        self.assertEqual(details["price_currency"], "chf")
+        self.assertEqual(details["price_interval"], "month")
+        self.assertEqual(details["quantity"], 20)
+        self.assertFalse(details["cancel_at_period_end"])
+        self.assertEqual(details["payment_method"], {"brand": "visa", "last4": "4242"})
+        self.assertEqual(details["latest_invoice_status"], "paid")
+        self.assertEqual(details["latest_invoice_amount_due"], 0)
+        self.assertEqual(details["current_period_end"].year, 2030)
+
+    @override_settings(STRIPE_SECRET_KEY="sk_test_dummy", STRIPE_PRICE_ID="price_dummy")
+    @patch("core.billing.stripe")
+    def test_missing_payment_method_and_invoice_are_none(self, mock_stripe):
+        self.tenant.stripe_subscription_id = "sub_123"
+        self.tenant.save(update_fields=["stripe_subscription_id"])
+        mock_stripe.Subscription.retrieve.return_value = {
+            "items": {
+                "data": [
+                    {
+                        "quantity": 1,
+                        "price": {"unit_amount": 900, "currency": "chf", "recurring": {"interval": "month"}},
+                    }
+                ]
+            },
+            "current_period_end": None,
+            "cancel_at_period_end": True,
+            "default_payment_method": None,
+            "latest_invoice": None,
+        }
+        details = billing.get_subscription_details(self.tenant)
+        self.assertIsNone(details["payment_method"])
+        self.assertIsNone(details["latest_invoice_status"])
+        self.assertIsNone(details["current_period_end"])
+        self.assertTrue(details["cancel_at_period_end"])
+
+
 class WebhookEventHandlingTests(TestCase):
     def setUp(self):
         self.tenant = Tenant.objects.create(
@@ -375,6 +459,7 @@ class BillingStatusViewTests(APITestCase):
         self.assertEqual(response.data["subscription_status"], "trialing")
         self.assertTrue(response.data["has_active_access"])
         self.assertTrue(response.data["billing_configured"])
+        self.assertIsNone(response.data["subscription"])  # kein stripe_subscription_id in diesem Test
 
     def test_non_admin_cannot_read_status(self):
         self.auth_as(self.planner)

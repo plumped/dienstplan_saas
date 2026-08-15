@@ -4569,6 +4569,251 @@ class DeactivateExpiredEmployeesCommandTests(TestCase):
         self.assertFalse(employee.is_active)
 
 
+class PurgeExpiredPersonalDataCommandTests(TestCase):
+    """
+    README Block 5 (Datenschutz & Rechtliches, revDSG): management command
+    purge_expired_personal_data -- siehe dessen Docstring für die
+    gesetzliche Herleitung der Fristen (Art. 958f OR für Employee, Art. 6
+    Abs. 2 revDSG für Freitextnotizen zu besonderen Personendaten).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-purge")
+
+    def test_anonymizes_employee_past_retention_period(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            birth_date=date(1980, 1, 1),
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        call_command("purge_expired_personal_data")
+        employee.refresh_from_db()
+        self.assertEqual(employee.first_name, "Gelöscht")
+        self.assertEqual(employee.last_name, f"[{employee.pk}]")
+        self.assertIsNone(employee.birth_date)
+
+    def test_leaves_recently_terminated_employee_untouched(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="Huber",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 5),
+        )
+        call_command("purge_expired_personal_data")
+        employee.refresh_from_db()
+        self.assertEqual(employee.first_name, "Anna")
+        self.assertEqual(employee.last_name, "Huber")
+
+    def test_leaves_employee_without_termination_date_untouched(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=100
+        )
+        call_command("purge_expired_personal_data")
+        employee.refresh_from_db()
+        self.assertEqual(employee.first_name, "Nina")
+
+    def test_deletes_linked_user_account(self):
+        user = User.objects.create_user(username="past-exit-purge", password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            user=user,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        call_command("purge_expired_personal_data")
+        self.assertFalse(User.objects.filter(pk=user.pk).exists())
+
+    def test_anonymizes_historical_employee_records(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        # Zweiter Save vor dem Command erzeugt einen zusätzlichen History-
+        # Eintrag -- beweist, dass ALLE Historical-Zeilen bereinigt werden,
+        # nicht nur die zuletzt erstellte.
+        employee.employment_pct = 90
+        employee.save(update_fields=["employment_pct"])
+        call_command("purge_expired_personal_data")
+        history_names = set(Employee.history.filter(id=employee.pk).values_list("first_name", flat=True))
+        self.assertEqual(history_names, {"Gelöscht"})
+
+    def test_dry_run_does_not_change_employee(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        call_command("purge_expired_personal_data", "--dry-run")
+        employee.refresh_from_db()
+        self.assertEqual(employee.first_name, "Peter")
+
+    def test_idempotent_on_second_run(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        call_command("purge_expired_personal_data")
+        call_command("purge_expired_personal_data")
+        employee.refresh_from_db()
+        self.assertEqual(employee.first_name, "Gelöscht")
+
+    def test_runs_across_multiple_tenants(self):
+        other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-purge")
+        employee_a = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        employee_b = Employee.objects.create(
+            tenant=other_tenant,
+            first_name="Rosa",
+            last_name="Fernandez",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        call_command("purge_expired_personal_data")
+        employee_a.refresh_from_db()
+        employee_b.refresh_from_db()
+        self.assertEqual(employee_a.first_name, "Gelöscht")
+        self.assertEqual(employee_b.first_name, "Gelöscht")
+
+    def test_clears_old_sick_leave_absence_note(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        sick_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True
+        )
+        absence = Absence.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            type=sick_type,
+            start_date=date.today() - timedelta(days=365 * 2 + 10),
+            end_date=date.today() - timedelta(days=365 * 2 + 5),
+            note="vertrauliche Diagnose",
+        )
+        call_command("purge_expired_personal_data")
+        absence.refresh_from_db()
+        self.assertEqual(absence.note, "")
+
+    def test_leaves_recent_sick_leave_absence_note_untouched(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        sick_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True
+        )
+        absence = Absence.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            type=sick_type,
+            start_date=date.today() - timedelta(days=30),
+            end_date=date.today() - timedelta(days=25),
+            note="vertrauliche Diagnose",
+        )
+        call_command("purge_expired_personal_data")
+        absence.refresh_from_db()
+        self.assertEqual(absence.note, "vertrauliche Diagnose")
+
+    def test_leaves_old_non_sick_leave_absence_note_untouched(self):
+        # Nur counts_as_sick_leave-Absenzen gelten als besondere Personendaten
+        # (Art. 5 lit. c revDSG) -- eine alte Ferien-Notiz ist keine.
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        vacation_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Ferien", deducts_vacation_days=True
+        )
+        absence = Absence.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            type=vacation_type,
+            start_date=date.today() - timedelta(days=365 * 2 + 10),
+            end_date=date.today() - timedelta(days=365 * 2 + 5),
+            note="Malediven",
+        )
+        call_command("purge_expired_personal_data")
+        absence.refresh_from_db()
+        self.assertEqual(absence.note, "Malediven")
+
+    def test_clears_old_pregnancy_notes(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=100
+        )
+        pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            expected_birth_date=date.today() - timedelta(days=365 * 2 + 10),
+            actual_birth_date=date.today() - timedelta(days=365 * 2 + 5),
+            notes="Komplikationen bei der Geburt",
+        )
+        call_command("purge_expired_personal_data")
+        pregnancy.refresh_from_db()
+        self.assertEqual(pregnancy.notes, "")
+
+    def test_pregnancy_note_retention_anchors_on_actual_birth_date(self):
+        # expected_birth_date liegt lange zurück, actual_birth_date (das
+        # massgebliche Datum, siehe Pregnancy._anchor_date()) aber noch
+        # innerhalb der Frist -- die Notiz darf nicht gelöscht werden.
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=100
+        )
+        pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            expected_birth_date=date.today() - timedelta(days=365 * 3),
+            actual_birth_date=date.today() - timedelta(days=30),
+            notes="Komplikationen bei der Geburt",
+        )
+        call_command("purge_expired_personal_data")
+        pregnancy.refresh_from_db()
+        self.assertEqual(pregnancy.notes, "Komplikationen bei der Geburt")
+
+    def test_anonymizes_historical_absence_and_pregnancy_notes(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        sick_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True
+        )
+        absence = Absence.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            type=sick_type,
+            start_date=date.today() - timedelta(days=365 * 2 + 10),
+            end_date=date.today() - timedelta(days=365 * 2 + 5),
+            note="vertrauliche Diagnose",
+        )
+        pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            expected_birth_date=date.today() - timedelta(days=365 * 2 + 10),
+            notes="Komplikationen",
+        )
+        call_command("purge_expired_personal_data")
+        absence_history_notes = set(Absence.history.filter(id=absence.pk).values_list("note", flat=True))
+        pregnancy_history_notes = set(Pregnancy.history.filter(id=pregnancy.pk).values_list("notes", flat=True))
+        self.assertEqual(absence_history_notes, {""})
+        self.assertEqual(pregnancy_history_notes, {""})
+
+
 class EmployeeSkillsM2MTests(APITestCase):
     """
     Bugfix: Employee.skills (ManyToManyField) darf nie direkt per

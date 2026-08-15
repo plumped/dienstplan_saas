@@ -3508,11 +3508,11 @@ Abarbeitungszwang.
     `scheduling/views.py:1633-1739` (Monats-Parsing, Mapping-Lookups, Pro-Mitarbeiter-Zeilenbau,
     CSV/JSON-Verzweigung inline). In `_parse_month`/`_build_category_lookup`/
     `_build_employee_lines`-Helper aufteilen, `get()` bleibt Orchestrator.
-14. **"Spezialitäten sind ausgenommen"-Guard dreifach wiederholt**: `_check_rest_period`,
-    `_check_maximum_weekly_hours`, `_check_break_minutes` in `scheduling/models.py` (u. a.
-    `:2234-2235,2268-2269,2295-2296`) beginnen alle mit derselben 2-Zeilen-Bedingung. Niedrige
-    Priorität, aber leicht mit einem `@skip_for_specialties`-Decorator oder einer zentralen
-    Weiche in `clean()` zu lösen -- wird sonst bei jedem neuen `_check_*` erneut vergessen.
+14. ✅ **"Spezialitäten sind ausgenommen"-Guard fünffach wiederholt**: `_check_rest_period`,
+    `_check_maximum_weekly_hours`, `_check_break_minutes`, `_check_daily_span`,
+    `_check_weekly_rest_day` in `scheduling/models.py` begannen alle mit derselben 2-Zeilen-
+    Bedingung (Audit fand 3, tatsächlich waren es 5). Behoben durch den
+    `@skip_for_specialties`-Decorator, alle fünf Methoden nutzen ihn jetzt.
 15. **Node-Scope-Filter-Wiring siebenfach copy-paste**: `NodeViewSet`, `TimeTemplateViewSet`,
     `ShiftAssignmentViewSet`, `AbsenceViewSet`, `ShiftTradeRequestViewSet`, `TimeRecordViewSet`,
     `MissingTimeRecordViewSet` (`scheduling/views.py:225-227,929-931,959-961,1140-1151,1334-1341,

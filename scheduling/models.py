@@ -1,6 +1,7 @@
 import calendar
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
+from functools import wraps
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -412,7 +413,7 @@ class Employee(TenantScopedModel):
 
         # Spezialitäten (TimeTemplate.category == "special", z. B.
         # Pikettdienst) sind rein informativ und zählen nicht zu den
-        # Stunden -- siehe ShiftAssignment._check_rest_period.
+        # Stunden -- siehe skip_for_specialties-Decorator.
         assignments = (
             ShiftAssignment.all_objects.filter(employee=self, date__range=[week_start, week_end])
             .exclude(template__category=TimeTemplate.Category.SPECIAL)
@@ -929,7 +930,7 @@ class Employee(TenantScopedModel):
         # geleistete Zeit) bleibt davon unberührt, die ist schon korrekt.
         # Spezialitäten (TimeTemplate.category == "special", z. B.
         # Pikettdienst) sind rein informativ und zählen nicht zu den
-        # Stunden -- siehe ShiftAssignment._check_rest_period.
+        # Stunden -- siehe skip_for_specialties-Decorator.
         full_absence_dates = {d for d, weight in absence_weights.items() if weight >= 1.0}
         assignments = (
             ShiftAssignment.all_objects.filter(employee=self, date__gte=period_start, date__lte=as_of_date)
@@ -2047,6 +2048,30 @@ class PayrollCategoryMapping(TenantScopedModel):
             )
 
 
+def skip_for_specialties(check_method):
+    """
+    Decorator für ShiftAssignment._check_*-Methoden, die für Spezialitäten
+    (TimeTemplate.category == SPECIAL, z. B. Pikettdienst) nicht gelten --
+    eine Spezialität ist Zusatz zu einem regulären Dienst, kein Ersatz: sie
+    soll weder selbst eine Ruhezeit einhalten müssen, noch als "Schicht" die
+    Ruhezeit/Höchstarbeitszeit/Pausen/Tagesspanne/wöchentlichen freien Tag
+    eines echten Dienstes beeinflussen. Gilt bewusst NICHT für Qualifikation/
+    Jugendschutz/Absenz-Konflikt, die weiterhin auch für Spezialitäten
+    gelten (siehe jeweilige _check_*-Methode) -- deshalb kein pauschaler
+    Guard in clean(), sondern gezielt an den zeit-/stundenbezogenen Checks.
+    Vorher an jeder betroffenen Methode als identische 2-Zeilen-Bedingung
+    wiederholt.
+    """
+
+    @wraps(check_method)
+    def wrapper(self, *args, **kwargs):
+        if self.template.category == TimeTemplate.Category.SPECIAL:
+            return None
+        return check_method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class ShiftAssignment(TenantScopedModel):
     """Die einzelne Zuweisung im Planblatt: ein Mitarbeiter, ein Tag, ein Time Template."""
 
@@ -2221,18 +2246,8 @@ class ShiftAssignment(TenantScopedModel):
                 f"Qualifikation '{self.template.required_skill.name}'."
             )
 
+    @skip_for_specialties
     def _check_rest_period(self):
-        # Nutzer-Feedback (2026-08): eine Spezialität (TimeTemplate.category
-        # == "special", z. B. Pikettdienst) ist ein Zusatz zu einem
-        # regulären Dienst, kein Ersatz -- sie soll weder selbst eine
-        # Ruhezeit einhalten müssen, noch als "Schicht" die Ruhezeit vor/
-        # nach einem echten Dienst verkürzen. Gilt für alle zeit-/stunden-
-        # bezogenen Prüfungen unten (Ruhezeit, Höchstarbeitszeit, Pausen,
-        # Tagesspanne, wöchentlicher freier Tag) -- bewusst NICHT für
-        # Qualifikation/Jugendschutz/Absenz-Konflikt, die weiterhin auch für
-        # Spezialitäten gelten (siehe jeweilige Methode).
-        if self.template.category == TimeTemplate.Category.SPECIAL:
-            return
         this_start, this_end = self._shift_datetimes(self.date, self.template)
 
         neighbours = (
@@ -2263,10 +2278,8 @@ class ShiftAssignment(TenantScopedModel):
                     f"{gap_hours:.1f}h, mindestens {minimum_rest_hours}h erforderlich ({law_reference})."
                 )
 
+    @skip_for_specialties
     def _check_maximum_weekly_hours(self):
-        # Spezialitäten zählen nicht zu den Stunden (siehe _check_rest_period).
-        if self.template.category == TimeTemplate.Category.SPECIAL:
-            return
         week_start = self.date - timedelta(days=self.date.weekday())  # Montag
         week_end = week_start + timedelta(days=6)  # Sonntag
 
@@ -2290,10 +2303,8 @@ class ShiftAssignment(TenantScopedModel):
                 f"(Woche ab {week_start}), maximal {maximum_weekly_hours}h erlaubt (Art. 9 ArG)."
             )
 
+    @skip_for_specialties
     def _check_break_minutes(self):
-        # Spezialitäten zählen nicht zu den Stunden (siehe _check_rest_period).
-        if self.template.category == TimeTemplate.Category.SPECIAL:
-            return
         segments = _segment_datetimes(self.date, self.template.effective_segments())
         net_work_minutes = sum((end - start).total_seconds() / 60 for start, end in segments)
         required = self._required_break_minutes(net_work_minutes)
@@ -2333,6 +2344,7 @@ class ShiftAssignment(TenantScopedModel):
             exclude_pks = [self.pk] if self.pk else []
         return exclude_pks
 
+    @skip_for_specialties
     def _check_daily_span(self):
         """
         Art. 10 Abs. 3 ArG: Arbeitsbeginn bis Arbeitsende INKLUSIVE Pausen --
@@ -2345,9 +2357,6 @@ class ShiftAssignment(TenantScopedModel):
         ist das Ergebnis identisch zur vorherigen, Template-einzelnen
         Berechnung.
         """
-        # Spezialitäten zählen nicht zu den Stunden (siehe _check_rest_period).
-        if self.template.category == TimeTemplate.Category.SPECIAL:
-            return
         same_day = (
             ShiftAssignment.all_objects.filter(employee=self.employee, date=self.date)
             .exclude(pk__in=self._same_day_exclude_pks())
@@ -2425,11 +2434,10 @@ class ShiftAssignment(TenantScopedModel):
                 f"'{self.template.name}' überschneidet."
             )
 
+    @skip_for_specialties
     def _check_weekly_rest_day(self):
-        # Spezialitäten zählen nicht als Arbeitstag (siehe _check_rest_period)
-        # -- ein Tag mit nur einem Pikettdienst bleibt ein freier Tag.
-        if self.template.category == TimeTemplate.Category.SPECIAL:
-            return
+        # Ein Tag mit nur einem Pikettdienst bleibt ein freier Tag, siehe
+        # skip_for_specialties-Docstring.
         week_start = self.date - timedelta(days=self.date.weekday())  # Montag
         week_dates = {week_start + timedelta(days=i) for i in range(7)}
 

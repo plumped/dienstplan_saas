@@ -38,6 +38,7 @@ from .models import (
     YOUTH_MINIMUM_REST_HOURS,
     Absence,
     Employee,
+    Node,
     ShiftAssignment,
     ShiftPreference,
     TimeTemplate,
@@ -582,6 +583,27 @@ def commit_draft_assignments(tenant, assignment_specs):
     for spec in assignment_specs:
         try:
             with transaction.atomic():
+                # Sicherheitsnetz gegen fremde IDs im Request-Body: anders als
+                # beim normalen ShiftAssignmentViewSet (dessen
+                # PrimaryKeyRelatedFields implizit über Employee.objects/
+                # Node.objects/TimeTemplate.objects -- die ContextVar-gefilterte
+                # Standard-Manager, siehe TenantScopedModel -- nur Datensätze
+                # DIESES Tenants als gültig akzeptieren) baut diese Funktion die
+                # ShiftAssignment-Instanz direkt aus rohen IDs, ohne
+                # PrimaryKeyRelatedField-Validierung dazwischen. full_clean()
+                # allein reicht hier NICHT: es prüft nur referenzielle
+                # Integrität (existiert die PK überhaupt), nicht
+                # Tenant-Zugehörigkeit -- ShiftAssignment.clean() selbst hat
+                # keinen expliziten employee.tenant/node.tenant-Check. Ohne
+                # diese drei Existenzprüfungen liesse sich sonst eine
+                # ShiftAssignment mit tenant=A, aber employee_id einer fremden
+                # Mitarbeiterin aus Tenant B anlegen.
+                if not Employee.all_objects.filter(tenant=tenant, pk=spec["employee_id"]).exists():
+                    raise ObjectDoesNotExist("employee_id gehört nicht zu diesem Tenant.")
+                if not Node.all_objects.filter(tenant=tenant, pk=spec["node_id"]).exists():
+                    raise ObjectDoesNotExist("node_id gehört nicht zu diesem Tenant.")
+                if not TimeTemplate.all_objects.filter(tenant=tenant, pk=spec["template_id"]).exists():
+                    raise ObjectDoesNotExist("template_id gehört nicht zu diesem Tenant.")
                 obj = ShiftAssignment(
                     tenant=tenant,
                     employee_id=spec["employee_id"],
@@ -593,8 +615,9 @@ def commit_draft_assignments(tenant, assignment_specs):
                 obj.save()
                 created.append(obj)
         except (DjangoValidationError, IntegrityError, KeyError, TypeError, ValueError, ObjectDoesNotExist) as exc:
-            # ObjectDoesNotExist: full_clean() dereferenziert innerhalb von
-            # clean() u. a. self.employee (z. B. _check_rest_period) -- bei
+            # ObjectDoesNotExist: sowohl von den expliziten Tenant-Checks oben
+            # als auch von full_clean() selbst (das innerhalb von clean() u. a.
+            # self.employee dereferenziert, z. B. _check_rest_period) -- bei
             # einer nicht existierenden employee_id/template_id/node_id (z. B.
             # veraltete/manipulierte IDs im Request-Body) wirft das kein
             # ValidationError, sondern <Model>.DoesNotExist.

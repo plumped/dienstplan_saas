@@ -539,6 +539,29 @@ class CommitDraftAssignmentsTests(PlanningTestBase):
         self.assertEqual(created, [])
         self.assertEqual(len(skipped), 1)
 
+    def test_real_cross_tenant_employee_id_rejected(self):
+        """
+        Anders als test_invalid_cross_tenant_reference_rejected oben (nicht
+        existierende employee_id) hier eine echte, gültige Employee-Zeile aus
+        einem ANDEREN Tenant -- full_clean() allein prüft nur referenzielle
+        Integrität (existiert die PK), nicht Tenant-Zugehörigkeit. Ohne den
+        expliziten Employee.all_objects.filter(tenant=...)-Check in
+        commit_draft_assignments() würde diese Zeile unbemerkt durchgehen und
+        eine ShiftAssignment mit tenant=self.tenant, aber employee_id einer
+        fremden Mitarbeiterin anlegen.
+        """
+        other_tenant = Tenant.objects.create(name="Andere Klinik", slug="andere-klinik-2")
+        other_employee = Employee.objects.create(
+            tenant=other_tenant, first_name="Fremd", last_name="X", employment_pct=100
+        )
+        specs = [
+            {"employee_id": other_employee.id, "node_id": self.node.id, "date": date(2026, 9, 1), "template_id": self.template.id}
+        ]
+        created, skipped = commit_draft_assignments(self.tenant, specs)
+        self.assertEqual(created, [])
+        self.assertEqual(len(skipped), 1)
+        self.assertEqual(ShiftAssignment.objects.count(), 0)
+
 
 class GeneratePlanCommandTests(PlanningTestBase):
     def test_dry_run_writes_nothing(self):
@@ -626,7 +649,12 @@ class PlanGenerateAndCommitViewTests(APITestCase):
         response = self.client.get("/api/plan-generate/", {"node": self.node.id, "month": "2026-09"})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["status"], "ok")
-        self.assertEqual(len(response.data["assignments"]), 30)
+        # 27, nicht 30: mit nur einer Mitarbeiterin erzwingt der harte
+        # Wochenruhetag-Constraint eine Lücke in jeder vollständig im Monat
+        # liegenden ISO-Woche (3x im September 2026) -- siehe
+        # GeneratePlanCommandTests.test_dry_run_writes_nothing für dieselbe
+        # Fixtur-Konstellation mit identischem Ergebnis.
+        self.assertEqual(len(response.data["assignments"]), 27)
         self.assertEqual(ShiftAssignment.objects.count(), 0)
 
     def test_planner_with_scope_can_generate(self):
@@ -643,9 +671,10 @@ class PlanGenerateAndCommitViewTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data["created"]), 30)
+        # 27, nicht 30 -- siehe Kommentar in test_generate_never_writes_to_db.
+        self.assertEqual(len(response.data["created"]), 27)
         self.assertEqual(response.data["skipped"], [])
-        self.assertEqual(ShiftAssignment.objects.count(), 30)
+        self.assertEqual(ShiftAssignment.objects.count(), 27)
 
     def test_commit_skips_row_conflicting_with_concurrent_manual_entry(self):
         self.auth_as(self.admin_user)
@@ -663,7 +692,10 @@ class PlanGenerateAndCommitViewTests(APITestCase):
             format="json",
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data["created"]), 29)
+        # 26, nicht 29 -- siehe Kommentar in test_generate_never_writes_to_db
+        # (27 Vorschläge insgesamt, davon einer bereits durch die simulierte
+        # manuelle Stempelung belegt -> 26 tatsächlich neu erstellt).
+        self.assertEqual(len(response.data["created"]), 26)
         self.assertEqual(len(response.data["skipped"]), 1)
 
     def test_commit_rejects_cross_tenant_employee_id_per_row(self):

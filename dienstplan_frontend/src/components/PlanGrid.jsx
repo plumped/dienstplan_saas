@@ -2,10 +2,22 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import { canManageSchedule } from "../roles.js";
 import BalanceBadge from "./BalanceBadge.jsx";
+import DraftShiftChip, { DraftSpecialDot } from "./DraftShiftChip.jsx";
 import FloatingPopover from "./FloatingPopover.jsx";
 import PlacementToolbar from "./PlacementToolbar.jsx";
+import PlanGenerationPanel from "./PlanGenerationPanel.jsx";
 import ShiftCell from "./ShiftCell.jsx";
 import SpecialBadge from "./SpecialBadge.jsx";
+
+// README Block 2 Punkt 19 (Automatisierte Planung): eindeutiger Schlüssel
+// für einen einzelnen Entwurfsvorschlag aus generate_draft_plan() -- eine
+// DraftAssignment hat (anders als eine gespeicherte ShiftAssignment) keine
+// echte ID, template_id im Schlüssel reicht aber zur Eindeutigkeit (der
+// Solver schliesst überlappende Kandidat-Templates am selben Tag/Slot
+// bereits gegenseitig aus, siehe scheduling/planning.py).
+function draftKey(a) {
+  return `${a.employee_id}:${a.date}:${a.template_id}:${a.node_id}`;
+}
 
 // README Block 2.9: kleines, klickbares Warn-Badge in der Tages-Kopfzelle,
 // wenn mindestens ein Schichttyp mit minimum_staffing an diesem Tag
@@ -185,6 +197,19 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   const canManage = canManageSchedule(me);
   const ownEmployeeId = me?.employee?.id ?? null;
   const todayIso = new Date().toISOString().slice(0, 10);
+
+  // README Block 2 Punkt 19 (Automatisierte Planung): draftPlan ist das
+  // GeneratePlanView-Ergebnis (nichts gespeichert, siehe planning.py-
+  // Docstring) -- ein rein additiver Overlay-Layer, orthogonal zu
+  // markedCells/placementMode oben (manuelles Stempeln bleibt während der
+  // Entwurfsansicht unverändert nutzbar, z. B. um eine nach dem Entfernen
+  // eines Vorschlags verbliebene Lücke manuell zu schliessen).
+  // removedDraftKeys hält die vom Planer einzeln entfernten Vorschläge
+  // (Nutzer-Vorgabe: "Alle Vorschläge sichtbar, einzeln entfernbar").
+  const [draftPlan, setDraftPlan] = useState(null);
+  const [generatingPlan, setGeneratingPlan] = useState(false);
+  const [committingPlan, setCommittingPlan] = useState(false);
+  const [removedDraftKeys, setRemovedDraftKeys] = useState(() => new Set());
 
   const days = useMemo(
     () => Array.from({ length: daysInMonth(year, month) }, (_, i) => i + 1),
@@ -417,6 +442,28 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     for (const p of preferences) map.set(`${p.employee}:${p.date}`, p);
     return map;
   }, [preferences]);
+
+  // README Block 2 Punkt 19: aktive (noch nicht einzeln entfernte)
+  // Entwurfsvorschläge, gruppiert nach genau demselben Zellenschlüssel-
+  // Format wie die realen Zuweisungen oben (employee:date:rowNodeId) --
+  // node_id einer DraftAssignment ist die vom Solver gewählte Team-/
+  // Stations-Id (siehe planning.py: template_by_id[template_id].node_id),
+  // identisch zu ShiftAssignment.node bei einer echten Zuweisung.
+  const activeDraftAssignments = useMemo(() => {
+    if (!draftPlan) return [];
+    return draftPlan.assignments.filter((a) => !removedDraftKeys.has(draftKey(a)));
+  }, [draftPlan, removedDraftKeys]);
+
+  const draftByCell = useMemo(() => {
+    const map = new Map();
+    for (const a of activeDraftAssignments) {
+      const key = `${a.employee_id}:${a.date}:${a.node_id}`;
+      const list = map.get(key);
+      if (list) list.push(a);
+      else map.set(key, [a]);
+    }
+    return map;
+  }, [activeDraftAssignments]);
 
   // Stempel-Leiste zeigt nur die Schichttypen der tatsächlich markierten
   // Zeilen (Team-Knoten aus dem dritten Teil jedes markedCells-Schlüssels,
@@ -1155,6 +1202,72 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
+  // README Block 2 Punkt 19 (Automatisierte Planung): Auslöser für
+  // PlanGenerationPanel.jsx -- liest nur (siehe GeneratePlanView-Docstring),
+  // ein vorheriger Entwurf wird dabei verworfen (neu generieren ersetzt
+  // ihn komplett, statt zwei Entwürfe zu vermengen).
+  async function handleGeneratePlan() {
+    setGeneratingPlan(true);
+    try {
+      const monthParam = `${year}-${String(month).padStart(2, "0")}`;
+      const result = await api.generatePlan(nodeId, monthParam);
+      setDraftPlan(result);
+      setRemovedDraftKeys(new Set());
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setGeneratingPlan(false);
+    }
+  }
+
+  // Einzelnes Entfernen eines Vorschlags aus der Entwurfsansicht (Nutzer-
+  // Vorgabe: "Alle Vorschläge sichtbar, einzeln entfernbar") -- rein
+  // clientseitig, der Entwurf selbst wurde nie gespeichert.
+  function handleRemoveDraft(assignment) {
+    setRemovedDraftKeys((prev) => new Set(prev).add(draftKey(assignment)));
+  }
+
+  function handleDiscardPlan() {
+    setDraftPlan(null);
+    setRemovedDraftKeys(new Set());
+  }
+
+  // Persistiert die vom Planer ggf. reduzierte Vorschlagsliste (siehe
+  // CommitPlanView/commit_draft_assignments -- pro Zeile validiert, eine
+  // einzelne zwischenzeitlich kollidierende Zeile landet in `skipped` statt
+  // die ganze Übernahme zu blockieren). Erfolgreich übernommene Zuweisungen
+  // werden in den bestehenden assignments-State gemergt (gleiches Muster
+  // wie handleCopyWeekPattern), der Entwurf danach verworfen.
+  async function handleCommitPlan() {
+    if (!draftPlan) return;
+    setCommittingPlan(true);
+    try {
+      const monthParam = `${year}-${String(month).padStart(2, "0")}`;
+      const { created, skipped } = await api.commitPlan(
+        nodeId,
+        monthParam,
+        activeDraftAssignments.map((a) => ({
+          employee_id: a.employee_id,
+          node_id: a.node_id,
+          date: a.date,
+          template_id: a.template_id,
+        }))
+      );
+      if (created.length) setAssignments((prev) => [...prev, ...created]);
+      setDraftPlan(null);
+      setRemovedDraftKeys(new Set());
+      if (skipped.length) {
+        onError(
+          `Entwurf übernommen, ${skipped.length} Vorschlag/Vorschläge wegen zwischenzeitlicher Änderungen übersprungen.`
+        );
+      }
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setCommittingPlan(false);
+    }
+  }
+
   async function handleOfferTrade(assignmentId, targetEmployeeId) {
     try {
       await api.createShiftTradeRequest({
@@ -1190,6 +1303,20 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
           {exportingFormat === "csv" ? "…" : "Als CSV exportieren"}
         </button>
       </div>
+      {/* README Block 2 Punkt 19: Admin/Planer-only, wie GeneratePlanView/
+          CommitPlanView im Backend -- ein Entwurf betrifft die ganze
+          Station, keine Selbstauskunfts-Funktion. */}
+      {canManage && (
+        <PlanGenerationPanel
+          generating={generatingPlan}
+          committing={committingPlan}
+          draftPlan={draftPlan}
+          activeCount={activeDraftAssignments.length}
+          onGenerate={handleGeneratePlan}
+          onCommit={handleCommitPlan}
+          onDiscard={handleDiscardPlan}
+        />
+      )}
       {canManage && (
         <PlacementToolbar
           placementMode={placementMode}
@@ -1324,6 +1451,19 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                       (a) => templates.find((t) => t.id === a.template)?.category === "special"
                     );
                     const absence = findAbsence(emp.id, date);
+                    // README Block 2 Punkt 19 (Automatisierte Planung):
+                    // Entwurfsvorschläge für genau diese Zelle -- defensiv
+                    // bei einer Absenz ignoriert (der Solver schliesst
+                    // Absenztage bereits von den Kandidaten aus, siehe
+                    // planning.py, aber die Absenz könnte nach der
+                    // Entwurfserstellung noch manuell hinzugekommen sein).
+                    const draftsForCell = absence ? [] : draftByCell.get(`${emp.id}:${date}:${rowNodeId}`) ?? [];
+                    const draftRegular = draftsForCell.filter(
+                      (a) => templates.find((t) => t.id === a.template_id)?.category !== "special"
+                    );
+                    const draftSpecial = draftsForCell.filter(
+                      (a) => templates.find((t) => t.id === a.template_id)?.category === "special"
+                    );
                     const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
                     const holidayName = holidays.get(date);
                     const canOfferTrade = canManage || me?.employee?.id === emp.id;
@@ -1346,7 +1486,13 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     // reicht. Zählt nur reguläre Zuweisungen (eine Spezialität
                     // allein soll keinen zweiten Slot erzwingen).
                     const halfDayAbsence = Boolean(absence) && absence.day_portion !== "full";
-                    const showSecondSlot = halfDayAbsence || (!absence && regularAssignments.length >= 2);
+                    // README Block 2 Punkt 19: ein Entwurfsvorschlag für den
+                    // (sonst leeren) zweiten Slot muss den Split genauso
+                    // erzwingen wie eine zweite ECHTE Zuweisung -- sonst
+                    // bliebe ein Vorschlag für einen bereits belegten Tag
+                    // unsichtbar.
+                    const showSecondSlot =
+                      halfDayAbsence || (!absence && regularAssignments.length + draftRegular.length >= 2);
 
                     // Nutzer-Feedback (2026-08): "wofür haben wir Alles/Oben/Unten
                     // gebaut? Absenzen sollen genau gleich zuteilbar sein" -- Oben
@@ -1373,6 +1519,17 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                       }
                       if (absence) return null;
                       return regularAssignments[slotIndex] ?? null;
+                    }
+
+                    // README Block 2 Punkt 19: ein Entwurfsvorschlag füllt
+                    // NUR einen Slot, der nicht schon von einer echten
+                    // Zuweisung belegt ist -- der Solver ändert bestehende
+                    // Zuweisungen nie, ein Vorschlag rutscht also immer
+                    // hinter die bereits vorhandenen regulären Slots.
+                    function slotDraft(slotIndex) {
+                      const draftIndex = slotIndex - regularAssignments.length;
+                      if (draftIndex < 0) return null;
+                      return draftRegular[draftIndex] ?? null;
                     }
 
                     function renderSlot(assignment, slotIndex, slotAbsenceValue) {
@@ -1454,11 +1611,25 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                               ob die Zelle leer oder belegt ist. */}
                           <div className={`day-cell-slots${showSecondSlot ? " day-cell-slots--split" : ""}`}>
                             <div className={`cell-wrap${showSecondSlot ? " cell-wrap--top" : " cell-wrap--span"}`}>
-                              {renderSlot(slotAssignment(0), 0, slotAbsence(0))}
+                              {slotAssignment(0) || !slotDraft(0) ? (
+                                renderSlot(slotAssignment(0), 0, slotAbsence(0))
+                              ) : (
+                                <DraftShiftChip
+                                  template={templates.find((t) => t.id === slotDraft(0).template_id)}
+                                  onRemove={() => handleRemoveDraft(slotDraft(0))}
+                                />
+                              )}
                             </div>
                             {showSecondSlot && (
                               <div className="cell-wrap cell-wrap--bottom">
-                                {renderSlot(slotAssignment(1), 1, slotAbsence(1))}
+                                {slotAssignment(1) || !slotDraft(1) ? (
+                                  renderSlot(slotAssignment(1), 1, slotAbsence(1))
+                                ) : (
+                                  <DraftShiftChip
+                                    template={templates.find((t) => t.id === slotDraft(1).template_id)}
+                                    onRemove={() => handleRemoveDraft(slotDraft(1))}
+                                  />
+                                )}
                               </div>
                             )}
                           </div>
@@ -1475,6 +1646,21 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                               canEdit={canManage}
                               onRemove={(specialAssignmentId) => handleRemoveSpecial(specialAssignmentId)}
                             />
+                          )}
+                          {/* README Block 2 Punkt 19: Pikett-Vorschläge als
+                              gestrichelte Eck-Punkte neben den echten
+                              (SpecialBadge oben) -- eigene, einfachere
+                              Darstellung ohne Popover (siehe DraftShiftChip.jsx). */}
+                          {!(absence && absence.day_portion === "full") && draftSpecial.length > 0 && (
+                            <span className="special-day-badges special-day-badges--draft">
+                              {draftSpecial.map((a) => (
+                                <DraftSpecialDot
+                                  key={draftKey(a)}
+                                  template={templates.find((t) => t.id === a.template_id)}
+                                  onRemove={() => handleRemoveDraft(a)}
+                                />
+                              ))}
+                            </span>
                           )}
                           {/* Bugfix ("massiver Bug"): nur auf einer sonst leeren
                               Zelle zeigen -- ist bereits ein Dienst sichtbar,

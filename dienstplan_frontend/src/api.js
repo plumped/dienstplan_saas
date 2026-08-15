@@ -543,6 +543,20 @@ export const api = {
     URL.revokeObjectURL(url);
   },
 
+  // README Block 2 Punkt 19 (Automatisierte Planung): generatePlan liest nur
+  // (siehe scheduling.views.GeneratePlanView-Docstring, GET statt POST, da
+  // rein lesend), commitPlan persistiert die vom Planer ggf. reduzierte
+  // Vorschlagsliste -- affectsBalance: true nicht vergessen (analog
+  // createShiftAssignment), sonst bleibt BalanceBadge nach der Übernahme
+  // veraltet stehen.
+  generatePlan: (nodeId, month) => request(`/plan-generate/?node=${nodeId}&month=${month}`),
+  commitPlan: (nodeId, month, assignments) =>
+    request("/plan-commit/", {
+      method: "POST",
+      body: { node: nodeId, month, assignments },
+      affectsBalance: true,
+    }),
+
   // MVP-Fahrplan Block 2, Punkt 5: Planblatt-Export (PDF für Aushang, CSV
   // für nicht API-angebundene Lohnbuchhaltung) -- gleiches Download-Muster
   // wie downloadPayrollExportCsv oben, nur mit variablem output/Dateityp.

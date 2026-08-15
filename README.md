@@ -1916,49 +1916,55 @@ steht.
          aktivem Umschalter korrekt übersprungen statt einen "zweiten" Dienst ohne ersten
          anzulegen.
 
-19. **Automatisierte Planung (One-Click Planning)** (noch nicht umgesetzt). Ziel: Admin/Planer
-    wählen eine Station/einen Zeitraum und lassen das System selbständig einen vollständigen,
-    regelkonformen Dienstplan-Entwurf erzeugen -- unter Einhaltung sämtlicher bereits vorhandener
-    Einschränkungen (Regel-Engine: Ruhezeit, Höchstarbeitszeit, Qualifikation/`required_skill`,
-    Jugendschutz, Absenz-Konflikte; Mindestbesetzung pro Schichttyp, Block 9; künftig
-    Split-Shift-Überlappung, Punkt 18 oben) statt jede Schicht manuell zu ziehen.
+19. ✅ **Automatisierte Planung (One-Click Planning)** (2026-08). Admin/Planer wählen eine Station
+    und einen Monat, klicken "Automatisch planen" -- `scheduling/planning.py` (Google OR-Tools
+    CP-SAT) generiert einen vollständigen, regelkonformen Dienstplan-Entwurf, statt jede Schicht
+    manuell zu ziehen. Explizite Nutzer-Vorgabe ("Ich will eine extrem intuitive Automatisierung.
+    Sie soll alles berücksichtigen. Das wird eines meiner Key Features im Verkauf") verwarf einen
+    ursprünglich vorgeschlagenen, funktional eingeschränkten MVP-Zuschnitt: der Solver bildet
+    **exakt dieselben Regeln wie die manuelle Planung** ab, keine Teilmenge davon.
 
-    - **State-of-the-art-Einordnung**: das ist im Kern ein klassisches "Nurse/Staff Rostering
-      Problem" aus der Operations-Research-Literatur -- ein Constraint-Satisfaction- bzw.
-      Optimierungsproblem, kein Heuristik-Hack. Empfehlung: ein dedizierter CP-Solver
-      (z. B. Google OR-Tools CP-SAT, reine Python-Abhängigkeit, keine externe Service-Anbindung
-      nötig) statt einer selbstgeschriebenen Greedy-Heuristik -- letztere findet bei mehreren
-      gleichzeitig wirkenden ArG-Regeln + Mindestbesetzung + Fairness (Punkt 20 unten) schnell
-      keine gültige Lösung mehr oder erzeugt unfaire, schwer nachvollziehbare Ergebnisse, während
-      ein CP-Solver Machbarkeit *beweist* oder explizit meldet, welche Nebenbedingung(en) eine
-      Lösung verhindern.
-    - **Modellierung als Entscheidungsproblem**: eine Binärvariable `x[employee, date, template]`
-      pro möglicher Zuweisung; harte Nebenbedingungen (müssen gelten, sonst keine gültige Lösung) =
-      identisch zu den bestehenden `ShiftAssignment.clean()`-Prüfungen (Ruhezeit, Höchstarbeitszeit,
-      `required_skill`, Jugendschutz, kein Absenz-Konflikt, Mindestbesetzung als Untergrenze der
-      Summe über alle passenden `x`); weiche Ziele (sollen möglichst gut erfüllt werden, blockieren
-      aber nichts) = `ShiftPreference`-Wünsche (Block 2.13, Wunschfrei/Wunschdienst) und
-      Fairness-Ausgleich über die Bonus-Punkte aus Punkt 20 unten (unpopuläre Schichten bevorzugt an
-      Mitarbeitende mit aktuell niedrigem Punktestand vergeben) als gewichtete Terme in der
-      Zielfunktion.
-    - **Vorschau statt Blindautomatik (Vertrauen vor Bequemlichkeit)**: das Ergebnis wird
-      grundsätzlich als **Entwurf/Vorschlag** erzeugt, nicht direkt gespeichert -- eine
-      Diff-Ansicht im Planblatt (neue Zuweisungen optisch hervorgehoben, z. B. gestrichelter Rand)
-      erlaubt Durchsicht, punktuelle manuelle Korrektur und erst dann bewusstes Übernehmen. Analog
-      zur bereits etablierten Begründung, warum ArG-Prüfungen informativ statt blockierend sind
-      (Nachtarbeit/Sonntagsarbeit, Block 1.5/1.6): ein Algorithmus, der ohne Bestätigung einen
-      ganzen Monatsplan überschreibt, wäre für die Akzeptanz in der Praxis riskanter als ein
-      spürbar geringerer Automatisierungsgrad mit echtem Vertrauen der Planenden.
-    - **Umgang mit Unlösbarkeit**: liefert der Solver keine vollständige Lösung (z. B. zu wenig
-      Personal mit der nötigen Qualifikation für die gewählte Mindestbesetzung), soll das Ergebnis
-      trotzdem der bestmögliche **Teilentwurf** sein plus eine für Menschen lesbare Liste der
-      verletzten/nicht erfüllbaren Stellen ("Nachtwache am 14.6.: nur 1 von 2 Personen mit Skill
-      'Reanimation' verfügbar") -- kein reines Scheitern ohne Diagnose.
-    - **Umfang MVP vs. später**: ein erster Wurf beschränkt sich sinnvollerweise auf eine Station
-      (nicht tenant-weit) und einen Monat (nicht beliebige Zeiträume) -- CP-SAT-Laufzeit wächst mit
-      der Anzahl Variablen (Mitarbeitende × Tage × Schichttypen), ein monatlicher Stations-Lauf
-      bleibt performant, ein tenant-weiter Jahres-Lauf müsste erst als eigener, potenziell
-      asynchroner Hintergrund-Task (nicht im Request-Response-Zyklus) konzipiert werden.
+    - **Volle Regel-Parität mit `ShiftAssignment.clean()`**: Ruhezeit (inkl. Jugendschutz-Sonderfall),
+      Höchstarbeitszeit pro Woche, Pausenregelung (Art. 15 ArG, Templates, die sie nicht erfüllen
+      können, werden mit Warnung von der Automatik ausgeschlossen), Tagesspanne, Wochenruhetag,
+      Qualifikation/`required_skill`, Jugendschutz (kein Nacht-/Sonntagsdienst für Minderjährige),
+      Mutterschutz (`full_ban`/`consent_required`/`night_ban` je nach Schwangerschaftsstatus),
+      Absenz-Konflikte (inkl. Halbtags-Präzision über `Absence._half_day_window()`) -- und, gemäss
+      der "alles berücksichtigen"-Vorgabe, auch **Pikett/Spezialitäten** (`category=SPECIAL`, mit
+      einem eigenen Ausgleichs-Term, der Pikett-Zuweisungen gleichmässig über berechtigte
+      Mitarbeitende verteilt) und **Split-Shifts** (mehrere nicht überlappende Zuweisungen pro
+      Tag, README Punkt 18). Bestehende, bereits manuell erstellte Zuweisungen im Zielmonat werden
+      nie verändert, nur als Konstanten in alle Regeln einbezogen und um sie herum ergänzt.
+    - **Mindestbesetzung als echte Zielgrösse**: anders als das bisher rein informative
+      Dashboard-Badge (Block 2.9) erzwingt der Solver `minimum_staffing` als harte Ober- **und**
+      Untergrenze (eine Schlupfvariable erlaubt kontrollierten Fehlbedarf statt Unlösbarkeit, statt
+      unnötig zu überbesetzen). Weiche Ziele (sollen möglichst gut erfüllt, blockieren aber nichts):
+      `ShiftPreference`-Wünsche (Block 2.13, Wunschdienst bevorzugt/Wunschfrei vermieden, aber mit
+      Warnung überschreibbar), Fairness-Bias über die Bonus-Punkte aus Punkt 20 (unpopuläre
+      Schichten bevorzugt an Mitarbeitende mit aktuell niedrigem Punktestand) und Monats-Soll-Nähe
+      (`Employee.target_hours_for_period()`, neu, verallgemeinert das `time_account_summary()`-Muster
+      auf einen beliebigen Zeitraum statt "Jahresbeginn bis heute").
+    - **Vorschau statt Blindautomatik**: `GeneratePlanView` (`GET /api/plan-generate/`) liest nur
+      und schreibt nie in die Datenbank -- das Ergebnis ist eine Diff-Ansicht im Planblatt (neue
+      Vorschläge mit gestricheltem Rand, `DraftShiftChip.jsx`/`DraftSpecialDot`), **alle Vorschläge
+      sofort sichtbar und einzeln per "×" entfernbar** (bestätigte Nutzer-Vorgabe, keine
+      Alles-oder-Nichts-Übernahme). Erst ein bewusster Klick auf "Entwurf übernehmen"
+      (`CommitPlanView`, `POST /api/plan-commit/`) persistiert die ggf. reduzierte Liste --
+      zeilenweise validiert (`commit_draft_assignments()`, eigener Savepoint pro Zeile), damit eine
+      einzelne zwischenzeitlich kollidierende Zeile (z. B. eine parallel manuell gestempelte
+      Schicht) nicht die ganze Übernahme blockiert, sondern nur diese eine Zeile überspringt.
+    - **Umgang mit Unlösbarkeit**: liefert der Solver keine vollständige Lösung, ist das Ergebnis
+      trotzdem der bestmögliche Teilentwurf plus eine für Menschen lesbare Warnliste ("Frühdienst
+      am 07.09.2026: nur 0 von 1 Person(en) verfügbar").
+    - **Scope pro Lauf**: eine Station + ein Monat, synchroner Request (`SOLVER_TIME_LIMIT_SECONDS
+      = 20`, `num_search_workers = 8`) -- eine Architekturgrenze, kein funktionaler Kompromiss: es
+      gibt keine Task-Queue/Celery im Projekt, alle bestehenden Views sind synchron. Ein Planer
+      wiederholt den Lauf pro Station, um eine ganze Einrichtung abzudecken; ein tenant-weiter
+      Mehrmonats-Lauf bliebe eine benannte künftige Erweiterung mit echter
+      Hintergrund-Task-Infrastruktur. Zusätzlich als CLI verfügbar:
+      `python manage.py generate_plan --node <id> --year <jjjj> --month <m>` (nur Vorschau; erst
+      `--commit` speichert -- bewusste Umkehrung der `--dry-run`-Konvention anderer Commands, weil
+      "nie blind speichern" das Kernversprechen dieses Features ist).
 
 20. ✅ **Bonus-/Fairness-Punktesystem für unpopuläre Schichten** (2026-08). Ziel: sichtbar und
     nachvollziehbar machen, wer wie oft unpopuläre Schichten (Sonntag, Nacht) übernommen hat --

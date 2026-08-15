@@ -844,6 +844,30 @@ class Employee(TenantScopedModel):
         target = (workdays - holiday_days) * daily - vacation_hours
         return round(max(target, 0.0), 2)
 
+    def target_hours_for_period(self, start_date, end_date):
+        """
+        Soll für einen beliebigen Zeitraum -- Verallgemeinerung des
+        soll_kumuliert-Musters aus time_account_summary() (dort fest auf
+        "Jahresbeginn/Anstellungsbeginn bis heute" verdrahtet). Neu für die
+        automatisierte Planung (README Block 2 Punkt 19): der Solver braucht
+        ein Monats-Soll pro Mitarbeiter als weiches Zielmass -- NICHT
+        annual_target_hours() (Jahres-Fixgrösse, zieht den vollen
+        Ferienanspruch pauschal ab statt tatsächlich genehmigter Absenzen im
+        Zeitraum) und NICHT time_account_summary() (bringt Carryover-/
+        Plan-Saldo-Semantik mit, die hier nicht gebraucht wird).
+        """
+        period_start = max(start_date, self.employment_start_date)
+        if period_start > end_date:
+            return 0.0
+        workdays = _count_workdays(period_start, end_date)
+        holiday_days = self._public_holiday_workdays(period_start, end_date)
+        absence_weights = self._approved_absence_day_weights(period_start, end_date)
+        daily = self._daily_target_hours()
+        excused_units = len(holiday_days) + sum(
+            weight for d, weight in absence_weights.items() if d.weekday() < 5 and d not in holiday_days
+        )
+        return round(max((workdays - excused_units) * daily, 0.0), 2)
+
     def time_account_summary(self, as_of_date=None):
         """
         Arbeitszeitmodell (README Block 2.7 Punkt 7, redesignt 2026-08 nach

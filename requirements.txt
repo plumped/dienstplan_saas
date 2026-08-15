@@ -8,3 +8,4 @@ python-dateutil==2.9.0.post0
 reportlab==5.0.0
 stripe==15.5.0
 python-dotenv==1.2.2
+ortools==9.15.6755

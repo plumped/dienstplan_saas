@@ -3440,13 +3440,25 @@ Abarbeitungszwang.
 
 **Backend (`core/`, `scheduling/`)**
 
-1. **`initial()` dreifach fast identisch reimplementiert**: `scheduling/views.py:111-134`
-   (`TenantScopedViewSet.initial`), `core/views.py:48-65` (`TenantScopedAPIMixin.initial`),
-   `core/billing_views.py:48-61` (`_TenantScopedNoBillingGateMixin.initial`) bauen alle drei
-   manuell dieselbe DRF-`APIView.initial()`-Sequenz nach (Content-Negotiation, Authentifizierung,
-   Membership-/Tenant-Auflösung, `check_permissions`/`check_throttles`). Gemeinsame Helper-Funktion
-   in `core/tenancy.py` extrahieren, parametrisiert nach optionalem `employee_profile`/
-   `set_current_tenant`/`enforce_billing_access`.
+1. ✅ **`initial()` dreifach fast identisch reimplementiert**: `TenantScopedViewSet.initial`
+   (scheduling), `TenantScopedAPIMixin.initial` (core), `_TenantScopedNoBillingGateMixin.initial`
+   (core.billing_views) bauten alle drei manuell dieselbe DRF-`APIView.initial()`-Sequenz nach
+   (Content-Negotiation, Authentifizierung, Membership-/Tenant-Auflösung,
+   `check_permissions`/`check_throttles`). Behoben durch `core.tenancy.
+   apply_tenant_scoped_initial(view, request, *args, bind_scheduling_context=False,
+   enforce_billing=True, **kwargs)` -- alle drei Klassen rufen ihn nur noch auf.
+   `bind_scheduling_context=True` (nur `TenantScopedViewSet`) setzt zusätzlich
+   `request.employee_profile` und die Tenant-ContextVar (`set_current_tenant`, lazy-importiert
+   `scheduling.models.Employee`, damit `core` weiterhin nichts von `scheduling` auf Modulebene
+   importiert). `enforce_billing=False` (nur `_TenantScopedNoBillingGateMixin`) lässt
+   `enforce_billing_access()` aus. Sicherheitskritischer Code (läuft bei praktisch jedem
+   API-Request) -- vor dem Refactor wurden gezielt zwei Test-Lücken geschlossen: ein
+   Cross-Tenant-Isolationstest für die `TenantScopedAPIMixin`-Endpunkte (die bisher nur die
+   `TenantScopedViewSet`-Endpunkte hatten) und ein Test, der beweist, dass `set_current_tenant()`
+   während eines echten API-Requests wirkt (empirisch verifiziert: schlägt fehl, wenn der Aufruf
+   entfernt wird). In vier einzeln committeten Schritten umgesetzt (Tests zuerst, dann Helper
+   isoliert hinzugefügt, dann die drei Call-Sites nacheinander migriert, kleinster Blast-Radius
+   zuerst), nach jedem Schritt gezielt und am Ende mit der vollen Suite verifiziert.
 2. ✅ **Stripe-Statusmapping-Dict verdoppelt**: identisches 7-Einträge-Dict in
    `core/billing.py:282-290` (`handle_webhook_event`) und
    `core/management/commands/sync_stripe_subscriptions.py:60-68`. Behoben durch

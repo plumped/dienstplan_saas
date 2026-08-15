@@ -19,7 +19,6 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from treebeard.exceptions import InvalidMoveToDescendant, PathOverflow
 
-from core.context import set_current_tenant
 from core.models import Membership
 from core.notifications import (
     notify_absence_decision,
@@ -40,7 +39,7 @@ from core.permissions import (
     ShiftTradeRequestPermission,
     TimeRecordPermission,
 )
-from core.tenancy import resolve_membership_for_user
+from core.tenancy import apply_tenant_scoped_initial
 from core.views import TenantScopedAPIMixin
 
 from .models import (
@@ -180,35 +179,16 @@ class TenantScopedViewSet(viewsets.ModelViewSet):
     request.membership lesen -- deshalb hier bewusst NICHT super().initial()
     als Ganzes aufgerufen (das würde check_permissions() bereits vor der
     Zuweisung ausführen), sondern APIView.initial() Schritt für Schritt
-    nachgebaut mit der Zuweisung dazwischen.
+    nachgebaut mit der Zuweisung dazwischen (siehe
+    core.tenancy.apply_tenant_scoped_initial() für die geteilte
+    Implementierung mit core.views.TenantScopedAPIMixin/
+    core.billing_views._TenantScopedNoBillingGateMixin).
     """
 
     permission_classes = [permissions.IsAuthenticated]
 
     def initial(self, request, *args, **kwargs):
-        self.format_kwarg = self.get_format_suffix(**kwargs)
-        neg = self.perform_content_negotiation(request)
-        request.accepted_renderer, request.accepted_media_type = neg
-        version, scheme = self.determine_version(request, *args, **kwargs)
-        request.version, request.versioning_scheme = version, scheme
-
-        self.perform_authentication(request)
-
-        membership = resolve_membership_for_user(request.user)
-        tenant = membership.tenant if membership else None
-        request.tenant = tenant
-        request.membership = membership
-        request.employee_profile = (
-            Employee.all_objects.filter(tenant=tenant, user=request.user).first() if tenant else None
-        )
-        set_current_tenant(tenant)
-
-        self.check_permissions(request)
-        self.check_throttles(request)
-
-        from core.billing import enforce_billing_access
-
-        enforce_billing_access(request)
+        apply_tenant_scoped_initial(self, request, *args, bind_scheduling_context=True, **kwargs)
 
     def get_queryset(self):
         tenant = self.request.tenant

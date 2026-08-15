@@ -23,7 +23,7 @@ from rest_framework.views import APIView
 
 from core import billing
 from core.models import Membership
-from core.tenancy import resolve_membership_for_user
+from core.tenancy import apply_tenant_scoped_initial
 
 logger = logging.getLogger(__name__)
 
@@ -43,22 +43,10 @@ class _IsTenantAdminStrict(BasePermission):
 
 
 class _TenantScopedNoBillingGateMixin:
-    """Wie core.views.TenantScopedAPIMixin, aber ohne enforce_billing_access()."""
+    """Wie core.views.TenantScopedAPIMixin, aber ohne enforce_billing_access() (siehe Moduldocstring oben)."""
 
     def initial(self, request, *args, **kwargs):
-        self.format_kwarg = self.get_format_suffix(**kwargs)
-        neg = self.perform_content_negotiation(request)
-        request.accepted_renderer, request.accepted_media_type = neg
-        version, scheme = self.determine_version(request, *args, **kwargs)
-        request.version, request.versioning_scheme = version, scheme
-
-        self.perform_authentication(request)
-        membership = resolve_membership_for_user(request.user)
-        request.membership = membership
-        request.tenant = membership.tenant if membership else None
-
-        self.check_permissions(request)
-        self.check_throttles(request)
+        apply_tenant_scoped_initial(self, request, *args, enforce_billing=False, **kwargs)
 
 
 class BillingStatusView(_TenantScopedNoBillingGateMixin, APIView):

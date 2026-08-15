@@ -25,7 +25,7 @@ from core.serializers import (
     TenantHolidayOverrideSerializer,
     TenantSerializer,
 )
-from core.tenancy import resolve_membership_for_user
+from core.tenancy import apply_tenant_scoped_initial, resolve_membership_for_user
 
 User = get_user_model()
 
@@ -46,23 +46,7 @@ class TenantScopedAPIMixin:
     """
 
     def initial(self, request, *args, **kwargs):
-        self.format_kwarg = self.get_format_suffix(**kwargs)
-        neg = self.perform_content_negotiation(request)
-        request.accepted_renderer, request.accepted_media_type = neg
-        version, scheme = self.determine_version(request, *args, **kwargs)
-        request.version, request.versioning_scheme = version, scheme
-
-        self.perform_authentication(request)
-        membership = resolve_membership_for_user(request.user)
-        request.membership = membership
-        request.tenant = membership.tenant if membership else None
-
-        self.check_permissions(request)
-        self.check_throttles(request)
-
-        from core.billing import enforce_billing_access
-
-        enforce_billing_access(request)
+        apply_tenant_scoped_initial(self, request, *args, **kwargs)
 
 
 def _task_counts(membership, employee):

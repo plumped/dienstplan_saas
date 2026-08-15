@@ -60,7 +60,26 @@ class IsTenantAdmin(BasePermission):
         return bool(membership and membership.role == Membership.Role.ADMIN)
 
 
-class OwnEmployeeRecordPermission(BasePermission):
+class _ManagerOrEmployeeCanWriteMixin:
+    """
+    Gemeinsame has_permission()-Basis für die drei Berechtigungsklassen, bei
+    denen sowohl Admin/Planer (unbeschränkt) als auch Mitarbeitende (mit
+    weiteren Einschränkungen auf Objekt-Ebene, siehe jeweiliges
+    has_object_permission) grundsätzlich schreiben dürfen --
+    OwnEmployeeRecordPermission, ShiftTradeRequestPermission,
+    TimeRecordPermission. Vorher dreifach identisch dupliziert.
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        membership = getattr(request, "membership", None)
+        if not membership:
+            return False
+        return membership.role in MANAGER_ROLES or membership.role == Membership.Role.EMPLOYEE
+
+
+class OwnEmployeeRecordPermission(_ManagerOrEmployeeCanWriteMixin, BasePermission):
     """
     Für Absenzen: Admin/Planer dürfen alles, inkl. der Genehmigungs-Actions
     `approve`/`reject` (Block 2.3) -- die bleiben Mitarbeitenden immer
@@ -75,14 +94,6 @@ class OwnEmployeeRecordPermission(BasePermission):
     create ja noch nicht).
     """
 
-    def has_permission(self, request, view):
-        if request.method in SAFE_METHODS:
-            return True
-        membership = getattr(request, "membership", None)
-        if not membership:
-            return False
-        return membership.role in MANAGER_ROLES or membership.role == Membership.Role.EMPLOYEE
-
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
             return True
@@ -94,10 +105,10 @@ class OwnEmployeeRecordPermission(BasePermission):
         employee_profile = getattr(request, "employee_profile", None)
         if not employee_profile or obj.employee_id != employee_profile.id:
             return False
-        return obj.status == "pending"  # Absence.Status.PENDING
+        return obj.status == obj.Status.PENDING
 
 
-class ShiftTradeRequestPermission(BasePermission):
+class ShiftTradeRequestPermission(_ManagerOrEmployeeCanWriteMixin, BasePermission):
     """
     Admin/Planer dürfen alles, inkl. der Genehmigungs-Actions
     `approve`/`reject` (Block 2.3), die Mitarbeitenden immer verwehrt
@@ -112,14 +123,6 @@ class ShiftTradeRequestPermission(BasePermission):
     über die Actions, damit die Regel-Engine in ShiftTradeRequest.approve()
     garantiert durchlaufen wird.
     """
-
-    def has_permission(self, request, view):
-        if request.method in SAFE_METHODS:
-            return True
-        membership = getattr(request, "membership", None)
-        if not membership:
-            return False
-        return membership.role in MANAGER_ROLES or membership.role == Membership.Role.EMPLOYEE
 
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
@@ -137,7 +140,7 @@ class ShiftTradeRequestPermission(BasePermission):
         return False
 
 
-class TimeRecordPermission(BasePermission):
+class TimeRecordPermission(_ManagerOrEmployeeCanWriteMixin, BasePermission):
     """
     Für die Ist-Arbeitszeiterfassung (Block 1.9): Admin/Planer dürfen alles,
     inkl. der Bestätigungs-Action `confirm` -- die bleibt Mitarbeitenden
@@ -151,14 +154,6 @@ class TimeRecordPermission(BasePermission):
     noch nicht).
     """
 
-    def has_permission(self, request, view):
-        if request.method in SAFE_METHODS:
-            return True
-        membership = getattr(request, "membership", None)
-        if not membership:
-            return False
-        return membership.role in MANAGER_ROLES or membership.role == Membership.Role.EMPLOYEE
-
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
             return True
@@ -170,7 +165,7 @@ class TimeRecordPermission(BasePermission):
         employee_profile = getattr(request, "employee_profile", None)
         if not employee_profile or obj.assignment.employee_id != employee_profile.id:
             return False
-        return obj.status == "submitted"  # TimeRecord.Status.SUBMITTED
+        return obj.status == obj.Status.SUBMITTED
 
 
 class PregnancyPermission(BasePermission):

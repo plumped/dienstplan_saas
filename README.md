@@ -254,12 +254,12 @@ entstanden sind, nicht neu sortiert nach Status):
 
 | Block | Thema | Status | Aktuell offen |
 |---|---|---|---|
-| 1 | Schweizer Arbeitsgesetz (ArG) | ✅ 16 von 17 Punkten erledigt | Punkt 14 ist kein eigener Task, sondern ein Querverweis auf Block 5.3 (Aufbewahrungspflicht) |
+| 1 | Schweizer Arbeitsgesetz (ArG) | ✅ vollständig umgesetzt (17 von 17 Punkten) | — |
 | 2 | Kernfunktionen Praxisalltag | 31 von 32 Punkten erledigt | Automatisierte Planung (19) |
 | 3 | Onboarding & Self-Signup | ✅ Punkte 1-4 umgesetzt | Punkt 4: Setup-Wizard mit dem Direktanlage-Formular aus Block 2.1 verschmelzen statt separat zu lassen |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
 | 5 | Datenschutz (revDSG) & Rechtliches | ✅ Punkte 1, 2, 3, 5 umgesetzt | Punkt 4: Hosting-Standort ist eine offene Infrastruktur-Entscheidung |
-| 6 | Abrechnung (nur falls kommerziell verkauft) | nichts umgesetzt | Zahlungsanbieter, Trial/Limits |
+| 6 | Abrechnung (nur falls kommerziell verkauft) | ✅ vollständig umgesetzt | — |
 | 7 | Zeitmanagement | ✅ vollständig umgesetzt | — |
 | 8 | Öffentliche/Partner-API für externe Integrationen (Lesen + Schreiben) | nichts umgesetzt | kompletter Block (scoped API-Credentials, Rate-Limiting, Idempotency, OpenAPI-Doku, Fehlerformat, Konflikt-sicheres Schreiben, Versionierung, Webhooks) |
 
@@ -454,10 +454,11 @@ steht.
     (Monatsauswertung, unten) wurde gebaut und nutzt von Anfang an `TimeRecord` statt nur der
     Planung -- siehe dort für Details. Damit ist auch diese Notiz erledigt.
 
-**Noch offen**:
-
-14. **Aufbewahrung**: Ist-Daten (`TimeRecord`) fallen unter dieselbe Aufbewahrungspflicht wie
-    Lohnunterlagen (siehe Block 5.3) — beim Löschkonzept mitdenken.
+14. ✅ **Aufbewahrung** (2026-08): Ist-Daten (`TimeRecord`) fallen unter dieselbe
+    Aufbewahrungspflicht wie Lohnunterlagen (Art. 958f OR, 10 Jahre). Im Löschkonzept (Block 5.3,
+    `purge_expired_personal_data`) explizit mitgedacht: `TimeRecord`/`ShiftAssignment` werden bei
+    der Anonymisierung eines ausgetretenen `Employee` **nicht** gelöscht, sondern bleiben als
+    Buchungsbeleg bestehen.
 
 15. ✅ **Mutterschutz (Art. 35a ArG)** (2026-08): eigenes `Pregnancy`-Ereignismodell (analog
     `Absence`, FK auf `Employee`, beliebig viele Schwangerschaften über die Anstellung hinweg

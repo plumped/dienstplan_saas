@@ -1655,7 +1655,17 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
             raise PermissionDenied("Kein aktiver Tenant.")
 
         year, month = parse_year_month_param(request)
+        category_lookup = self._build_category_lookup(tenant)
+        result_employees, warnings = self._build_employee_lines(tenant, year, month, category_lookup)
 
+        if request.query_params.get("output") == "csv":
+            return self._csv_response(year, month, result_employees)
+
+        return Response(
+            {"year": year, "month": month, "employees": result_employees, "warnings": sorted(warnings)}
+        )
+
+    def _build_category_lookup(self, tenant):
         # Nutzer-Feedback (2026-08): "deaktivierte Kategorien gelten als
         # bewusst ausgeschlossen" -- eine Kategorie mit is_active=False hat
         # der Admin absichtlich abgewählt (z. B. "Sonntagszuschlag lösen wir
@@ -1665,18 +1675,25 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
         # entscheidet über die Warnung, active_by_* über die tatsächliche
         # Code-Zuordnung.
         mappings = list(PayrollCategoryMapping.all_objects.filter(tenant=tenant))
-        active_by_category = {m.category: m for m in mappings if m.category and m.is_active}
-        active_by_template = {m.special_template_id: m for m in mappings if m.special_template_id and m.is_active}
-        active_by_absence_type = {m.absence_type_id: m for m in mappings if m.absence_type_id and m.is_active}
-        configured_categories = {m.category for m in mappings if m.category}
-        configured_templates = {m.special_template_id for m in mappings if m.special_template_id}
-        configured_absence_types = {m.absence_type_id for m in mappings if m.absence_type_id}
-        special_template_names = {
-            t.id: t.name
-            for t in TimeTemplate.all_objects.filter(tenant=tenant, category=TimeTemplate.Category.SPECIAL)
+        return {
+            "active_by_category": {m.category: m for m in mappings if m.category and m.is_active},
+            "active_by_template": {
+                m.special_template_id: m for m in mappings if m.special_template_id and m.is_active
+            },
+            "active_by_absence_type": {
+                m.absence_type_id: m for m in mappings if m.absence_type_id and m.is_active
+            },
+            "configured_categories": {m.category for m in mappings if m.category},
+            "configured_templates": {m.special_template_id for m in mappings if m.special_template_id},
+            "configured_absence_types": {m.absence_type_id for m in mappings if m.absence_type_id},
+            "special_template_names": {
+                t.id: t.name
+                for t in TimeTemplate.all_objects.filter(tenant=tenant, category=TimeTemplate.Category.SPECIAL)
+            },
+            "absence_type_names": {t.id: t.name for t in AbsenceType.all_objects.filter(tenant=tenant)},
         }
-        absence_type_names = {t.id: t.name for t in AbsenceType.all_objects.filter(tenant=tenant)}
 
+    def _build_employee_lines(self, tenant, year, month, category_lookup):
         sick_categories = {
             PayrollCategoryMapping.Category.SICK_DAYS,
             PayrollCategoryMapping.Category.SICK_DAYS_EXHAUSTED,
@@ -1693,17 +1710,17 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
                 if raw["category"]:
                     if raw["category"] in sick_categories:
                         has_sick_days = True
-                    mapping = active_by_category.get(raw["category"])
+                    mapping = category_lookup["active_by_category"].get(raw["category"])
                     label = PayrollCategoryMapping.Category(raw["category"]).label
-                    is_configured = raw["category"] in configured_categories
+                    is_configured = raw["category"] in category_lookup["configured_categories"]
                 elif raw["special_template_id"]:
-                    mapping = active_by_template.get(raw["special_template_id"])
-                    label = special_template_names.get(raw["special_template_id"], "?")
-                    is_configured = raw["special_template_id"] in configured_templates
+                    mapping = category_lookup["active_by_template"].get(raw["special_template_id"])
+                    label = category_lookup["special_template_names"].get(raw["special_template_id"], "?")
+                    is_configured = raw["special_template_id"] in category_lookup["configured_templates"]
                 else:
-                    mapping = active_by_absence_type.get(raw["absence_type_id"])
-                    label = absence_type_names.get(raw["absence_type_id"], "?")
-                    is_configured = raw["absence_type_id"] in configured_absence_types
+                    mapping = category_lookup["active_by_absence_type"].get(raw["absence_type_id"])
+                    label = category_lookup["absence_type_names"].get(raw["absence_type_id"], "?")
+                    is_configured = raw["absence_type_id"] in category_lookup["configured_absence_types"]
                 if mapping is None:
                     if not is_configured:
                         warnings.add(f"{label}: kein Lohnart-Code konfiguriert")
@@ -1737,13 +1754,7 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
                         ),
                     }
                 )
-
-        if request.query_params.get("output") == "csv":
-            return self._csv_response(year, month, result_employees)
-
-        return Response(
-            {"year": year, "month": month, "employees": result_employees, "warnings": sorted(warnings)}
-        )
+        return result_employees, warnings
 
     def _sick_pay_context(self, employee, month_end):
         summary = employee.sick_pay_summary(reference_date=month_end)

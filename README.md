@@ -3504,10 +3504,10 @@ Abarbeitungszwang.
     360-882` mischt CRUD, CSV-Import/-Export, Zugangsverwaltung (`setup_access`/`deactivate`/
     `reactivate`) und 7 reine Reporting-Actions in einer Klasse. In `EmployeeReportingViewSet`/
     -Mixin und eine Zugangsverwaltungs-Mixin aufteilen, CRUD+CSV-Import bleibt im Kern.
-13. **`PayrollExportView.get()` mischt vier Verantwortlichkeiten in ~110 Zeilen**:
-    `scheduling/views.py:1633-1739` (Monats-Parsing, Mapping-Lookups, Pro-Mitarbeiter-Zeilenbau,
-    CSV/JSON-Verzweigung inline). In `_parse_month`/`_build_category_lookup`/
-    `_build_employee_lines`-Helper aufteilen, `get()` bleibt Orchestrator.
+13. ✅ **`PayrollExportView.get()` mischte vier Verantwortlichkeiten in ~110 Zeilen**:
+    Monats-Parsing (bereits durch Punkt 4 gelöst), Mapping-Lookups, Pro-Mitarbeiter-Zeilenbau,
+    CSV/JSON-Verzweigung inline. Behoben durch `_build_category_lookup`/`_build_employee_lines`-
+    Helper, `get()` ist jetzt reiner Orchestrator.
 14. ✅ **"Spezialitäten sind ausgenommen"-Guard fünffach wiederholt**: `_check_rest_period`,
     `_check_maximum_weekly_hours`, `_check_break_minutes`, `_check_daily_span`,
     `_check_weekly_rest_day` in `scheduling/models.py` begannen alle mit derselben 2-Zeilen-

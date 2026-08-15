@@ -3372,3 +3372,55 @@ nachziehen, falls ein Partner tatsächlich grosse Batches schreiben muss). Teilw
 mit Block 4 (Produktionsreife) Punkt 2 ("Auth härten") -- dort ist der Fokus jedoch der eigene
 Frontend-Client (Token-Ablauf), hier der fremde Client (eigene, granular scoped Credentials);
 beide Punkte sind bei der Umsetzung gemeinsam zu betrachten, aber unterschiedlich motiviert.
+
+### 9. Polishing (Styling-Konsistenz & Feinschliff)
+
+Nutzer-Feedback (2026-08): "Ich denke es ist noch zu sehr ein Mix von Schriftarten und genereller
+Optik. Das sollte einheitlich aussehen und wie aus einem Guss." -- berechtigt: die App ist über
+~280 einzelne Feature-Runden gewachsen, jede Runde hat ihr eigenes kleines Stück Design
+mitgebracht, ohne dass je ein bewusster Konsistenz-Durchgang über das Ganze gemacht wurde. Ein
+kurzer CSS-Audit (2026-08) bestätigt das konkret:
+
+1. **Drei Schriftfamilien statt zwei**: Landing-Page-Überschriften/Kennzahlen nutzen
+   `ui-serif, Georgia, "Times New Roman", serif` (`landing-hero h1`, `landing-stat-value`,
+   `landing-showcase-copy h2`, bewusst "editoriell" gewählt), der Rest der App durchgängig
+   `--font-display: "Space Grotesk"` (Überschriften) + `--font-body: "Inter"` (Fliesstext).
+   Marketing-Auftritt und eigentliche App wirken dadurch stilistisch wie zwei verschiedene
+   Produkte. Entscheiden: Serif bewusst als drittes, marketingexklusives Element beibehalten
+   (dann irgendwo dokumentieren, warum), oder auf die App-Schriften vereinheitlichen.
+2. **Farb-Tokens statt hartkodierter Hex-Werte**: 31 einzeln hartkodierte Hex-Farben in
+   `styles.css` ausserhalb der `:root`-Variablen (Stand 2026-08) -- v. a. die
+   `.status-badge--*`/`.type-badge`-Modifier (Absenzen, Diensttausch, Zeiterfassung, Abrechnung),
+   die in jeder Feature-Runde einzeln mit frei gewählten Grün-/Gelb-/Grau-Tönen ergänzt wurden
+   statt über ein gemeinsames Token-Set (z. B. `--status-positive`, `--status-pending`,
+   `--status-negative`, `--status-neutral`). Ein Refactor auf semantische Tokens würde
+   zukünftige neue Status automatisch konsistent halten, statt dass jede neue Funktion sich ihre
+   eigene Farbe aussucht.
+3. **Ein Button-System statt vier parallelen**: `.btn-primary`/`.btn-ghost` (Basis), zusätzlich
+   `.plan-export-bar button` (eigener Pill-Stil im Planblatt-Export) und
+   `.settings-module-card` (eigener Karten-Stil in der Settings-Übersicht) mit jeweils eigenem
+   Padding/Radius/Hover-Verhalten. Prüfen, ob sich die beiden Spezialfälle auf die Basis-Klassen
+   zurückführen lassen, oder ob eine dritte, bewusst benannte Variante (z. B. `.btn-pill`)
+   entsteht, die dann überall wiederverwendet wird statt pro Stelle neu erfunden.
+4. **Stat-Kacheln/Detail-Zeilen vereinheitlichen**: `BillingSettings.jsx` hat mit
+   `.billing-stat`/`.billing-detail-row` (2026-08) ein neues, eigenes Kachel-Muster eingeführt --
+   inhaltlich ähnlich zu bereits bestehenden Zahlen-Darstellungen (`.monthly-summary-table`,
+   `BalanceBadge`/`FairnessBadge`-Pills). Prüfen, ob sich das auf ein gemeinsames
+   "Kennzahl-Kachel"-Muster konsolidieren lässt, das künftige Module (z. B. ein Dashboard-Ausbau)
+   direkt wiederverwenden können, statt erneut ein eigenes Muster zu bauen.
+5. **Inline-Styles reduzieren**: vereinzelte `style={{...}}`-Zuweisungen für Dinge, die eigentlich
+   eine CSS-Klasse sein sollten (z. B. `style={{ margin: 0 }}` in `BillingSettings.jsx`) --
+   dynamische, wirklich pro Instanz unterschiedliche Werte (Chip-Farbe aus Nutzerdaten,
+   Fortschrittsbalken-Breite, gestaffelte Animation-Delays) bleiben zu Recht inline, aber
+   statische Layout-Anpassungen gehören in die entsprechende Klasse.
+6. **Kein automatisierter Schutz gegen erneutes Auseinanderdriften**: selbst nach einem
+   Konsistenz-Durchgang gibt es nichts, was eine künftige Feature-Runde daran hindert, wieder
+   eine neue Hex-Farbe oder ein neues Button-Pattern einzuführen. Ein kurzer Abschnitt in einer
+   Frontend-`CONTRIBUTING`-Notiz oder ein Lint-Check (z. B. `stylelint` mit einer Regel gegen
+   rohe Hex-Werte ausserhalb von `:root`) würde das strukturell absichern statt auf Disziplin
+   pro Runde zu hoffen.
+
+Bewusst nicht Teil dieses Blocks (siehe eigene Blöcke): fehlende automatisierte Frontend-Tests
+(Block 4 Punkt 5), fehlende i18n für französisch-/italienischsprachige Kantone (aktuell nirgends
+festgehalten, hier nur als Randnotiz: falls relevant, eigener Block wert), fehlende
+Rate-Limits auf Login/Signup (Überschneidung mit Block 4 Punkt 2 und Block 8 Punkt 2).

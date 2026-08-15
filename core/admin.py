@@ -80,6 +80,23 @@ class TenantScopedAdminMixin:
             formfield.queryset = self._scope_to_active_tenant(formfield.queryset)
         return formfield
 
+    def save_formset(self, request, form, formset, change):
+        """
+        Stempelt `tenant` auf neue/geänderte Inline-Instanzen (deren Modell
+        `exclude = ["tenant"]` im Formular hat, siehe z. B.
+        scheduling.admin.TimeTemplateSegmentInline) -- vorher in
+        TimeTemplateAdmin/TimeRecordAdmin (scheduling/admin.py) byte-identisch
+        dupliziert. ModelAdmins ohne tenant-gescopte Inlines nutzen diese
+        Methode nie (Django ruft sie nur auf, wenn `inlines` gesetzt ist).
+        """
+        instances = formset.save(commit=False)
+        for instance in instances:
+            instance.tenant = form.instance.tenant
+            instance.save()
+        formset.save_m2m()
+        for obj in formset.deleted_objects:
+            obj.delete()
+
 
 @admin.register(User)
 class CustomUserAdmin(UserAdmin):

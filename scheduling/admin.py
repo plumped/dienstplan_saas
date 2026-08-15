@@ -95,15 +95,6 @@ class TimeTemplateAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_filter = ["tenant", "node"]
     inlines = [TimeTemplateSegmentInline]
 
-    def save_formset(self, request, form, formset, change):
-        instances = formset.save(commit=False)
-        for instance in instances:
-            instance.tenant = form.instance.tenant
-            instance.save()
-        formset.save_m2m()
-        for obj in formset.deleted_objects:
-            obj.delete()
-
 
 @admin.register(ShiftAssignment)
 class ShiftAssignmentAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
@@ -176,12 +167,3 @@ class TimeRecordAdmin(TenantScopedAdminMixin, admin.ModelAdmin):
     list_display = ["assignment", "actual_start", "actual_end", "status", "tenant"]
     list_filter = ["tenant", "status"]
     inlines = [TimeRecordSegmentInline]
-
-    def save_formset(self, request, form, formset, change):
-        instances = formset.save(commit=False)
-        for instance in instances:
-            instance.tenant = form.instance.tenant
-            instance.save()
-        formset.save_m2m()
-        for obj in formset.deleted_objects:
-            obj.delete()

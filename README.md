@@ -3489,10 +3489,10 @@ Abarbeitungszwang.
    create()/update()-Logik (m2m-Felder poppen, Nested-Liste poppen, Objekt anlegen/aktualisieren,
    `_sync_*`-Helper aufrufen). Generischer `NestedWritableSerializerMixin` mit
    austauschbarem "Child bauen"-Callable.
-10. **`save_formset` byte-identisch dupliziert**: `TimeTemplateAdmin.save_formset` und
-    `TimeRecordAdmin.save_formset` (`scheduling/admin.py:98-105,180-187`) sind wortgleich
-    (Tenant auf Inline-Instanzen stempeln). Auf `TenantScopedAdminMixin` (`core/admin.py`)
-    verschieben, beide Kopien entfernen.
+10. ✅ **`save_formset` byte-identisch dupliziert**: `TimeTemplateAdmin.save_formset` und
+    `TimeRecordAdmin.save_formset` (`scheduling/admin.py`) waren wortgleich (Tenant auf
+    Inline-Instanzen stempeln). Behoben durch Verschieben nach `TenantScopedAdminMixin`
+    (`core/admin.py`), beide Kopien entfernt.
 11. **Statustransitions inkonsistent implementiert**: `ShiftTradeRequest.accept()/approve()/
     reject()` sind Model-Methoden, aber `ShiftTradeRequestViewSet.decline`/`cancel`
     (`scheduling/views.py:1389-1411`) und `AbsenceViewSet.approve`/`reject` (`:1174-1196`) bauen

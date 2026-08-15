@@ -1183,10 +1183,10 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   return (
     <>
       <div className="plan-export-bar">
-        <button type="button" onClick={() => handleExportPlan("pdf")} disabled={exportingFormat !== null}>
+        <button type="button" className="btn-pill" onClick={() => handleExportPlan("pdf")} disabled={exportingFormat !== null}>
           {exportingFormat === "pdf" ? "…" : "Als PDF exportieren"}
         </button>
-        <button type="button" onClick={() => handleExportPlan("csv")} disabled={exportingFormat !== null}>
+        <button type="button" className="btn-pill" onClick={() => handleExportPlan("csv")} disabled={exportingFormat !== null}>
           {exportingFormat === "csv" ? "…" : "Als CSV exportieren"}
         </button>
       </div>

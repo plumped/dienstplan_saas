@@ -230,7 +230,15 @@ button {
    jetzt jede "das ist die Hauptaktion dieser Zeile/dieses Formulars"-Stelle
    ab, .btn-ghost.btn-danger-ghost tönt destruktive Ghost-Buttons (Ablehnen/
    Löschen) beim Hover warnfarben statt primärfarben, ohne eine zweite,
-   optisch schwerere Button-Klasse für sie einzuführen. */
+   optisch schwerere Button-Klasse für sie einzuführen.
+
+   Block 9 #3 (2026-08): drei Button-Varianten im ganzen Frontend, jede mit
+   klarem Einsatzzweck -- .btn-primary (Hauptaktion, gefüllt), .btn-ghost
+   (unauffällige Nebenaktion, randlos) und .btn-pill (sekundäre, aber
+   sichtbare Aktion wie Export, siehe .btn-pill weiter unten). Neue Buttons
+   sollen eine dieser drei Klassen wiederverwenden statt eine vierte,
+   descendant-selector-gebundene Variante wie das frühere
+   `.plan-export-bar button` einzuführen. */
 .btn-primary {
   display: inline-flex;
   align-items: center;
@@ -334,13 +342,20 @@ button:disabled {
   margin-left: auto;
 }
 
+/* Block 9 #4 (2026-08): --font-display für den eigentlichen Zahlenwert,
+   damit die kompakten Pills (hier + .fairness-badge-value unten) dieselbe
+   Typografie-Sprache wie die grossen .stat-tile-value-Kacheln sprechen --
+   Farbe/Fettung (positiv=--primary, negativ=--warn) bleiben unverändert,
+   das ist die bestehende, bewusste Saldo-Semantik, keine Status-Farbe. */
 .balance-badge .is-positive {
   color: var(--primary);
+  font-family: var(--font-display);
   font-weight: 700;
 }
 
 .balance-badge .is-negative {
   color: var(--warn);
+  font-family: var(--font-display);
   font-weight: 700;
 }
 
@@ -360,6 +375,15 @@ button:disabled {
   border-radius: 999px;
   padding: 4px 10px;
   white-space: nowrap;
+}
+
+/* Block 9 #4 (2026-08): eigener Wrapper nur um die Punktzahl (nicht "Pkt"
+   oder den Ø-Zusatz), damit auch hier --font-display wie bei
+   .balance-badge .is-positive/.is-negative und .stat-tile-value greift. */
+.fairness-badge-value {
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--ink);
 }
 
 .fairness-badge-avg {
@@ -896,13 +920,19 @@ thead .col-balance {
   color: var(--border);
 }
 
+/* Block 9 #4 (2026-08): dieselbe --font-display-Angleichung wie
+   .balance-badge .is-positive/.is-negative oben (Punkt "eine
+   Kennzahl-Sprache"), hier für die kompaktere Zellen-Variante im
+   Planblatt-Grid (siehe BalanceBadge.jsx variant="cell"). */
 .balance-cell .is-positive {
   color: var(--primary);
+  font-family: var(--font-display);
   font-weight: 700;
 }
 
 .balance-cell .is-negative {
   color: var(--warn);
+  font-family: var(--font-display);
   font-weight: 700;
 }
 
@@ -1193,6 +1223,12 @@ thead .col-employee {
   gap: 14px;
 }
 
+/* Block 9 #3 (2026-08): technisch ein <button> (siehe SettingsPanel.jsx),
+   optisch aber eine Kachel/Karte, keine Aktions-Zeile -- deshalb bewusst
+   nicht in .btn-primary/.btn-ghost/.btn-pill (die drei Aktions-Button-
+   Varianten, siehe deren Kommentar oben) gepresst. Einziger Klick-Karten-
+   Anwendungsfall im Frontend, daher eigene, klar benannte Klasse statt
+   einer vierten Aktions-Button-Variante. */
 .settings-module-card {
   display: flex;
   flex-direction: column;
@@ -1316,20 +1352,21 @@ thead .col-employee {
 }
 
 /* MVP-Fahrplan Block 2, Punkt 5: Planblatt-Export -- schmale Button-Leiste
-   direkt über dem Grid, für alle Rollen sichtbar (siehe PlanGrid.jsx).
-   Nutzer-Feedback (2026-08): die Buttons hatten nur die Browser-Default-
-   Darstellung (kein Border-Radius, klobiger 3D-Rand) und wirkten neben der
-   fein gestylten PlacementToolbar direkt darunter deplatziert -- jetzt
-   dieselbe Ghost-Pill-Sprache wie .balance-badge/.fairness-badge
-   (schlanker Rand, runde Form, Akzentfarbe erst bei Hover statt
-   dauerhaftem Rahmen-Kontrast). */
+   direkt über dem Grid, für alle Rollen sichtbar (siehe PlanGrid.jsx). */
 .plan-export-bar {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
 }
 
-.plan-export-bar button {
+/* Block 9 #3 (2026-08): war zuvor `.plan-export-bar button` -- an den einen
+   Container gebunden statt als eigene, überall wiederverwendbare Klasse.
+   Dritte Button-Variante neben .btn-primary (Hauptaktion) und .btn-ghost
+   (unauffällige Nebenaktion): schlanker Rand, runde Pill-Form,
+   Akzentfarbe erst bei Hover statt dauerhaftem Rahmen-Kontrast -- dieselbe
+   Sprache wie .balance-badge/.fairness-badge (Anzeige-Pills, nicht
+   klickbar). Für sekundäre, aber sichtbare Aktionen wie Export-Buttons. */
+.btn-pill {
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--ink-muted);
@@ -1339,13 +1376,13 @@ thead .col-employee {
   border-radius: 999px;
 }
 
-.plan-export-bar button:hover:not(:disabled) {
+.btn-pill:hover:not(:disabled) {
   border-color: var(--primary);
   color: var(--primary);
   background: var(--primary-soft);
 }
 
-.plan-export-bar button:disabled {
+.btn-pill:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
@@ -1454,20 +1491,30 @@ thead .col-employee {
   margin-bottom: 2px;
 }
 
-.billing-stats {
+/* Block 9 #4 (2026-08): war zuvor `.billing-stats`/`.billing-stat*`, nur in
+   BillingSettings.jsx genutzt. Generische "Kennzahl-Kachel" -- dieselbe
+   Karte deckt jetzt auch die Monatsauswertung (MonthlySummaryPanel.jsx, war
+   zuvor eine <table> für reine Label/Wert-Paare ohne echte Tabellen-
+   Semantik) ab und ist für künftige Übersichten (z. B. Dashboard) gedacht,
+   statt dass jedes Modul seine eigene Stat-Kachel erfindet. Echte
+   mehrspaltige Tabellen (z. B. die Spezialitäten-Aufschlüsselung weiter
+   unten in MonthlySummaryPanel.jsx) bleiben bewusst .monthly-summary-table
+   -- eine Kachel pro Zeile würde bei mehreren Spalten pro Datensatz
+   schlechter lesbar als eine Tabelle. */
+.stat-tile-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
 }
 
-.billing-stat {
+.stat-tile {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px 16px;
 }
 
-.billing-stat-label {
+.stat-tile-label {
   margin: 0 0 6px;
   font-size: 11px;
   font-weight: 600;
@@ -1476,7 +1523,7 @@ thead .col-employee {
   color: var(--ink-muted);
 }
 
-.billing-stat-value {
+.stat-tile-value {
   margin: 0;
   font-family: var(--font-display);
   font-size: 19px;
@@ -1484,7 +1531,7 @@ thead .col-employee {
   line-height: 1.3;
 }
 
-.billing-stat-value small {
+.stat-tile-value small {
   font-family: var(--font-body);
   font-size: 12px;
   font-weight: 400;

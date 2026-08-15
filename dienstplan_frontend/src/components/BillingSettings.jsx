@@ -131,19 +131,19 @@ export default function BillingSettings({ onError }) {
         </div>
       )}
 
-      <div className="billing-stats">
-        <div className="billing-stat">
-          <p className="billing-stat-label">Aktive Mitarbeitende</p>
-          <p className="billing-stat-value">
+      <div className="stat-tile-grid">
+        <div className="stat-tile">
+          <p className="stat-tile-label">Aktive Mitarbeitende</p>
+          <p className="stat-tile-value">
             {status.active_employee_count}
             {status.subscription_status === "trialing" && <small> / {status.trial_employee_limit}</small>}
           </p>
         </div>
 
         {sub && (
-          <div className="billing-stat">
-            <p className="billing-stat-label">Preis pro Mitarbeitendem</p>
-            <p className="billing-stat-value">
+          <div className="stat-tile">
+            <p className="stat-tile-label">Preis pro Mitarbeitendem</p>
+            <p className="stat-tile-value">
               {formatMoney(sub.price_amount, sub.price_currency)}
               <small> / {intervalLabel}</small>
             </p>
@@ -151,9 +151,9 @@ export default function BillingSettings({ onError }) {
         )}
 
         {sub && totalPerInterval && (
-          <div className="billing-stat">
-            <p className="billing-stat-label">Gesamt pro {intervalLabel}</p>
-            <p className="billing-stat-value">
+          <div className="stat-tile">
+            <p className="stat-tile-label">Gesamt pro {intervalLabel}</p>
+            <p className="stat-tile-value">
               {totalPerInterval}
               <small> × {sub.quantity}</small>
             </p>
@@ -161,16 +161,16 @@ export default function BillingSettings({ onError }) {
         )}
 
         {sub && sub.current_period_end && (
-          <div className="billing-stat">
-            <p className="billing-stat-label">Nächste Abrechnung</p>
-            <p className="billing-stat-value">{formatDate(sub.current_period_end)}</p>
+          <div className="stat-tile">
+            <p className="stat-tile-label">Nächste Abrechnung</p>
+            <p className="stat-tile-value">{formatDate(sub.current_period_end)}</p>
           </div>
         )}
 
         {status.subscription_status === "trialing" && (
-          <div className="billing-stat">
-            <p className="billing-stat-label">Testphase</p>
-            <p className="billing-stat-value">
+          <div className="stat-tile">
+            <p className="stat-tile-label">Testphase</p>
+            <p className="stat-tile-value">
               {trialDaysLeft === null
                 ? "unbefristet"
                 : trialDaysLeft > 0

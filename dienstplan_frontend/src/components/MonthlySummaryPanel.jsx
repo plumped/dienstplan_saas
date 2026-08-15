@@ -138,16 +138,14 @@ export default function MonthlySummaryPanel({ onError }) {
         <p className="loading-state">Auswertung wird geladen …</p>
       ) : (
         <>
-          <table className="monthly-summary-table">
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.key}>
-                  <th>{row.label}</th>
-                  <td>{row.value} h</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="stat-tile-grid">
+            {rows.map((row) => (
+              <div className="stat-tile" key={row.key}>
+                <p className="stat-tile-label">{row.label}</p>
+                <p className="stat-tile-value">{row.value} h</p>
+              </div>
+            ))}
+          </div>
 
           {summary.flextime_corridor_excess_hours > 0 && (
             <div className="corridor-callout">

@@ -57,7 +57,7 @@ export default function FairnessBadge({ employeeId, data: providedFairness }) {
 
   return (
     <span className="fairness-badge" title={title}>
-      {points} Pkt
+      <span className="fairness-badge-value">{points} Pkt</span>
       {team_average_points !== null && <span className="fairness-badge-avg"> (Ø {team_average_points})</span>}
     </span>
   );

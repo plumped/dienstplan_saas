@@ -6,6 +6,9 @@ import BalanceBadge from "./components/BalanceBadge.jsx";
 import Dashboard from "./components/Dashboard.jsx";
 import ForcePasswordChangeModal from "./components/ForcePasswordChangeModal.jsx";
 import LandingPage from "./components/LandingPage.jsx";
+import LegalImprint from "./components/LegalImprint.jsx";
+import LegalPrivacyPolicy from "./components/LegalPrivacyPolicy.jsx";
+import LegalTerms from "./components/LegalTerms.jsx";
 import LoginForm from "./components/LoginForm.jsx";
 import MonthNav from "./components/MonthNav.jsx";
 import NodeSelector from "./components/NodeSelector.jsx";
@@ -186,7 +189,27 @@ export default function App() {
     if (screen === "login") {
       return <LoginForm onSuccess={handleAuthSuccess} onBack={() => setScreen("landing")} />;
     }
-    return <LandingPage onStart={() => setScreen("signup")} onLogin={() => setScreen("login")} />;
+    // README Block 5 (Datenschutz & Rechtliches): öffentliche Rechts-Seiten, per Footer-Link
+    // (LandingPage.jsx) und aus dem Signup-Formular (SignupForm.jsx) erreichbar -- gleiches
+    // Screen-Switching-Muster wie signup/login oben.
+    if (screen === "privacy") {
+      return <LegalPrivacyPolicy onBack={() => setScreen("landing")} />;
+    }
+    if (screen === "terms") {
+      return <LegalTerms onBack={() => setScreen("landing")} />;
+    }
+    if (screen === "imprint") {
+      return <LegalImprint onBack={() => setScreen("landing")} />;
+    }
+    return (
+      <LandingPage
+        onStart={() => setScreen("signup")}
+        onLogin={() => setScreen("login")}
+        onShowPrivacy={() => setScreen("privacy")}
+        onShowTerms={() => setScreen("terms")}
+        onShowImprint={() => setScreen("imprint")}
+      />
+    );
   }
 
   // Verteidigungslinie gegen genau dieses Szenario, falls `tab` aus

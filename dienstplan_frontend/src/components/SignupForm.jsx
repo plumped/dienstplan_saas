@@ -15,6 +15,12 @@ export default function SignupForm({ onSuccess, onBack }) {
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  // README Block 5 (Datenschutz & Rechtliches, 2026-08): Pflicht-Checkbox für die Einbeziehung
+  // von AGB/Datenschutzerklärung. Bewusst als reiner Text ohne Links aus dem Formular heraus --
+  // die Rechts-Seiten sind nur per Screen-Switching erreichbar (kein Router im Projekt, siehe
+  // App.jsx), ein Klick würde das bereits ausgefüllte Formular verwerfen. Beide Texte sind schon
+  // einen Klick vorher über den Landing-Page-Footer erreichbar (LandingPage.jsx).
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -115,6 +121,16 @@ export default function SignupForm({ onSuccess, onBack }) {
             {message}
           </p>
         ))}
+
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={acceptedTerms}
+            onChange={(e) => setAcceptedTerms(e.target.checked)}
+            required
+          />
+          Ich akzeptiere die AGB und habe die Datenschutzerklärung zur Kenntnis genommen.
+        </label>
 
         {error && (
           <p className="field-error" role="alert">

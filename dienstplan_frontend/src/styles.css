@@ -538,6 +538,81 @@ main {
   cursor: default;
 }
 
+/* README Block 5 (Datenschutz & Rechtliches, 2026-08): öffentliche Rechts-Seiten
+   (Datenschutzerklärung/AGB/Impressum), siehe LegalPage.jsx. Gleicher Bildschirm-Rahmen wie
+   .login-screen/.login-card, aber deutlich breiter (Fliesstext statt Formular) und mit
+   angenehmer Lesebreite (max-width auf .legal-content, nicht auf die Karte selbst, damit die
+   Karte auf schmalen Viewports trotzdem den vollen Rand nutzt). */
+.legal-screen {
+  min-height: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 48px 24px;
+  background: linear-gradient(180deg, var(--bg) 0%, var(--primary-soft) 100%);
+}
+
+.legal-card {
+  width: 100%;
+  max-width: 720px;
+  height: fit-content;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 40px 44px;
+  box-shadow: 0 8px 30px rgba(28, 35, 33, 0.06);
+}
+
+.legal-card h1 {
+  margin: 16px 0 4px;
+  font-size: 24px;
+}
+
+.legal-content {
+  margin-top: 24px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.legal-content h2 {
+  margin: 28px 0 8px;
+  font-size: 16px;
+}
+
+.legal-content h2:first-child {
+  margin-top: 0;
+}
+
+.legal-content p,
+.legal-content ul {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.legal-content ul {
+  padding-left: 20px;
+}
+
+.legal-content li {
+  margin-bottom: 4px;
+}
+
+.legal-content code {
+  font-family: var(--font-body);
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.legal-draft-notice {
+  padding: 10px 14px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
 .field-error {
   margin: 0;
   color: var(--warn);
@@ -1304,6 +1379,14 @@ thead .col-employee {
    Spezifität als ".checkbox-row" allein) -- Checkbox + Text sollen aber wie
    überall sonst in einer Zeile stehen. */
 .panel-form .checkbox-row {
+  flex-direction: row;
+  align-items: center;
+}
+
+/* README Block 5 (2026-08): dieselbe Korrektur wie .panel-form .checkbox-row oben, hier für die
+   AGB-Checkbox in SignupForm.jsx -- .login-card label erbt sonst dieselbe
+   flex-direction: column mit ebenfalls höherer Spezifität als .checkbox-row allein. */
+.login-card .checkbox-row {
   flex-direction: row;
   align-items: center;
 }
@@ -3807,13 +3890,28 @@ thead .col-employee {
   position: relative;
   z-index: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
+  gap: 10px;
   margin-top: 72px;
   padding: 32px 24px 48px;
   color: var(--ink-muted);
   font-size: 13px;
+}
+
+.landing-footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* README Block 5 (2026-08): Rechts-Links unter der Marke, statt fett wie
+   Primärnavigation -- .link-button ist bereits die passende, unauffällige
+   Text-Button-Klasse (siehe .link-button-Definition weiter oben). */
+.landing-footer-links {
+  display: flex;
+  gap: 16px;
+  font-size: 12.5px;
 }
 
 .landing-footer .landing-nav-mark {

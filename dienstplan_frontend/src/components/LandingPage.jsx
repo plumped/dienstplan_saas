@@ -219,7 +219,7 @@ function PulseGraphic() {
   );
 }
 
-export default function LandingPage({ onStart, onLogin }) {
+export default function LandingPage({ onStart, onLogin, onShowPrivacy, onShowTerms, onShowImprint }) {
   return (
     <div className="landing-screen">
       <div className="landing-grid-bg" aria-hidden="true" />
@@ -374,10 +374,25 @@ export default function LandingPage({ onStart, onLogin }) {
       </Reveal>
 
       <footer className="landing-footer">
-        <span className="brand-mark-lg landing-nav-mark" aria-hidden="true">
-          ◒
-        </span>
-        neravo -- gebaut für Schweizer Schichtbetriebe.
+        <div className="landing-footer-brand">
+          <span className="brand-mark-lg landing-nav-mark" aria-hidden="true">
+            ◒
+          </span>
+          neravo -- gebaut für Schweizer Schichtbetriebe.
+        </div>
+        {/* README Block 5 (Datenschutz & Rechtliches, 2026-08): einzige Stelle, von der aus
+            ausgeloggte Besucher die Rechts-Seiten erreichen -- siehe App.jsx-Screen-Switching. */}
+        <nav className="landing-footer-links" aria-label="Rechtliches">
+          <button type="button" className="link-button" onClick={onShowPrivacy}>
+            Datenschutz
+          </button>
+          <button type="button" className="link-button" onClick={onShowTerms}>
+            AGB
+          </button>
+          <button type="button" className="link-button" onClick={onShowImprint}>
+            Impressum
+          </button>
+        </nav>
       </footer>
     </div>
   );

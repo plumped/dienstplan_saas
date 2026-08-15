@@ -562,4 +562,24 @@ export const api = {
     link.remove();
     URL.revokeObjectURL(url);
   },
+
+  // README Block 5 (Datenschutz, revDSG): Auskunftsrecht (Art. 25 revDSG) --
+  // lädt alle eigenen Personendaten als JSON-Datei herunter, gleiches
+  // Blob-Download-Muster wie downloadPayrollExportCsv/downloadPlanExport.
+  downloadMyDataExport: async () => {
+    const token = getToken();
+    const res = await fetch(`${API_BASE}/me/data-export/`, {
+      headers: token ? { Authorization: `Token ${token}` } : {},
+    });
+    if (!res.ok) throw await parseErrorResponse(res);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "meine-daten.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  },
 };

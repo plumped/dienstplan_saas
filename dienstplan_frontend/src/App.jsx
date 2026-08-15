@@ -304,6 +304,25 @@ export default function App() {
         {me?.employee && <BalanceBadge employeeId={me.employee.id} />}
         {me?.role && <span className="role-badge">{ROLE_LABELS[me.role] ?? me.role}</span>}
 
+        {/* README Block 5 (Datenschutz, revDSG): Auskunftsrecht (Art. 25 revDSG) --
+            für jede eingeloggte Person sichtbar, nicht nur für Admins, da es um
+            die eigenen Personendaten geht (kein Settings-Modul, die sind
+            rollenbeschränkt). */}
+        <button
+          type="button"
+          className="btn-ghost"
+          onClick={async () => {
+            try {
+              await api.downloadMyDataExport();
+            } catch (e) {
+              setError(e.message);
+            }
+          }}
+          title="Alle eigenen Personendaten als JSON-Datei herunterladen"
+        >
+          Meine Daten exportieren
+        </button>
+
         <button
           type="button"
           className="btn-ghost"

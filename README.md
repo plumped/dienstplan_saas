@@ -3513,13 +3513,15 @@ Abarbeitungszwang.
     `_check_weekly_rest_day` in `scheduling/models.py` begannen alle mit derselben 2-Zeilen-
     Bedingung (Audit fand 3, tatsächlich waren es 5). Behoben durch den
     `@skip_for_specialties`-Decorator, alle fünf Methoden nutzen ihn jetzt.
-15. **Node-Scope-Filter-Wiring siebenfach copy-paste**: `NodeViewSet`, `TimeTemplateViewSet`,
+15. ✅ **Node-Scope-Filter-Wiring siebenfach copy-paste**: `NodeViewSet`, `TimeTemplateViewSet`,
     `ShiftAssignmentViewSet`, `AbsenceViewSet`, `ShiftTradeRequestViewSet`, `TimeRecordViewSet`,
-    `MissingTimeRecordViewSet` (`scheduling/views.py:225-227,929-931,959-961,1140-1151,1334-1341,
-    1448-1450,1515-1517`) rufen `_employee_scoped_node_ids(...)` und branchen jeweils manuell auf
-    `if node_ids is not None: qs = qs.filter(...)`. Der zentrale Helper selbst ist bereits sauber
-    (`_employee_scoped_node_ids` ist EIN gemeinsamer Ort) -- nur das Wiring drumherum ist
-    dupliziert. Kleiner `apply_node_scope(qs, node_ids, field_lookup)`-Helper, niedrige Priorität.
+    `MissingTimeRecordViewSet` riefen `_employee_scoped_node_ids(...)` und branchten jeweils
+    manuell auf `if node_ids is not None: qs = qs.filter(...)`. Behoben durch
+    `apply_node_scope(qs, node_ids, field_lookup)` für die 5 Stellen mit reinem Feld-Filter
+    (NodeViewSet, TimeTemplateViewSet, ShiftAssignmentViewSet, TimeRecordViewSet,
+    MissingTimeRecordViewSet) -- AbsenceViewSet/ShiftTradeRequestViewSet bleiben bewusst
+    unangetastet, deren Node-Scoping ist mit einer Q()-Sonderregel für eigene Absenzen/
+    Tauschangebote der Mitarbeiter-Rolle verknüpft, kein reiner Feld-Filter.
 16. ✅ **CSV-Export-Boilerplate dreifach dupliziert**: `EmployeeViewSet.import_csv_template`
     (`scheduling/views.py:875-877`), `PayrollExportView._csv_response` (`:1752-1754`) und
     `PlanExportView._csv_response` (`:1914-1916`) bauen je separat `HttpResponse(content_type=

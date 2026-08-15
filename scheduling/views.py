@@ -280,6 +280,23 @@ def _employee_scoped_node_ids(membership, employee_profile):
     return None
 
 
+def apply_node_scope(qs, node_ids, field_lookup="node_id"):
+    """
+    Wendet das Ergebnis von _employee_scoped_node_ids() auf eine Queryset
+    an -- `node_ids is None` bedeutet keine Einschränkung (siehe dessen
+    Docstring), sonst wird nach `field_lookup__in=node_ids` gefiltert.
+    Vorher an NodeViewSet/TimeTemplateViewSet/ShiftAssignmentViewSet/
+    TimeRecordViewSet/MissingTimeRecordViewSet identisch als
+    `if node_ids is not None: qs = qs.filter(...)` wiederholt. AbsenceViewSet
+    und ShiftTradeRequestViewSet bleiben aussen vor -- deren Node-Scoping ist
+    mit einer Q()-Sonderregel für eigene Absenzen/Tauschangebote der
+    Mitarbeiter-Rolle verknüpft, kein reiner Feld-Filter.
+    """
+    if node_ids is None:
+        return qs
+    return qs.filter(**{f"{field_lookup}__in": node_ids})
+
+
 class NodeViewSet(TenantScopedViewSet):
     """
     Achtung: Node erbt von treebeard's MP_Node, das Baumfelder (path, depth,
@@ -300,9 +317,7 @@ class NodeViewSet(TenantScopedViewSet):
         # zu einem 404 (get_object() läuft über dieselbe Queryset).
         qs = super().get_queryset().exclude(is_forest_root=True)
         node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
-        if node_ids is not None:
-            qs = qs.filter(id__in=node_ids)
-        return qs
+        return apply_node_scope(qs, node_ids, field_lookup="id")
 
     def perform_create(self, serializer):
         tenant = self.request.tenant
@@ -944,8 +959,7 @@ class TimeTemplateViewSet(TenantScopedViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
         node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
-        if node_ids is not None:
-            qs = qs.filter(node_id__in=node_ids)
+        qs = apply_node_scope(qs, node_ids)
         node_id = self.request.query_params.get("node")
         if node_id:
             qs = qs.filter(node_id=node_id)
@@ -974,8 +988,7 @@ class ShiftAssignmentViewSet(TenantScopedViewSet):
     def get_queryset(self):
         qs = super().get_queryset().select_related("employee", "template", "node")
         node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
-        if node_ids is not None:
-            qs = qs.filter(node_id__in=node_ids)
+        qs = apply_node_scope(qs, node_ids)
         node = self.request.query_params.get("node")
         date_from = self.request.query_params.get("date_from")
         date_to = self.request.query_params.get("date_to")
@@ -1453,8 +1466,7 @@ class TimeRecordViewSet(TenantScopedViewSet):
             "assignment", "assignment__employee", "assignment__node", "assignment__template"
         )
         node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
-        if node_ids is not None:
-            qs = qs.filter(assignment__node_id__in=node_ids)
+        qs = apply_node_scope(qs, node_ids, field_lookup="assignment__node_id")
         node = self.request.query_params.get("node")
         if node:
             qs = qs.filter(assignment__node_id=node)
@@ -1518,8 +1530,7 @@ class MissingTimeRecordViewSet(TenantScopedViewSet):
             .filter(date__lte=timezone.localdate(), time_record__isnull=True)
         )
         node_ids = _employee_scoped_node_ids(self.request.membership, self.request.employee_profile)
-        if node_ids is not None:
-            qs = qs.filter(node_id__in=node_ids)
+        qs = apply_node_scope(qs, node_ids)
         node = self.request.query_params.get("node")
         if node:
             qs = qs.filter(node_id=node)

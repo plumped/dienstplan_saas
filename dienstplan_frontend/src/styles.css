@@ -1,3 +1,10 @@
+/* Block 9 #6 (2026-08): stylelint (color-no-hex, siehe .stylelintrc.json)
+   verbietet rohe Hex-Farbwerte ausserhalb von :root, damit Farbwerte
+   künftig als Token statt als Wiederholung eingeführt werden (Block 9 #2
+   war die konkrete Bereinigung, die diese Regel jetzt strukturell absichert).
+   Token-Definitionen selbst brauchen natürlich den echten Hex-Wert --
+   deshalb hier bewusst deaktiviert. */
+/* stylelint-disable color-no-hex */
 :root {
   --bg: #f7f8f7;
   --surface: #ffffff;
@@ -29,6 +36,7 @@
   --font-display: "Space Grotesk", system-ui, sans-serif;
   --font-body: "Inter", system-ui, sans-serif;
 }
+/* stylelint-enable color-no-hex */
 
 * {
   box-sizing: border-box;
@@ -246,7 +254,7 @@ button {
   gap: 6px;
   border: none;
   background: var(--primary);
-  color: #fff;
+  color: var(--surface);
   font-weight: 600;
   font-size: 13px;
   padding: 7px 14px;
@@ -566,6 +574,9 @@ main {
   gap: 2px;
   padding: 2px;
   border-radius: 7px;
+  /* stylelint-disable-next-line color-no-hex -- pre-existing (Fallback für
+     nirgends definiertes --bg-muted), nicht Teil von Block 9 #2/#6, noch
+     nicht tokenisiert */
   background: var(--bg-muted, #f1f5f9);
 }
 
@@ -783,6 +794,8 @@ main {
 }
 
 .plan-grid thead th.is-holiday {
+  /* stylelint-disable-next-line color-no-hex -- pre-existing, nicht Teil
+     von Block 9 #2/#6, noch nicht tokenisiert */
   background: #fde3c8;
 }
 
@@ -1008,10 +1021,14 @@ thead .col-employee {
 }
 
 .plan-grid td.is-weekend {
+  /* stylelint-disable-next-line color-no-hex -- pre-existing, nicht Teil
+     von Block 9 #2/#6, noch nicht tokenisiert */
   background: #fbfcfb;
 }
 
 .plan-grid td.is-holiday {
+  /* stylelint-disable-next-line color-no-hex -- pre-existing, nicht Teil
+     von Block 9 #2/#6, noch nicht tokenisiert */
   background: #fef1e2;
 }
 
@@ -3171,6 +3188,8 @@ thead .col-employee {
 }
 
 .year-day-cell.is-holiday .year-day-fill {
+  /* stylelint-disable-next-line color-no-hex -- pre-existing, nicht Teil
+     von Block 9 #2/#6, noch nicht tokenisiert */
   outline: 2px solid #e8963c;
   outline-offset: -2px;
 }
@@ -3393,7 +3412,7 @@ thead .col-employee {
   gap: 8px;
   border: none;
   background: var(--primary);
-  color: #fff;
+  color: var(--surface);
   font-family: var(--font-display);
   font-weight: 600;
   font-size: 14.5px;
@@ -3415,13 +3434,13 @@ thead .col-employee {
 }
 
 .landing-btn-primary--inverse {
-  background: #fff;
+  background: var(--surface);
   color: var(--primary);
 }
 
 .landing-btn-primary--inverse:hover {
   filter: none;
-  background: color-mix(in srgb, #fff 90%, var(--primary));
+  background: color-mix(in srgb, var(--surface) 90%, var(--primary));
 }
 
 .landing-btn-ghost {
@@ -3768,7 +3787,7 @@ thead .col-employee {
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  color: #fff;
+  color: var(--surface);
 }
 
 .landing-cta-band-inner h2 {
@@ -3780,7 +3799,7 @@ thead .col-employee {
 
 .landing-cta-band-inner p {
   margin: 0 0 8px;
-  color: color-mix(in srgb, #fff 82%, transparent);
+  color: color-mix(in srgb, var(--surface) 82%, transparent);
   font-size: 14.5px;
 }
 
@@ -4050,7 +4069,7 @@ thead .col-employee {
 .onboarding-step.is-current .onboarding-step-index {
   border-color: var(--primary);
   background: var(--primary);
-  color: #fff;
+  color: var(--surface);
 }
 
 .onboarding-step.is-done {

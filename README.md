@@ -3373,52 +3373,59 @@ mit Block 4 (Produktionsreife) Punkt 2 ("Auth härten") -- dort ist der Fokus je
 Frontend-Client (Token-Ablauf), hier der fremde Client (eigene, granular scoped Credentials);
 beide Punkte sind bei der Umsetzung gemeinsam zu betrachten, aber unterschiedlich motiviert.
 
-### 9. Polishing (Styling-Konsistenz & Feinschliff)
+### 9. Polishing (Styling-Konsistenz & Feinschliff) ✅
 
 Nutzer-Feedback (2026-08): "Ich denke es ist noch zu sehr ein Mix von Schriftarten und genereller
 Optik. Das sollte einheitlich aussehen und wie aus einem Guss." -- berechtigt: die App ist über
 ~280 einzelne Feature-Runden gewachsen, jede Runde hat ihr eigenes kleines Stück Design
 mitgebracht, ohne dass je ein bewusster Konsistenz-Durchgang über das Ganze gemacht wurde. Ein
-kurzer CSS-Audit (2026-08) bestätigt das konkret:
+kurzer CSS-Audit (2026-08) hat das konkret bestätigt, alle sechs Funde sind behoben. Ausdrücklich
+als reiner Styling-Refactor umgesetzt (Nutzer-Vorgabe: "ohne die Funktionalität zu berühren") --
+jeder Schritt wurde per Playwright gegen den laufenden Dev-Server verifiziert (Font-Familie/Farben
+per `getComputedStyle`, Screenshots für Layout), bevor committet wurde.
 
-1. **Drei Schriftfamilien statt zwei**: Landing-Page-Überschriften/Kennzahlen nutzen
+1. ✅ **Drei Schriftfamilien statt zwei**: Landing-Page-Überschriften/Kennzahlen nutzten
    `ui-serif, Georgia, "Times New Roman", serif` (`landing-hero h1`, `landing-stat-value`,
-   `landing-showcase-copy h2`, bewusst "editoriell" gewählt), der Rest der App durchgängig
-   `--font-display: "Space Grotesk"` (Überschriften) + `--font-body: "Inter"` (Fliesstext).
-   Marketing-Auftritt und eigentliche App wirken dadurch stilistisch wie zwei verschiedene
-   Produkte. Entscheiden: Serif bewusst als drittes, marketingexklusives Element beibehalten
-   (dann irgendwo dokumentieren, warum), oder auf die App-Schriften vereinheitlichen.
-2. **Farb-Tokens statt hartkodierter Hex-Werte**: 31 einzeln hartkodierte Hex-Farben in
-   `styles.css` ausserhalb der `:root`-Variablen (Stand 2026-08) -- v. a. die
-   `.status-badge--*`/`.type-badge`-Modifier (Absenzen, Diensttausch, Zeiterfassung, Abrechnung),
-   die in jeder Feature-Runde einzeln mit frei gewählten Grün-/Gelb-/Grau-Tönen ergänzt wurden
-   statt über ein gemeinsames Token-Set (z. B. `--status-positive`, `--status-pending`,
-   `--status-negative`, `--status-neutral`). Ein Refactor auf semantische Tokens würde
-   zukünftige neue Status automatisch konsistent halten, statt dass jede neue Funktion sich ihre
-   eigene Farbe aussucht.
-3. **Ein Button-System statt vier parallelen**: `.btn-primary`/`.btn-ghost` (Basis), zusätzlich
-   `.plan-export-bar button` (eigener Pill-Stil im Planblatt-Export) und
-   `.settings-module-card` (eigener Karten-Stil in der Settings-Übersicht) mit jeweils eigenem
-   Padding/Radius/Hover-Verhalten. Prüfen, ob sich die beiden Spezialfälle auf die Basis-Klassen
-   zurückführen lassen, oder ob eine dritte, bewusst benannte Variante (z. B. `.btn-pill`)
-   entsteht, die dann überall wiederverwendet wird statt pro Stelle neu erfunden.
-4. **Stat-Kacheln/Detail-Zeilen vereinheitlichen**: `BillingSettings.jsx` hat mit
-   `.billing-stat`/`.billing-detail-row` (2026-08) ein neues, eigenes Kachel-Muster eingeführt --
-   inhaltlich ähnlich zu bereits bestehenden Zahlen-Darstellungen (`.monthly-summary-table`,
-   `BalanceBadge`/`FairnessBadge`-Pills). Prüfen, ob sich das auf ein gemeinsames
-   "Kennzahl-Kachel"-Muster konsolidieren lässt, das künftige Module (z. B. ein Dashboard-Ausbau)
-   direkt wiederverwenden können, statt erneut ein eigenes Muster zu bauen.
-5. **Inline-Styles reduzieren**: vereinzelte `style={{...}}`-Zuweisungen für Dinge, die eigentlich
-   eine CSS-Klasse sein sollten (z. B. `style={{ margin: 0 }}` in `BillingSettings.jsx`) --
-   dynamische, wirklich pro Instanz unterschiedliche Werte (Chip-Farbe aus Nutzerdaten,
-   Fortschrittsbalken-Breite, gestaffelte Animation-Delays) bleiben zu Recht inline, aber
-   statische Layout-Anpassungen gehören in die entsprechende Klasse.
-6. **Kein automatisierter Schutz gegen erneutes Auseinanderdriften**: selbst nach einem
-   Konsistenz-Durchgang gibt es nichts, was eine künftige Feature-Runde daran hindert, wieder
-   eine neue Hex-Farbe oder ein neues Button-Pattern einzuführen. Ein kurzer Abschnitt in einer
-   Frontend-`CONTRIBUTING`-Notiz oder ein Lint-Check (z. B. `stylelint` mit einer Regel gegen
-   rohe Hex-Werte ausserhalb von `:root`) würde das strukturell absichern statt auf Disziplin
-   pro Runde zu hoffen.
+   `landing-showcase-copy h2`, `landing-checklist h2`, `landing-cta-band-inner h2`), der Rest der
+   App durchgängig `--font-display: "Space Grotesk"`. Nutzer-Entscheidung (Frage: Serif bewusst
+   behalten oder vereinheitlichen): **vereinheitlichen** -- alle 5 Stellen nutzen jetzt
+   `var(--font-display)`, kein `ui-serif` mehr im gesamten Stylesheet.
+2. ✅ **Farb-Tokens statt hartkodierter Hex-Werte**: 5 wiederkehrende Status-Farbpaare (positiv/in
+   Bearbeitung/neutral, je Text- und Hintergrundfarbe) waren an 18 Stellen als roher Hex-Wert
+   wiederholt, v. a. die `.status-badge--*`-Modifier. Jetzt als `--status-positive[-soft]`,
+   `--status-progress[-soft]`, `--status-neutral-soft` in `:root` definiert und an allen 18
+   Stellen per `var(...)` referenziert -- byte-identische Farben (per Playwright verifiziert:
+   exakt dieselben RGB-Werte wie vorher).
+3. ✅ **Ein Button-System statt vier parallelen**: `.plan-export-bar button` war die einzige an
+   einen Container statt an eine eigene Klasse gebundene Variante -- jetzt `.btn-pill` als
+   dritte, klar benannte Variante neben `.btn-primary` (Hauptaktion) und `.btn-ghost`
+   (Nebenaktion), dokumentiert und wiederverwendbar. `.settings-module-card` bleibt bewusst
+   eigenständig (Klick-Kachel, keine Aktions-Zeile) statt in ein unpassendes Aktions-Button-Muster
+   gepresst zu werden -- entsprechend kommentiert, damit das keine vierte stille Variante bleibt.
+4. ✅ **Stat-Kacheln/Detail-Zeilen vereinheitlicht**: Nutzer-Entscheidung (Frage: nur
+   dokumentieren oder echtes visuelles Redesign) -- **echtes Redesign**. `.billing-stat*` wurde
+   zur generischen `.stat-tile`-Familie (`.stat-tile-grid`/`.stat-tile`/`.stat-tile-label`/
+   `.stat-tile-value`), die jetzt auch `MonthlySummaryPanel.jsx` nutzt (vorher eine `<table>` für
+   reine Label/Wert-Paare ohne echte Tabellen-Semantik, jetzt derselbe Kachel-Look wie
+   Abrechnung). Die echte mehrspaltige Tabelle (Spezialitäten-Aufschlüsselung) bleibt bewusst eine
+   Tabelle -- eine Kachel pro Zeile wäre bei mehreren Spalten pro Datensatz schlechter lesbar.
+   `BalanceBadge`/`FairnessBadge` nutzen jetzt ebenfalls `--font-display` für den Zahlenwert,
+   damit kompakte Pills und grosse Kacheln dieselbe Typografie-Sprache sprechen -- die
+   Saldo-Farbsemantik (`--primary`/`--warn`, bewusst getrennt von den Status-Tokens aus Punkt 2)
+   bleibt unverändert.
+5. ✅ **Inline-Styles reduziert**: `style={{ margin: 0 }}` auf der Abrechnung-Überschrift
+   (`BillingSettings.jsx`) war der einzige statische Inline-Style im ganzen Frontend -- jetzt eine
+   `.billing-header h2`-Regel. Alle anderen `style={{...}}`-Vorkommen (Chip-Farbe aus Nutzerdaten,
+   Fortschrittsbalken-Breite, gestaffelte Animation-Delays, dynamische Einrücktiefe) sind echte
+   Laufzeitwerte und bleiben bewusst inline.
+6. ✅ **Automatisierter Schutz gegen erneutes Auseinanderdriften**: `stylelint` (neue
+   `devDependency`, `dienstplan_frontend/.stylelintrc.json`) mit der Regel `color-no-hex`
+   verbietet jetzt rohe Hex-Farbwerte ausserhalb von `:root` (`npm run lint:css`). Token-
+   Definitionen selbst sind per `stylelint-disable`/`-enable`-Kommentar um den `:root`-Block
+   ausgenommen. 5 vereinzelte, vor diesem Block bereits bestehende Hex-Werte (z. B.
+   Feiertags-/Wochenend-Hintergründe im Planblatt) wurden nicht rückwirkend tokenisiert (kein Teil
+   des ursprünglichen Funds), sondern per `stylelint-disable-next-line`-Kommentar dokumentiert,
+   damit die Baseline sauber grün ist, ohne stillschweigend Bestandsschulden zu verstecken.
 
 Bewusst nicht Teil dieses Blocks (siehe eigene Blöcke): fehlende automatisierte Frontend-Tests
 (Block 4 Punkt 5), fehlende i18n für französisch-/italienischsprachige Kantone (aktuell nirgends

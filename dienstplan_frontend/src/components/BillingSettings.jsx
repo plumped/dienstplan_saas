@@ -108,7 +108,7 @@ export default function BillingSettings({ onError }) {
   return (
     <div className="panel-form">
       <div className="billing-header">
-        <h2 style={{ margin: 0 }}>Abrechnung</h2>
+        <h2>Abrechnung</h2>
         <span className={`status-badge status-badge--${status.subscription_status}`}>
           {STATUS_LABELS[status.subscription_status] ?? status.subscription_status}
         </span>

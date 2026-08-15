@@ -1491,6 +1491,15 @@ thead .col-employee {
   margin-bottom: 2px;
 }
 
+/* Block 9 #5 (2026-08): war style={{ margin: 0 }} in BillingSettings.jsx --
+   entfernt das Default-<h2>-margin, damit die Überschrift mit dem
+   Status-Badge daneben auf einer Zeile bündig sitzt (align-items: center
+   oben). Statischer Wert, keine Laufzeit-Abhängigkeit -- gehört in die
+   CSS-Klasse statt als Inline-Style. */
+.billing-header h2 {
+  margin: 0;
+}
+
 /* Block 9 #4 (2026-08): war zuvor `.billing-stats`/`.billing-stat*`, nur in
    BillingSettings.jsx genutzt. Generische "Kennzahl-Kachel" -- dieselbe
    Karte deckt jetzt auch die Monatsauswertung (MonthlySummaryPanel.jsx, war

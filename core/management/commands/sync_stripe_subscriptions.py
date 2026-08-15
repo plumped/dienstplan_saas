@@ -1,6 +1,7 @@
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from core.billing import stripe_status_to_subscription_status
 from core.models import Tenant
 
 
@@ -57,17 +58,10 @@ class Command(BaseCommand):
                 continue
 
             subscription = data[0]
-            status_map = {
-                "active": Tenant.SubscriptionStatus.ACTIVE,
-                "trialing": Tenant.SubscriptionStatus.TRIALING,
-                "past_due": Tenant.SubscriptionStatus.PAST_DUE,
-                "canceled": Tenant.SubscriptionStatus.CANCELED,
-                "unpaid": Tenant.SubscriptionStatus.PAST_DUE,
-                "incomplete": Tenant.SubscriptionStatus.INCOMPLETE,
-                "incomplete_expired": Tenant.SubscriptionStatus.CANCELED,
-            }
             tenant.stripe_subscription_id = subscription["id"]
-            tenant.subscription_status = status_map.get(subscription["status"], tenant.subscription_status)
+            tenant.subscription_status = stripe_status_to_subscription_status(
+                subscription["status"], fallback=tenant.subscription_status
+            )
             tenant.save(update_fields=["stripe_subscription_id", "subscription_status"])
             self.stdout.write(
                 self.style.SUCCESS(

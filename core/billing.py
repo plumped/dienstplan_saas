@@ -227,6 +227,27 @@ def get_subscription_details(tenant):
         return None
 
 
+def stripe_status_to_subscription_status(stripe_status, fallback=None):
+    """
+    Bildet einen Stripe-Subscription-Status auf Tenant.SubscriptionStatus ab
+    -- geteilt zwischen handle_webhook_event() (Webhook-getriebene Updates)
+    und dem sync_stripe_subscriptions-Management-Command (einmaliger
+    Backfill), die vorher je ein identisches Mapping-Dict pflegten.
+    """
+    from core.models import Tenant
+
+    status_map = {
+        "active": Tenant.SubscriptionStatus.ACTIVE,
+        "trialing": Tenant.SubscriptionStatus.TRIALING,
+        "past_due": Tenant.SubscriptionStatus.PAST_DUE,
+        "canceled": Tenant.SubscriptionStatus.CANCELED,
+        "unpaid": Tenant.SubscriptionStatus.PAST_DUE,
+        "incomplete": Tenant.SubscriptionStatus.INCOMPLETE,
+        "incomplete_expired": Tenant.SubscriptionStatus.CANCELED,
+    }
+    return status_map.get(stripe_status, fallback)
+
+
 def handle_webhook_event(event):
     """
     Reagiert auf die vier Events, die core.views.StripeWebhookView (Stripe
@@ -279,17 +300,8 @@ def handle_webhook_event(event):
         if event_type == "customer.subscription.deleted":
             tenant.subscription_status = Tenant.SubscriptionStatus.CANCELED
         else:
-            status_map = {
-                "active": Tenant.SubscriptionStatus.ACTIVE,
-                "trialing": Tenant.SubscriptionStatus.TRIALING,
-                "past_due": Tenant.SubscriptionStatus.PAST_DUE,
-                "canceled": Tenant.SubscriptionStatus.CANCELED,
-                "unpaid": Tenant.SubscriptionStatus.PAST_DUE,
-                "incomplete": Tenant.SubscriptionStatus.INCOMPLETE,
-                "incomplete_expired": Tenant.SubscriptionStatus.CANCELED,
-            }
-            tenant.subscription_status = status_map.get(
-                data.get("status"), tenant.subscription_status
+            tenant.subscription_status = stripe_status_to_subscription_status(
+                data.get("status"), fallback=tenant.subscription_status
             )
         tenant.save(update_fields=["subscription_status"])
         return

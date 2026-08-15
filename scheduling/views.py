@@ -82,6 +82,18 @@ from .serializers import (
 User = get_user_model()
 
 
+def csv_response(filename):
+    """
+    Baut ein leeres CSV-HttpResponse samt Writer -- gemeinsamer Helper für
+    alle Datei-Downloads (Mitarbeitenden-Importvorlage, Lohn-Export,
+    Plan-Export), die vorher je einzeln HttpResponse+Content-Disposition+
+    csv.writer identisch aufgebaut haben.
+    """
+    response = HttpResponse(content_type="text/csv")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response, csv.writer(response)
+
+
 class TenantScopedViewSet(viewsets.ModelViewSet):
     """
     Basis-ViewSet: filtert explizit über all_objects nach request.tenant,
@@ -868,13 +880,9 @@ class EmployeeViewSet(TenantScopedViewSet):
     @action(detail=False, methods=["get"], url_path="import-csv-template")
     def import_csv_template(self, request):
         """
-        Beispiel-CSV zum Download für import_csv -- gleiches
-        csv.writer/HttpResponse/Content-Disposition-Muster wie
-        PayrollExportView/PlanExportView.
+        Beispiel-CSV zum Download für import_csv.
         """
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = 'attachment; filename="mitarbeitende-vorlage.csv"'
-        writer = csv.writer(response)
+        response, writer = csv_response("mitarbeitende-vorlage.csv")
         writer.writerow(["first_name", "last_name", "employment_pct", "employment_start_date", "station"])
         writer.writerow(["Anna", "Muster", "100", "2026-01-01", "Pflege Tag"])
         writer.writerow(["Peter", "Beispiel", "80", "", ""])
@@ -1749,9 +1757,7 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
         }
 
     def _csv_response(self, year, month, result_employees):
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = f'attachment; filename="lohn-export-{year}-{month:02d}.csv"'
-        writer = csv.writer(response)
+        response, writer = csv_response(f"lohn-export-{year}-{month:02d}.csv")
         writer.writerow(
             ["Personalnummer", "Name", "Kostenstelle", "Lohnart-Code", "Bezeichnung", "Menge", "Einheit", "Periode"]
         )
@@ -1911,9 +1917,7 @@ class PlanExportView(TenantScopedAPIMixin, APIView):
     def _csv_response(
         self, tenant, node, year, month, month_start, month_end, employees, assignments_by_key, absences_by_key
     ):
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = f'attachment; filename="plan-export-{year}-{month:02d}.csv"'
-        writer = csv.writer(response)
+        response, writer = csv_response(f"plan-export-{year}-{month:02d}.csv")
         writer.writerow(["Personalnummer", "Name", "Datum", "Wochentag", "Typ", "Bezeichnung", "Von", "Bis"])
         day = month_start
         while day <= month_end:

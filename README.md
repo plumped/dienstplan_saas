@@ -3451,9 +3451,10 @@ Abarbeitungszwang.
    `core/billing.py:282-290` (`handle_webhook_event`) und
    `core/management/commands/sync_stripe_subscriptions.py:60-68`. Behoben durch
    `core.billing.stripe_status_to_subscription_status()`, von beiden Stellen genutzt.
-3. **`DjangoValidationError`→DRF-`ValidationError`-Übersetzung sechsfach kopiert**: exakt dieselbe
-   Zeile in `scheduling/views.py:1088,1183,1363,1374,1385,1485`. Helper-Funktion oder Decorator
-   (z. B. `core.views.raise_as_drf_validation_error`) einführen.
+3. ✅ **`DjangoValidationError`→DRF-`ValidationError`-Übersetzung sechsfach kopiert**: exakt
+   dieselbe Zeile in `scheduling/views.py:1088,1183,1363,1374,1385,1485`. Behoben durch den
+   Context-Manager `scheduling.views.translate_model_validation_error()`, alle sechs Stellen
+   nutzen ihn jetzt statt eigenem try/except.
 4. **Query-Param-Parsing (Datum/Jahr/Monat) 8+ fach dupliziert**: `try: date.fromisoformat(...)`/
    `int(...)` + `except ValueError: raise ValidationError(...)` wiederholt sich über
    `EmployeeViewSet.weekly_overtime/night_work/fairness/balance/sick_pay/monthly_summary/

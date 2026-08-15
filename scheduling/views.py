@@ -1,6 +1,7 @@
 import calendar
 import csv
 import io
+from contextlib import contextmanager
 from datetime import date, timedelta
 
 from django.contrib.auth import get_user_model
@@ -80,6 +81,21 @@ from .serializers import (
 )
 
 User = get_user_model()
+
+
+@contextmanager
+def translate_model_validation_error():
+    """
+    Übersetzt eine Django-`ValidationError` (aus `Model.clean()`, z. B.
+    `ShiftTradeRequest.approve()`/`Absence.approve()`) in eine DRF-
+    `ValidationError` mit passender HTTP-400-Antwort -- vorher sechsfach
+    identisch als try/except an jeder Action wiederholt, die eine
+    Regel-Engine-Model-Methode aufruft.
+    """
+    try:
+        yield
+    except DjangoValidationError as e:
+        raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages) from e
 
 
 def csv_response(filename):
@@ -1090,10 +1106,8 @@ class ShiftAssignmentViewSet(TenantScopedViewSet):
             raise ValidationError({"first": "Muss eine Zahl sein.", "second": "Muss eine Zahl sein."})
         get_object_or_404(self.get_queryset(), pk=first_id)
         get_object_or_404(self.get_queryset(), pk=second_id)
-        try:
+        with translate_model_validation_error():
             first, second = ShiftAssignment.swap(first_id, second_id)
-        except DjangoValidationError as e:
-            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
         return Response(
             {
                 "first": self.get_serializer(first).data,
@@ -1185,10 +1199,8 @@ class AbsenceViewSet(TenantScopedViewSet):
         if absence.status != Absence.Status.PENDING:
             raise ValidationError("Nur offene Absenzanträge können genehmigt werden.")
         absence.status = Absence.Status.APPROVED
-        try:
+        with translate_model_validation_error():
             absence.clean()
-        except DjangoValidationError as e:
-            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
         absence.save(update_fields=["status"])
         notify_absence_decision(absence)
         return Response(self.get_serializer(absence).data)
@@ -1365,10 +1377,8 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
     def accept(self, request, pk=None):
         """Zielperson stimmt zu -- vollzieht den Tausch noch nicht, siehe `approve`."""
         trade_request = self.get_object()
-        try:
+        with translate_model_validation_error():
             trade_request.accept()
-        except DjangoValidationError as e:
-            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
         notify_trade_accepted_by_employee(trade_request)
         return Response(self.get_serializer(trade_request).data)
 
@@ -1376,10 +1386,8 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
     def approve(self, request, pk=None):
         """Admin/Planer-Freigabe -- vollzieht den Tausch (siehe ShiftTradeRequest.approve())."""
         trade_request = self.get_object()
-        try:
+        with translate_model_validation_error():
             trade_request.approve()
-        except DjangoValidationError as e:
-            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
         notify_trade_decision(trade_request)
         return Response(self.get_serializer(trade_request).data)
 
@@ -1387,10 +1395,8 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
     def reject(self, request, pk=None):
         """Admin/Planer lehnt ab (zu unterscheiden von `decline`, das die Zielperson selbst auslöst)."""
         trade_request = self.get_object()
-        try:
+        with translate_model_validation_error():
             trade_request.reject()
-        except DjangoValidationError as e:
-            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
         notify_trade_decision(trade_request)
         return Response(self.get_serializer(trade_request).data)
 
@@ -1487,10 +1493,8 @@ class TimeRecordViewSet(TenantScopedViewSet):
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
         time_record = self.get_object()
-        try:
+        with translate_model_validation_error():
             time_record.confirm()
-        except DjangoValidationError as e:
-            raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages)
         return Response(self.get_serializer(time_record).data)
 
 

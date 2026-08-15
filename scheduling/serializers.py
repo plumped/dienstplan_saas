@@ -3,6 +3,7 @@ from django.contrib.auth.validators import UnicodeUsernameValidator
 from rest_framework import serializers
 
 from core.models import Membership
+from core.serializers import validate_unique_username
 
 User = get_user_model()
 
@@ -305,9 +306,7 @@ class EmployeeAccessSetupSerializer(serializers.Serializer):
 
     def validate_username(self, value):
         UnicodeUsernameValidator()(value)
-        if User.objects.filter(username=value).exists():
-            raise serializers.ValidationError("Dieser Benutzername ist bereits vergeben.")
-        return value
+        return validate_unique_username(value)
 
 
 class EmployeeBalanceSerializer(serializers.Serializer):

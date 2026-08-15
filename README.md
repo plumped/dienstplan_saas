@@ -3471,12 +3471,11 @@ Abarbeitungszwang.
    (`core/permissions.py:97,173`) vergleichen `obj.status` gegen `"pending"`/`"submitted"` samt
    erklärendem Kommentar. Behoben: `obj.status == obj.Status.PENDING`/
    `obj.Status.SUBMITTED` (kein Zusatzimport nötig, `obj` ist bereits die Model-Instanz).
-7. **`username`-Eindeutigkeitsvalidator dreifach kopiert**: identische Prüfung + Fehlermeldung
+7. ✅ **`username`-Eindeutigkeitsvalidator dreifach kopiert**: identische Prüfung + Fehlermeldung
    "Dieser Benutzername ist bereits vergeben." in `core/serializers.py:140-143` (
    `MembershipCreateSerializer`), `:183-186` (`SignupSerializer`),
-   `scheduling/serializers.py:306-310` (`EmployeeAccessSetupSerializer`). Als eigenständige
-   Validator-Funktion `unique_username(value)` extrahieren, in allen drei Serializern als
-   Feld-Validator einsetzen.
+   `scheduling/serializers.py:306-310` (`EmployeeAccessSetupSerializer`). Behoben durch
+   `core.serializers.validate_unique_username()`, von allen drei Stellen genutzt.
 8. **"Instanz bauen + setattr-Schleife + `instance.clean()`"-Muster fünffach**:
    `ShiftAssignmentSerializer.validate`, `AbsenceSerializer.validate`,
    `ShiftPreferenceSerializer.validate`, `TimeRecordSerializer.validate`,

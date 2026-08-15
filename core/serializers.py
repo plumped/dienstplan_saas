@@ -10,6 +10,18 @@ from core.models import SWISS_CANTON_CHOICES, Membership, Tenant, TenantHolidayO
 User = get_user_model()
 
 
+def validate_unique_username(value):
+    """
+    Gemeinsame Eindeutigkeitsprüfung für alle drei Stellen, an denen ein
+    neuer Login-Username entgegengenommen wird (MembershipCreateSerializer,
+    SignupSerializer, scheduling.serializers.EmployeeAccessSetupSerializer)
+    -- vorher dreifach identisch dupliziert.
+    """
+    if User.objects.filter(username=value).exists():
+        raise serializers.ValidationError("Dieser Benutzername ist bereits vergeben.")
+    return value
+
+
 class TenantSerializer(serializers.ModelSerializer):
     """
     Tenant-Konfiguration (MVP-Fahrplan Block 2, Punkt 14): die numerischen
@@ -138,9 +150,7 @@ class MembershipCreateSerializer(serializers.ModelSerializer):
         read_only_fields = ["id"]
 
     def validate_username(self, value):
-        if User.objects.filter(username=value).exists():
-            raise serializers.ValidationError("Dieser Benutzername ist bereits vergeben.")
-        return value
+        return validate_unique_username(value)
 
     def create(self, validated_data):
         tenant = self.context["request"].tenant
@@ -181,9 +191,7 @@ class SignupSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
     def validate_username(self, value):
-        if User.objects.filter(username=value).exists():
-            raise serializers.ValidationError("Dieser Benutzername ist bereits vergeben.")
-        return value
+        return validate_unique_username(value)
 
     def validate_password(self, value):
         try:

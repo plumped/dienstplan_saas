@@ -3424,3 +3424,205 @@ Bewusst nicht Teil dieses Blocks (siehe eigene Blöcke): fehlende automatisierte
 (Block 4 Punkt 5), fehlende i18n für französisch-/italienischsprachige Kantone (aktuell nirgends
 festgehalten, hier nur als Randnotiz: falls relevant, eigener Block wert), fehlende
 Rate-Limits auf Login/Signup (Überschneidung mit Block 4 Punkt 2 und Block 8 Punkt 2).
+
+### 10. Code-Polishing (DRY & Wartbarkeit)
+
+Nutzer-Feedback (2026-08): "Durch das Wachsen gibt es diverse unschöne Stellen. Vor allem DRY ist
+mir wichtig und dass der Code so einfach wartbar wie möglich ist." -- analog zu Block 9
+(Styling-Konsistenz) berechtigt: über ~280 Feature-Runden ist Duplikation entstanden, wo
+wiederkehrende Probleme (Query-Param-Parsing, Fetch-Boilerplate, Statustransitions,
+Listen-Tabellen mit Suche/Sortierung/Pagination) jedes Mal einzeln statt über eine gemeinsame
+Abstraktion gelöst wurden. Zwei unabhängige Vollaudits (2026-08, je ein Recherche-Agent für
+Backend `core/`+`scheduling/` und Frontend `dienstplan_frontend/src/`) haben die Funde unten
+mit konkreten Datei:Zeilen-Belegen bestätigt. Reine Planung/Dokumentation, keine Implementierung
+-- Prioritäten sind absteigend nach Hebelwirkung sortiert, die Nummerierung ist kein
+Abarbeitungszwang.
+
+**Backend (`core/`, `scheduling/`)**
+
+1. **`initial()` dreifach fast identisch reimplementiert**: `scheduling/views.py:111-134`
+   (`TenantScopedViewSet.initial`), `core/views.py:48-65` (`TenantScopedAPIMixin.initial`),
+   `core/billing_views.py:48-61` (`_TenantScopedNoBillingGateMixin.initial`) bauen alle drei
+   manuell dieselbe DRF-`APIView.initial()`-Sequenz nach (Content-Negotiation, Authentifizierung,
+   Membership-/Tenant-Auflösung, `check_permissions`/`check_throttles`). Gemeinsame Helper-Funktion
+   in `core/tenancy.py` extrahieren, parametrisiert nach optionalem `employee_profile`/
+   `set_current_tenant`/`enforce_billing_access`.
+2. **Stripe-Statusmapping-Dict verdoppelt**: identisches 7-Einträge-Dict in
+   `core/billing.py:282-290` (`handle_webhook_event`) und
+   `core/management/commands/sync_stripe_subscriptions.py:60-68`. Als Modul-Konstante
+   `core.billing.STRIPE_STATUS_MAP` einmal definieren, im Management-Command importieren.
+3. **`DjangoValidationError`→DRF-`ValidationError`-Übersetzung sechsfach kopiert**: exakt dieselbe
+   Zeile in `scheduling/views.py:1088,1183,1363,1374,1385,1485`. Helper-Funktion oder Decorator
+   (z. B. `core.views.raise_as_drf_validation_error`) einführen.
+4. **Query-Param-Parsing (Datum/Jahr/Monat) 8+ fach dupliziert**: `try: date.fromisoformat(...)`/
+   `int(...)` + `except ValueError: raise ValidationError(...)` wiederholt sich über
+   `EmployeeViewSet.weekly_overtime/night_work/fairness/balance/sick_pay/monthly_summary/
+   settle_overtime` (`scheduling/views.py:420-643`) sowie identisch zwischen
+   `PayrollExportView.get` (`:1641-1650`) und `PlanExportView.get` (`:1841-1847`). Utility-Funktionen
+   `parse_date_param`/`parse_year_month_param` extrahieren.
+5. **`has_permission`-Rumpf dreifach identisch**: `OwnEmployeeRecordPermission`,
+   `ShiftTradeRequestPermission`, `TimeRecordPermission` in `core/permissions.py:78-84,116-122,
+   154-160` haben denselben Methodenkörper. Gemeinsame Basisklasse (z. B.
+   `ManagerOrEmployeeWritePermission`), die drei subclassen nur noch `has_object_permission`.
+6. **Statusvergleich gegen rohe String-Literale statt Model-Enum**:
+   `OwnEmployeeRecordPermission.has_object_permission`/`TimeRecordPermission.has_object_permission`
+   (`core/permissions.py:97,173`) vergleichen `obj.status` gegen `"pending"`/`"submitted"` samt
+   erklärendem Kommentar statt `Absence.Status.PENDING`/`TimeRecord.Status.SUBMITTED` zu
+   importieren und direkt zu nutzen.
+7. **`username`-Eindeutigkeitsvalidator dreifach kopiert**: identische Prüfung + Fehlermeldung
+   "Dieser Benutzername ist bereits vergeben." in `core/serializers.py:140-143` (
+   `MembershipCreateSerializer`), `:183-186` (`SignupSerializer`),
+   `scheduling/serializers.py:306-310` (`EmployeeAccessSetupSerializer`). Als eigenständige
+   Validator-Funktion `unique_username(value)` extrahieren, in allen drei Serializern als
+   Feld-Validator einsetzen.
+8. **"Instanz bauen + setattr-Schleife + `instance.clean()`"-Muster fünffach**:
+   `ShiftAssignmentSerializer.validate`, `AbsenceSerializer.validate`,
+   `ShiftPreferenceSerializer.validate`, `TimeRecordSerializer.validate`,
+   `ShiftTradeRequestSerializer.validate` (`scheduling/serializers.py:571-583,683-704,725-749,
+   831-845,964-977`) wiederholen dasselbe Gerüst mit unterschiedlicher Feldliste. Helper
+   `validate_via_model_clean(serializer, attrs, model_cls, fields, extra=...)` extrahieren.
+9. **Nested-Child-Sync-create()/update()-Paar dreifach dupliziert**: `EmployeeSerializer`
+   (employments), `TimeTemplateSerializer` (segments), `TimeRecordSerializer` (segments) in
+   `scheduling/serializers.py:237-288,507-543,847-882` implementieren praktisch identische
+   create()/update()-Logik (m2m-Felder poppen, Nested-Liste poppen, Objekt anlegen/aktualisieren,
+   `_sync_*`-Helper aufrufen). Generischer `NestedWritableSerializerMixin` mit
+   austauschbarem "Child bauen"-Callable.
+10. **`save_formset` byte-identisch dupliziert**: `TimeTemplateAdmin.save_formset` und
+    `TimeRecordAdmin.save_formset` (`scheduling/admin.py:98-105,180-187`) sind wortgleich
+    (Tenant auf Inline-Instanzen stempeln). Auf `TenantScopedAdminMixin` (`core/admin.py`)
+    verschieben, beide Kopien entfernen.
+11. **Statustransitions inkonsistent implementiert**: `ShiftTradeRequest.accept()/approve()/
+    reject()` sind Model-Methoden, aber `ShiftTradeRequestViewSet.decline`/`cancel`
+    (`scheduling/views.py:1389-1411`) und `AbsenceViewSet.approve`/`reject` (`:1174-1196`) bauen
+    dieselbe Art Statuswechsel direkt im View statt als Model-Methode. `decline()`/`cancel()` auf
+    `ShiftTradeRequest` sowie `approve()`/`reject()` auf `Absence` ergänzen, damit jede
+    Statustransition demselben "Model besitzt die Transition, View ruft nur auf"-Muster folgt
+    (überschneidet sich mit Punkt 3).
+12. **`EmployeeViewSet` als "God Class" (~520 Zeilen, 14+ Actions)**: `scheduling/views.py:
+    360-882` mischt CRUD, CSV-Import/-Export, Zugangsverwaltung (`setup_access`/`deactivate`/
+    `reactivate`) und 7 reine Reporting-Actions in einer Klasse. In `EmployeeReportingViewSet`/
+    -Mixin und eine Zugangsverwaltungs-Mixin aufteilen, CRUD+CSV-Import bleibt im Kern.
+13. **`PayrollExportView.get()` mischt vier Verantwortlichkeiten in ~110 Zeilen**:
+    `scheduling/views.py:1633-1739` (Monats-Parsing, Mapping-Lookups, Pro-Mitarbeiter-Zeilenbau,
+    CSV/JSON-Verzweigung inline). In `_parse_month`/`_build_category_lookup`/
+    `_build_employee_lines`-Helper aufteilen, `get()` bleibt Orchestrator.
+14. **"Spezialitäten sind ausgenommen"-Guard dreifach wiederholt**: `_check_rest_period`,
+    `_check_maximum_weekly_hours`, `_check_break_minutes` in `scheduling/models.py` (u. a.
+    `:2234-2235,2268-2269,2295-2296`) beginnen alle mit derselben 2-Zeilen-Bedingung. Niedrige
+    Priorität, aber leicht mit einem `@skip_for_specialties`-Decorator oder einer zentralen
+    Weiche in `clean()` zu lösen -- wird sonst bei jedem neuen `_check_*` erneut vergessen.
+15. **Node-Scope-Filter-Wiring siebenfach copy-paste**: `NodeViewSet`, `TimeTemplateViewSet`,
+    `ShiftAssignmentViewSet`, `AbsenceViewSet`, `ShiftTradeRequestViewSet`, `TimeRecordViewSet`,
+    `MissingTimeRecordViewSet` (`scheduling/views.py:225-227,929-931,959-961,1140-1151,1334-1341,
+    1448-1450,1515-1517`) rufen `_employee_scoped_node_ids(...)` und branchen jeweils manuell auf
+    `if node_ids is not None: qs = qs.filter(...)`. Der zentrale Helper selbst ist bereits sauber
+    (`_employee_scoped_node_ids` ist EIN gemeinsamer Ort) -- nur das Wiring drumherum ist
+    dupliziert. Kleiner `apply_node_scope(qs, node_ids, field_lookup)`-Helper, niedrige Priorität.
+16. **CSV-Export-Boilerplate dreifach dupliziert**: `EmployeeViewSet.import_csv_template`
+    (`scheduling/views.py:875-877`), `PayrollExportView._csv_response` (`:1752-1754`) und
+    `PlanExportView._csv_response` (`:1914-1916`) bauen je separat `HttpResponse(content_type=
+    "text/csv")` + `Content-Disposition`-Header + `csv.writer(response)`. Ein gemeinsamer
+    `csv_response(filename) -> (response, writer)`-Helper würde alle drei Stellen ersetzen.
+17. **`Employee`-Modell als "God Class"**: `scheduling/models.py:243-1515` (~1270 Zeilen,
+    29 Methoden) vereint Alters-/Jugendschutz, Mutterschutz, Wochenstunden, Nachtarbeit,
+    Fairness-Punkte, Zeitkonto/-saldo, Ferien, Lohnfortzahlung, Monatszusammenfassung und
+    Lohn-Rohdaten-/Gleitzeit-Abrechnung in einer einzigen Klasse. Aufteilung in
+    fachlich getrennte Mixins oder Service-Module (z. B. `JugendschutzMixin`,
+    `ZeitkontoMixin`, `PayrollMixin`) würde die Datei deutlich wartbarer machen, ohne die
+    öffentliche API des Modells zu ändern.
+18. **`monthly_summary()` extrem lang**: `scheduling/models.py:1102-1307` (~200 Zeilen) mischt
+    Soll/Ist-Berechnung, Zuschlags-Aufschlüsselung pro Zeitvorlage, Überstunden-/Korridor-Logik
+    und Nacht-/Sonntagszuschläge in einer Methode. Extraktion benannter Teilschritte (z. B.
+    `_calc_soll_ist`, `_calc_surcharges`, `_calc_overtime_corridor`) würde die Methode lesbar
+    strukturieren, ohne das Ergebnis zu verändern.
+19. **Datei-/Klassengrössen insgesamt unverhältnismässig**: `scheduling/models.py` (3017 Zeilen,
+    16 Modelle) und `scheduling/views.py` (2009 Zeilen, 12 ViewSets + 3 APIViews) sind deutlich
+    grösser als vergleichbare Module wie `core/models.py` (505 Zeilen). Eine Aufteilung nach
+    fachlichem Bereich (z. B. `models/node_employee.py`, `models/scheduling.py`,
+    `models/time_tracking.py`; `scheduling/export_views.py` für die Export-Views) würde die
+    Navigierbarkeit deutlich verbessern -- reine Struktur-Massnahme, kein Verhaltensrisiko, aber
+    grösster Einzelaufwand in dieser Liste.
+
+**Frontend (`dienstplan_frontend/src/`)**
+
+1. **Server-Tabellen-Logik (Suche/Debounce/Sortierung/Pagination/Bulk-Auswahl) fünffach separat**:
+   `AbsenceOverview.jsx`, `TradeRequestOverview.jsx`, `TimeRecordOverview.jsx` (zweimal intern,
+   "confirm" und "missing"), `EmployeeSettings.jsx`, `TimeTemplateSettings.jsx` implementieren
+   je ihr eigenes Debounce-`useEffect`, Ordering-Toggle, Page-State, `emptyPage`-Konstante und
+   Pager-Markup. Gemeinsamer Hook `useServerTable({ fetcher, deps })`, der Debounce, Ordering,
+   Page-Reset, Loading/Data-State und Pager-Berechnung kapselt.
+2. **`loadPage()` + `useEffect` doppelt denselben Request**: in `AbsenceOverview.jsx:80-115`,
+   `TradeRequestOverview.jsx:59-80`, zweimal in `TimeRecordOverview.jsx:122-189` steht derselbe
+   `api.searchX(...)`-Aufruf wortwörtlich zweimal (einmal als `loadPage()` fürs Neuladen nach
+   einer Aktion, einmal inline im datenabhängigen Effekt) -- muss synchron gehalten werden. Löst
+   sich mit Punkt 1: `useServerTable` liefert ein stabiles `reload()`.
+3. **`fieldError(key)`-Helper wortidentisch dreifach**: `EmployeeSettings.jsx:495-498`,
+   `PregnancyEditor.jsx:66-69`, `TenantSettings.jsx:209-212`, dazu dasselbe
+   `catch (e) { if (e.fields...) setFieldErrors(e.fields); }`-Muster, das `SignupForm.jsx:18,
+   59-113` ein viertes Mal manuell ausschreibt. `useFieldErrors()`-Hook
+   (`{fieldErrors, setFromApiError, clearField, FieldError}`).
+4. **`employeeName(id)`/`nodeName(id)`-Lookup fünf- bzw. dreifach separat**: identische
+   `find`/`Map.get`+Fallback-Logik in `AbsencePanel.jsx:72-75`, `Dashboard.jsx:91-94`,
+   `TimeRecordOverview.jsx:205-208,210-212`, `TimeRecordPanel.jsx:84-87`,
+   `TradeRequestPanel.jsx:64-67`, `MembershipAccessSettings.jsx:136`,
+   `TimeTemplateSettings.jsx:191`. Neue `lookups.js`-Utility (Muster existiert schon für
+   `chipGlyph.js`/`timeRecordSegments.js`).
+5. **Datums-/Kalenderfunktionen komplett dupliziert**: `pad`, `daysInMonth`, `isoDate`,
+   `addDays`, `groupConsecutiveDates`, `WEEKDAYS_SHORT` sind in `PlanGrid.jsx:83-129` und
+   `YearPlan.jsx:8-71` wortgleich vorhanden -- ein Kommentar in `PlanGrid.jsx:107-108` verweist
+   sogar explizit auf "gleiches Muster wie YearPlan.jsx", ohne dass je extrahiert wurde. Neue
+   `dateUtils.js` mit allen sieben Funktionen/Konstanten.
+6. **`MONTH_NAMES`/`STATUS_LABELS` dupliziert UND dabei inkonsistent**: `MONTH_NAMES` identisch
+   in `YearPlan.jsx:9-12`/`MonthlySummaryPanel.jsx:4-7`. Absenz-`STATUS_LABELS` identisch in
+   `AbsenceOverview.jsx:16-20`/`AbsencePanel.jsx:5-9` ("Genehmigt"), aber in `YearPlan.jsx:14`
+   mit denselben Keys kleingeschrieben ("genehmigt") -- eine echte UI-Inkonsistenz, nicht nur
+   Codeduplikation. Trade-Request-`STATUS_LABELS` identisch in
+   `TradeRequestOverview.jsx:13-20`/`TradeRequestPanel.jsx:5-12`. Zentrale `labels.js`.
+7. **`PlanGrid.jsx` ist ein 1350-Zeilen-Monolith mit 15+ Verantwortlichkeiten** (Zeile 147-1504,
+   34 `useState`/`useEffect`-Hooks in einer Funktion): Drag&Drop, Wunschdienst-Editor
+   (`:471-494`), Ist-Zeit-Erfassung (`:495-528`), Absenz-Handling (`:566-989`), Sonderdienste
+   (`:589-615`), Schicht-Verschieben (`:990-1027`), Wochenmuster-Kopieren (`:1028-1145`), Export
+   (`:1146-1157`), Tauschangebot (`:1158+`) -- alles in einer Komponente. Grösster Hebel im
+   Frontend: mind. `usePlanGridAssignments`-Hook für die CRUD-Handler + separate
+   Unterkomponenten für Wunschdienst-Popover/Ist-Zeit-Modal/Wochenmuster-Kopieren.
+8. **`YearPlan.jsx` (915 Zeilen) und `EmployeeSettings.jsx` (997 Zeilen) ebenfalls faktisch
+   unaufgeteilte Monolithen**: `YearPlan.jsx:73`ff ist eine einzige Exportfunktion
+   (Kalendergitter + Absenz-Gruppierung + Platzierungslogik zusammen).
+   `EmployeeSettings.jsx:126`ff vereint Tabellen-Liste, Formular (Stammdaten+Anstellung+Zugang),
+   CSV-Import und Deaktivieren/Reaktivieren. `EmployeeSettings` in `EmployeeTable` +
+   `EmployeeForm` aufteilen (deckt sich mit Punkt 1), `YearPlan`-Zellenrendering in eigene
+   Zellen-Komponente auslagern.
+9. **Fetch/Loading/Error-Boilerplate ohne gemeinsamen Hook in 17 Dateien**: das
+   `useState(loading)`+`useEffect`+`.then/.catch/.finally`-Muster (teils mit `cancelled`-Flag,
+   teils ohne -- uneinheitlich) einzeln u. a. in `AbsenceTypeSettings.jsx:29-40`,
+   `BillingSettings.jsx`, `Dashboard.jsx`, `MembershipAccessSettings.jsx`, `PayrollSettings.jsx`,
+   `PregnancyEditor.jsx`, `TenantSettings.jsx` (2×), `SettingsPanel.jsx:109-124`. Einfacher
+   `useApiData(fetcher, deps)`-Hook, der Loading/Error/Cancel einmal kapselt.
+10. **api.js: Blob-Download-Muster dreifach kopiert**: `downloadEmployeeCsvTemplate`
+    (`:282-297`), `downloadPayrollExportCsv` (`:529-544`), `downloadPlanExport` (`:549-564`)
+    wiederholen wortgleich Token holen → fetchen → Blob → `<a>`-Element bauen/klicken/entfernen
+    → `revokeObjectURL`. Gemeinsamer privater Helper `downloadFile(url, filename)`.
+11. **api.js: `searchX({...})`-Query-Builder fünffach mit identischem Gerüst**:
+    `searchEmployees` (`:198-221`), `searchTimeTemplates` (`:305-314`), `searchAbsences`
+    (`:379-388`), `searchShiftTradeRequests` (`:412-421`), `searchTimeRecords`/
+    `getMissingTimeRecords` (`:460-500`) bauen alle `new URLSearchParams()` +
+    `if (x) params.set(...)` manuell nach. Kleiner Helper `buildQuery(params)`, der leere/
+    undefined Werte automatisch überspringt -- ansonsten ist `api.js` bereits ordentlich
+    generisch gehalten, hier keine grösseren Probleme gefunden.
+12. **`emptyPage`-Konstante identisch dreifach definiert**: `{ count: 0, next: null,
+    previous: null, results: [] }` wortgleich in `AbsenceOverview.jsx:22`,
+    `TimeRecordOverview.jsx:23`, `TradeRequestOverview.jsx:22`. Löst sich mit Punkt 1 (Default-
+    State wandert in den `useServerTable`-Hook).
+13. **`onError`-Prop wird bis zu 3 Ebenen tief durchgereicht statt über Context**: `App.jsx`
+    reicht `onError` unverändert an 9 Top-Level-Panels weiter, jedes davon weiter an
+    Unterformulare (z. B. `SettingsPanel.jsx:177-203` an 10 Module) -- nur `App.jsx:74,299-306`
+    rendert den globalen Fehlerbanner tatsächlich. Kein funktionaler Bug, niedrige Priorität,
+    aber ein `ErrorContext`/`useError()`-Hook würde das Prop-Drilling auflösen.
+
+Methodik-Hinweis: die Funde stammen aus zwei unabhängigen Code-Audits (je ein Recherche-Agent
+für Backend/Frontend, 2026-08) gegen den damaligen Stand von `claude/deutsch-understanding-m7kmam`
+-- beide Audits bestätigen ausdrücklich, dass die Codebase bereits mehrere gute gemeinsame
+Abstraktionen hat (`TenantScopedManager`, `TenantScopedAdminMixin`, `pop_m2m_fields`/
+`set_m2m_fields`, `_employee_scoped_node_ids`, `chipGlyph.js`/`timeRecordSegments.js`) -- die
+Funde oben sind die konkreten Lücken in einer sonst konsistenten Architektur, kein Zeichen
+grundsätzlicher Unordnung. Kein toter Code/keine ungenutzten Importe von Bedeutung gefunden.

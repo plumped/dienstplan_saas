@@ -10,7 +10,12 @@ from core.billing_views import (
     stripe_webhook,
 )
 from core.views import ChangePasswordView, MeView, SignupView, TenantHolidaysView, TenantView
-from scheduling.views import PayrollExportView, PlanExportView, UnderstaffedShiftsView
+from scheduling.views import (
+    EmployeeDataExportView,
+    PayrollExportView,
+    PlanExportView,
+    UnderstaffedShiftsView,
+)
 
 urlpatterns = [
     # Muss VOR 'admin/' stehen: admin.site.urls fängt sonst alles unter
@@ -22,6 +27,9 @@ urlpatterns = [
     path('api/', include('core.urls')),
     path('api/me/', MeView.as_view()),
     path('api/me/change-password/', ChangePasswordView.as_view()),
+    # README Block 5 (Datenschutz & Rechtliches): Auskunftsrecht/Datenherausgabe, siehe
+    # EmployeeDataExportView-Docstring.
+    path('api/me/data-export/', EmployeeDataExportView.as_view()),
     path('api/tenant/', TenantView.as_view()),
     path('api/tenant/holidays/', TenantHolidaysView.as_view()),
     # README Punkt 21 (Dashboard): einziger neuer Endpoint für das

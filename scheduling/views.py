@@ -2004,3 +2004,81 @@ class PlanExportView(TenantScopedAPIMixin, APIView):
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="plan-export-{year}-{month:02d}.pdf"'
         return response
+
+
+class EmployeeDataExportView(TenantScopedAPIMixin, APIView):
+    """
+    README Block 5 (Datenschutz & Rechtliches, revDSG): Umsetzung des Auskunftsrechts
+    (Art. 25 revDSG) und des Rechts auf Datenherausgabe/-übertragung (Art. 28 revDSG) --
+    liefert ALLE personenbezogenen Daten des eingeloggten Users als JSON. Ausschliesslich
+    Selbstauskunft (request.user, keine Query-Parameter für eine andere Person) -- anders als
+    PayrollExportView (Admin-only, alle Mitarbeitenden) ist das hier für JEDE Rolle offen, weil
+    jede Person ein Recht auf Auskunft über die eigenen Daten hat, unabhängig von ihrer Rolle im
+    Tenant.
+
+    Reine Selbstauskunft, kein CSV-Modus wie bei Payroll-/Plan-Export -- der Zweck ist "meine
+    eigenen Daten einsehen/mitnehmen", nicht "Daten an ein externes System übergeben", JSON allein
+    genügt dafür (Frontend löst den Datei-Download client-seitig über denselben Blob-Mechanismus
+    wie downloadPayrollExportCsv/downloadPlanExport aus, siehe api.js).
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        membership = request.membership
+        user = request.user
+
+        employee = None
+        if membership:
+            employee = Employee.all_objects.filter(tenant=membership.tenant, user=user).first()
+
+        data = {
+            "exported_at": timezone.now().isoformat(),
+            "account": {
+                "username": user.username,
+                "first_name": user.first_name,
+                "last_name": user.last_name,
+                "email": user.email,
+                "date_joined": user.date_joined.isoformat() if user.date_joined else None,
+            },
+            "membership": (
+                {"role": membership.role, "tenant_name": membership.tenant.name} if membership else None
+            ),
+            "employee": None,
+            "absences": [],
+            "shift_assignments": [],
+            "time_records": [],
+            "shift_preferences": [],
+            "pregnancies": [],
+        }
+
+        if employee is not None:
+            data["employee"] = {
+                "first_name": employee.first_name,
+                "last_name": employee.last_name,
+                "birth_date": employee.birth_date.isoformat() if employee.birth_date else None,
+                "employment_pct": employee.employment_pct,
+                "employment_start_date": employee.employment_start_date.isoformat(),
+                "termination_date": (
+                    employee.termination_date.isoformat() if employee.termination_date else None
+                ),
+                "nodes": [n.name for n in employee.nodes.all()],
+                "skills": [s.name for s in employee.skills.all()],
+            }
+            data["absences"] = AbsenceSerializer(
+                Absence.all_objects.filter(employee=employee), many=True
+            ).data
+            data["shift_assignments"] = ShiftAssignmentSerializer(
+                ShiftAssignment.all_objects.filter(employee=employee), many=True
+            ).data
+            data["time_records"] = TimeRecordSerializer(
+                TimeRecord.all_objects.filter(assignment__employee=employee), many=True
+            ).data
+            data["shift_preferences"] = ShiftPreferenceSerializer(
+                ShiftPreference.all_objects.filter(employee=employee), many=True
+            ).data
+            data["pregnancies"] = PregnancySerializer(
+                Pregnancy.all_objects.filter(employee=employee), many=True
+            ).data
+
+        return Response(data)

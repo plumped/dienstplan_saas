@@ -4814,6 +4814,101 @@ class PurgeExpiredPersonalDataCommandTests(TestCase):
         self.assertEqual(pregnancy_history_notes, {""})
 
 
+class EmployeeDataExportViewTests(APITestCase):
+    """
+    README Block 5 (Datenschutz & Rechtliches, revDSG): GET /api/me/data-export/ --
+    Umsetzung des Auskunftsrechts (Art. 25 revDSG). Siehe EmployeeDataExportView-Docstring.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-export")
+        self.node = make_station(self.tenant, "Station A")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst", start_time=time(7, 0), end_time=time(15, 0)
+        )
+        self.user = User.objects.create_user(username="self-export", password="pw-not-real-123!")
+        Membership.objects.create(user=self.user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100, user=self.user
+        )
+        self.employee.nodes.add(self.node)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_requires_authentication(self):
+        response = self.client.get("/api/me/data-export/")
+        self.assertIn(response.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
+
+    def test_returns_own_account_and_employee_data(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        TimeRecord.objects.create(
+            tenant=self.tenant, assignment=assignment, actual_start=time(7, 0), actual_end=time(15, 0)
+        )
+        absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            type=absence_type,
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 5),
+        )
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.employee, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        Pregnancy.objects.create(
+            tenant=self.tenant, employee=self.employee, expected_birth_date=date(2027, 1, 1), notes="vertraulich"
+        )
+
+        self.auth_as(self.user)
+        response = self.client.get("/api/me/data-export/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["account"]["username"], "self-export")
+        self.assertEqual(response.data["employee"]["first_name"], "Peter")
+        self.assertEqual(len(response.data["absences"]), 1)
+        self.assertEqual(len(response.data["shift_assignments"]), 1)
+        self.assertEqual(len(response.data["time_records"]), 1)
+        self.assertEqual(len(response.data["shift_preferences"]), 1)
+        self.assertEqual(len(response.data["pregnancies"]), 1)
+        self.assertEqual(response.data["pregnancies"][0]["notes"], "vertraulich")
+
+    def test_does_not_leak_other_employees_data(self):
+        other_user = User.objects.create_user(username="other-export", password="pw-not-real-123!")
+        Membership.objects.create(user=other_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        other_employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Rosa", last_name="Fernandez", employment_pct=100, user=other_user
+        )
+        absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=other_employee,
+            type=absence_type,
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 5),
+        )
+
+        self.auth_as(self.user)
+        response = self.client.get("/api/me/data-export/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["absences"], [])
+        self.assertEqual(response.data["employee"]["first_name"], "Peter")
+
+    def test_works_without_employee_profile(self):
+        # Konto ohne Mitarbeiterprofil (README Punkt 22) -- employee bleibt None,
+        # kein Fehler.
+        admin_user = User.objects.create_user(username="admin-only-export", password="pw-not-real-123!")
+        Membership.objects.create(user=admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+        self.auth_as(admin_user)
+        response = self.client.get("/api/me/data-export/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["employee"])
+        self.assertEqual(response.data["absences"], [])
+
+
 class EmployeeSkillsM2MTests(APITestCase):
     """
     Bugfix: Employee.skills (ManyToManyField) darf nie direkt per

@@ -514,13 +514,15 @@ main {
   color: var(--ink-muted);
 }
 
-.login-card input {
+.login-card input,
+.login-card select {
   font-family: var(--font-body);
   font-size: 14px;
   padding: 9px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--ink);
+  background: var(--surface);
 }
 
 .login-card button[type="submit"] {

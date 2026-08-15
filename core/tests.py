@@ -133,6 +133,67 @@ class TenantContextCleanupMiddlewareTests(TestCase):
         with self.assertRaises(RuntimeError):
             middleware(request)
 
+
+class TenantScopedAPIMixinCrossTenantTests(APITestCase):
+    """
+    Regressionstest für README Block 10 Punkt #1 (initial()-Dedup):
+    core.views.TenantScopedAPIMixin-Endpunkte hatten bisher -- anders als
+    die TenantScopedViewSet-Endpunkte (siehe scheduling.tests.
+    CrossTenantIsolationTests) -- keinen eigenen Cross-Tenant-
+    Isolationstest. Vor dem initial()-Dedup ergänzt, damit die Testsuite
+    den Refactor tatsächlich absichert, statt sich nur auf die (bereits
+    für TenantScopedViewSet vorhandene) Coverage zu verlassen.
+    """
+
+    def setUp(self):
+        self.tenant_a = Tenant.objects.create(name="Klinik A", slug="klinik-a-mixin", canton="ZH")
+        self.tenant_b = Tenant.objects.create(name="Klinik B", slug="klinik-b-mixin", canton="BE")
+
+        self.admin_a = User.objects.create_user(username="admin_a_mixin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_a, tenant=self.tenant_a, role=Membership.Role.ADMIN)
+        self.admin_b = User.objects.create_user(username="admin_b_mixin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_b, tenant=self.tenant_b, role=Membership.Role.ADMIN)
+
+        self.override_a = TenantHolidayOverride.objects.create(
+            tenant=self.tenant_a,
+            date=date(2026, 5, 1),
+            kind=TenantHolidayOverride.Kind.ADD,
+            name="Firmenfest A",
+        )
+        self.override_b = TenantHolidayOverride.objects.create(
+            tenant=self.tenant_b,
+            date=date(2026, 6, 1),
+            kind=TenantHolidayOverride.Kind.ADD,
+            name="Firmenfest B",
+        )
+
+        token_a, _ = Token.objects.get_or_create(user=self.admin_a)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token_a.key}")
+
+    def test_tenant_view_returns_only_own_tenant(self):
+        response = self.client.get("/api/tenant/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["name"], "Klinik A")
+        self.assertEqual(response.data["canton"], "ZH")
+
+    def test_tenant_holiday_override_list_scoped_to_own_tenant(self):
+        response = self.client.get("/api/tenant-holiday-overrides/")
+        self.assertEqual(response.status_code, 200)
+        ids = {row["id"] for row in response.data["results"]}
+        self.assertIn(self.override_a.id, ids)
+        self.assertNotIn(self.override_b.id, ids)
+
+    def test_tenant_holiday_override_retrieve_of_foreign_tenant_is_404(self):
+        response = self.client.get(f"/api/tenant-holiday-overrides/{self.override_b.id}/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_membership_list_scoped_to_own_tenant(self):
+        response = self.client.get("/api/memberships/")
+        self.assertEqual(response.status_code, 200)
+        usernames = {row["username"] for row in response.data["results"]}
+        self.assertIn("admin_a_mixin", usernames)
+        self.assertNotIn("admin_b_mixin", usernames)
+
         self.assertIsNone(get_current_tenant())
 
 

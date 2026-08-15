@@ -1,4 +1,5 @@
 from datetime import date, time, timedelta
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core import mail
@@ -14,6 +15,7 @@ from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
+from core.context import get_current_tenant
 from core.models import Membership, Tenant
 
 from .models import (
@@ -259,6 +261,89 @@ class CrossTenantIsolationTests(TwoTenantFixtureMixin, APITestCase):
             {"requester_assignment": assignment_a.id, "target_employee": self.employee_b.id},
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class TenantScopedAPIMixinCrossTenantTests(TwoTenantFixtureMixin, APITestCase):
+    """
+    Regressionstest für README Block 10 Punkt #1 (initial()-Dedup): die drei
+    scheduling-Views, die core.views.TenantScopedAPIMixin statt
+    scheduling.views.TenantScopedViewSet nutzen (UnderstaffedShiftsView,
+    PayrollExportView, PlanExportView), hatten bisher keinen eigenen
+    Cross-Tenant-Isolationstest -- anders als die TenantScopedViewSet-
+    Endpunkte oben (CrossTenantIsolationTests). Vor dem initial()-Dedup
+    ergänzt, damit die Suite den Refactor tatsächlich absichert.
+    """
+
+    def test_understaffed_shifts_only_reports_own_tenant(self):
+        template_a = TimeTemplate.objects.create(
+            tenant=self.tenant_a,
+            node=self.node_a,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=2,
+        )
+        TimeTemplate.objects.create(
+            tenant=self.tenant_b,
+            node=self.node_b,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=2,
+        )
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        node_ids = {entry["node_id"] for entry in response.data["shortfalls"]}
+        self.assertNotIn(self.node_b.id, node_ids)
+
+    def test_payroll_export_only_reports_own_tenant_employees(self):
+        Membership.objects.filter(user=self.user_a).update(role=Membership.Role.ADMIN)
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/payroll-export/?month=2026-08")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = {e["employee_name"] for e in response.data["employees"]}
+        self.assertNotIn(f"{self.employee_b.first_name} {self.employee_b.last_name}", names)
+
+    def test_plan_export_rejects_foreign_tenant_node(self):
+        self.auth_as(self.user_a)
+        response = self.client.get(f"/api/plan-export/?node={self.node_b.id}&month=2026-08")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class TenantScopedViewSetContextVarTests(TwoTenantFixtureMixin, APITestCase):
+    """
+    Regressionstest für README Block 10 Punkt #1: TenantScopedViewSet.initial()
+    ruft set_current_tenant() auf (zweite Verteidigungslinie für
+    TenantScopedManager, core.models) -- bisher nur auf Manager-/Middleware-
+    Ebene getestet (core.tests.TenantScopedManagerTests), nie über einen
+    echten API-Request. Node.effective_cost_center() nutzt intern
+    get_ancestors() (treebeard, fragt über Node.objects -- den ContextVar-
+    gefilterten Manager -- ab, nicht über die explizite request.tenant-
+    Filterung von get_queryset()) und wird für jeden Node in der
+    /api/nodes/-Response aufgerufen (siehe NodeSerializer.
+    get_effective_cost_center) -- ideal, um zu prüfen, dass get_current_tenant()
+    während eines echten Requests bereits den korrekten Wert liefert. Ein
+    versehentlich entferntes set_current_tenant() in initial() würde diesen
+    Test zum Scheitern bringen, obwohl get_queryset() selbst (die erste,
+    explizite Verteidigungslinie) davon unberührt bliebe.
+    """
+
+    def test_context_var_reflects_request_tenant_during_live_request(self):
+        self.auth_as(self.user_a)
+        seen_tenants = []
+        original = Node.effective_cost_center
+
+        def spy(self_node):
+            seen_tenants.append(get_current_tenant())
+            return original(self_node)
+
+        with mock.patch.object(Node, "effective_cost_center", spy):
+            response = self.client.get("/api/nodes/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(seen_tenants)
+        self.assertTrue(all(t == self.tenant_a for t in seen_tenants))
 
 
 class RuleEngineTests(TestCase):

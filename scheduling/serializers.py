@@ -106,6 +106,44 @@ def build_instance_for_clean(serializer, attrs, model_cls, fields, set_tenant=Fa
     return instance
 
 
+class NestedWritableSerializerMixin:
+    """
+    create()/update() für einen ModelSerializer mit genau einem "Kind-Liste
+    vollständig ersetzen"-Nested-Feld (z. B. employments/segments) --
+    dasselbe Gerüst (M2M-Felder poppen, Nested-Feld poppen,
+    Objekt anlegen/aktualisieren, M2M setzen, bei vorhandenen Daten
+    synchronisieren) war zuvor in EmployeeSerializer/TimeTemplateSerializer/
+    TimeRecordSerializer dreifach dupliziert. Erwartet auf der Subklasse:
+    `_nested_field` (Name des Feldes in validated_data) und
+    `_sync_nested(instance, nested_data)` (die model-eigene Sync-Logik,
+    z. B. bestehende Kinder löschen + per bulk_create neu anlegen).
+    """
+
+    _nested_field = None
+
+    def create(self, validated_data):
+        model = self.Meta.model
+        validated_data, m2m_data = pop_m2m_fields(model, validated_data)
+        nested_data = validated_data.pop(self._nested_field, None)
+        instance = model.objects.create(**validated_data)
+        set_m2m_fields(instance, m2m_data)
+        if nested_data:
+            self._sync_nested(instance, nested_data)
+        return instance
+
+    def update(self, instance, validated_data):
+        model = self.Meta.model
+        validated_data, m2m_data = pop_m2m_fields(model, validated_data)
+        nested_data = validated_data.pop(self._nested_field, None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        set_m2m_fields(instance, m2m_data)
+        if nested_data is not None:
+            self._sync_nested(instance, nested_data)
+        return instance
+
+
 class NodeSerializer(serializers.ModelSerializer):
     # Bewusst kein PrimaryKeyRelatedField(queryset=Node.objects...): der
     # TenantScopedManager würde die Queryset-Filterung beim Laden dieses
@@ -150,7 +188,7 @@ class EmploymentSerializer(serializers.ModelSerializer):
     aus demselben Grund wie NodeSerializer.parent: der
     TenantScopedManager-Queryset würde sonst zur Modul-Importzeit
     eingefroren. Die Tenant-/Existenz-Prüfung passiert explizit in
-    EmployeeSerializer._sync_employments.
+    EmployeeSerializer._sync_nested.
     """
 
     node = serializers.IntegerField(source="node_id")
@@ -161,9 +199,9 @@ class EmploymentSerializer(serializers.ModelSerializer):
         read_only_fields = ["id"]
 
 
-class EmployeeSerializer(serializers.ModelSerializer):
+class EmployeeSerializer(NestedWritableSerializerMixin, serializers.ModelSerializer):
     # README Punkt 17: Team-Mitgliedschaft läuft jetzt ausschliesslich über
-    # employments (siehe _sync_employments) -- nodes wird daraus serverseitig
+    # employments (siehe _sync_nested) -- nodes wird daraus serverseitig
     # abgeleitet und ist nur noch lesbar, damit es genau einen Änderungsweg
     # gibt (kein Auseinanderlaufen zwischen employee.nodes und den
     # tatsächlichen Employment-Zeilen).
@@ -257,37 +295,15 @@ class EmployeeSerializer(serializers.ModelSerializer):
         membership = self._membership(obj)
         return list(membership.scoped_nodes.values_list("id", flat=True)) if membership else []
 
-    def create(self, validated_data):
-        # Bugfix: `skills` (ManyToManyField) darf nicht als Konstruktor-Kwarg
-        # an Employee.objects.create() durchgereicht werden -- siehe
-        # pop_m2m_fields()-Docstring oben. `nodes` ist zwar ebenfalls M2M,
-        # aber oben read_only deklariert und taucht daher nie in
-        # validated_data auf; pop_m2m_fields() findet trotzdem nur, was
-        # tatsächlich vorhanden ist.
-        validated_data, m2m_data = pop_m2m_fields(Employee, validated_data)
-        employments_data = validated_data.pop("employments", None)
-        instance = Employee.objects.create(**validated_data)
-        set_m2m_fields(instance, m2m_data)
-        if employments_data:
-            self._sync_employments(instance, employments_data)
-        return instance
+    # Bugfix: `skills` (ManyToManyField) darf nicht als Konstruktor-Kwarg an
+    # Employee.objects.create() durchgereicht werden -- siehe
+    # pop_m2m_fields()-Docstring oben. `nodes` ist zwar ebenfalls M2M, aber
+    # oben read_only deklariert und taucht daher nie in validated_data auf;
+    # pop_m2m_fields() findet trotzdem nur, was tatsächlich vorhanden ist.
+    # create()/update() kommen von NestedWritableSerializerMixin.
+    _nested_field = "employments"
 
-    def update(self, instance, validated_data):
-        # Bugfix: dieselbe setattr()-Schleife wie unten würde für `skills`
-        # mit "TypeError: Direct assignment to the forward side of a
-        # many-to-many set is prohibited" abbrechen -- siehe
-        # pop_m2m_fields()-Docstring oben.
-        validated_data, m2m_data = pop_m2m_fields(Employee, validated_data)
-        employments_data = validated_data.pop("employments", None)
-        for field, value in validated_data.items():
-            setattr(instance, field, value)
-        instance.save()
-        set_m2m_fields(instance, m2m_data)
-        if employments_data is not None:
-            self._sync_employments(instance, employments_data)
-        return instance
-
-    def _sync_employments(self, instance, employments_data):
+    def _sync_nested(self, instance, employments_data):
         tenant = self.context["request"].tenant
         node_ids = [e["node_id"] for e in employments_data]
         valid_node_ids = set(
@@ -488,7 +504,7 @@ class TimeTemplateSegmentSerializer(serializers.ModelSerializer):
         extra_kwargs = {"order": {"required": False}}
 
 
-class TimeTemplateSerializer(serializers.ModelSerializer):
+class TimeTemplateSerializer(NestedWritableSerializerMixin, serializers.ModelSerializer):
     # Block 1.12: optionale Blockstruktur (z. B. Vormittag/Nachmittag mit
     # fixer Mittagspause dazwischen). Ein Template ohne Segmente verhält
     # sich weiterhin wie bisher (ein Zeitfenster + break_minutes pauschal,
@@ -525,32 +541,15 @@ class TimeTemplateSerializer(serializers.ModelSerializer):
                 )
         return value
 
-    def create(self, validated_data):
-        # TimeTemplate hat aktuell kein ManyToManyField -- pop_m2m_fields()
-        # ist hier ein No-Op, hält das Muster aber konsistent mit
-        # EmployeeSerializer und schützt automatisch, falls hier je ein
-        # M2M-Feld ergänzt wird (siehe pop_m2m_fields()-Docstring oben).
-        validated_data, m2m_data = pop_m2m_fields(TimeTemplate, validated_data)
-        segments_data = validated_data.pop("segments", None)
-        instance = TimeTemplate.objects.create(**validated_data)
-        set_m2m_fields(instance, m2m_data)
-        if segments_data:
-            self._sync_segments(instance, segments_data)
-        return instance
-
-    def update(self, instance, validated_data):
-        validated_data, m2m_data = pop_m2m_fields(TimeTemplate, validated_data)
-        segments_data = validated_data.pop("segments", None)
-        for field, value in validated_data.items():
-            setattr(instance, field, value)
-        instance.save()
-        set_m2m_fields(instance, m2m_data)
-        if segments_data is not None:
-            self._sync_segments(instance, segments_data)
-        return instance
+    # TimeTemplate hat aktuell kein ManyToManyField -- pop_m2m_fields() (in
+    # NestedWritableSerializerMixin.create()/update()) ist hier ein No-Op,
+    # hält das Muster aber konsistent mit EmployeeSerializer und schützt
+    # automatisch, falls hier je ein M2M-Feld ergänzt wird (siehe
+    # pop_m2m_fields()-Docstring oben).
+    _nested_field = "segments"
 
     @staticmethod
-    def _sync_segments(instance, segments_data):
+    def _sync_nested(instance, segments_data):
         instance.segments.all().delete()
         TimeTemplateSegment.objects.bulk_create(
             TimeTemplateSegment(
@@ -772,7 +771,7 @@ class TimeRecordSegmentSerializer(serializers.ModelSerializer):
         extra_kwargs = {"order": {"required": False}}
 
 
-class TimeRecordSerializer(serializers.ModelSerializer):
+class TimeRecordSerializer(NestedWritableSerializerMixin, serializers.ModelSerializer):
     # Informativ, berechnet aus assignment.template -- siehe TimeRecord-Docstring.
     deviation_minutes = serializers.IntegerField(read_only=True)
     end_deviation_minutes = serializers.IntegerField(read_only=True)
@@ -861,31 +860,13 @@ class TimeRecordSerializer(serializers.ModelSerializer):
         instance.clean()
         return attrs
 
-    def create(self, validated_data):
-        # TimeRecord hat aktuell kein ManyToManyField -- siehe Kommentar in
-        # TimeTemplateSerializer.create() für die Begründung, warum das
-        # Muster trotzdem konsistent angewendet wird.
-        validated_data, m2m_data = pop_m2m_fields(TimeRecord, validated_data)
-        segments_data = validated_data.pop("segments", None)
-        instance = TimeRecord.objects.create(**validated_data)
-        set_m2m_fields(instance, m2m_data)
-        if segments_data:
-            self._sync_segments(instance, segments_data)
-        return instance
-
-    def update(self, instance, validated_data):
-        validated_data, m2m_data = pop_m2m_fields(TimeRecord, validated_data)
-        segments_data = validated_data.pop("segments", None)
-        for field, value in validated_data.items():
-            setattr(instance, field, value)
-        instance.save()
-        set_m2m_fields(instance, m2m_data)
-        if segments_data is not None:
-            self._sync_segments(instance, segments_data)
-        return instance
+    # TimeRecord hat aktuell kein ManyToManyField -- siehe Kommentar in
+    # TimeTemplateSerializer für die Begründung, warum das Muster trotzdem
+    # konsistent angewendet wird.
+    _nested_field = "segments"
 
     @staticmethod
-    def _sync_segments(instance, segments_data):
+    def _sync_nested(instance, segments_data):
         instance.segments.all().delete()
         TimeRecordSegment.objects.bulk_create(
             TimeRecordSegment(

@@ -1627,7 +1627,7 @@ class Employment(TenantScopedModel):
     ShiftAssignments, unabhängig vom Node) -- Employment trägt nur
     Team-Zugehörigkeit + Anzeige-Metadaten (Pensum pro Team, Rollentitel,
     Teamleitung). Employee.nodes wird serverseitig aus den
-    Employment-Zeilen abgeleitet (siehe EmployeeSerializer._sync_employments),
+    Employment-Zeilen abgeleitet (siehe EmployeeSerializer._sync_nested),
     damit es nur einen Änderungsweg für Team-Mitgliedschaft gibt.
 
     Bewusst kein zweites Anstellungsverhältnis am selben Node (unique_together)

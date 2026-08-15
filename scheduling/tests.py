@@ -3943,7 +3943,7 @@ class EmployeeSerializerEmploymentSyncTests(APITestCase):
     """
     README Punkt 17: employments ist der einzige Änderungsweg für
     Employee.nodes (nodes selbst ist über die API nur noch lesbar) -- siehe
-    EmployeeSerializer._sync_employments.
+    EmployeeSerializer._sync_nested.
     """
 
     def setUp(self):

@@ -3485,12 +3485,13 @@ Abarbeitungszwang.
    set_tenant=False)`, alle fünf `validate()`-Methoden nutzen ihn jetzt -- ruft bewusst NICHT
    selbst `instance.clean()` auf, damit Aufrufer mit zusätzlicher Logik vor/nach dem Clean
    (Status-Vorbelegung, Unique-Check) das weiterhin selbst steuern.
-9. **Nested-Child-Sync-create()/update()-Paar dreifach dupliziert**: `EmployeeSerializer`
-   (employments), `TimeTemplateSerializer` (segments), `TimeRecordSerializer` (segments) in
-   `scheduling/serializers.py:237-288,507-543,847-882` implementieren praktisch identische
-   create()/update()-Logik (m2m-Felder poppen, Nested-Liste poppen, Objekt anlegen/aktualisieren,
-   `_sync_*`-Helper aufrufen). Generischer `NestedWritableSerializerMixin` mit
-   austauschbarem "Child bauen"-Callable.
+9. ✅ **Nested-Child-Sync-create()/update()-Paar dreifach dupliziert**: `EmployeeSerializer`
+   (employments), `TimeTemplateSerializer` (segments), `TimeRecordSerializer` (segments)
+   implementierten praktisch identische create()/update()-Logik (m2m-Felder poppen, Nested-Liste
+   poppen, Objekt anlegen/aktualisieren, `_sync_*`-Helper aufrufen). Behoben durch
+   `NestedWritableSerializerMixin` (create()/update() generisch über `self.Meta.model` +
+   `_nested_field`), alle drei Serializer nutzen ihn jetzt und definieren nur noch
+   `_nested_field` + `_sync_nested(instance, nested_data)` mit ihrer model-eigenen Sync-Logik.
 10. ✅ **`save_formset` byte-identisch dupliziert**: `TimeTemplateAdmin.save_formset` und
     `TimeRecordAdmin.save_formset` (`scheduling/admin.py`) waren wortgleich (Tenant auf
     Inline-Instanzen stempeln). Behoben durch Verschieben nach `TenantScopedAdminMixin`

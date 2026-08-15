@@ -87,7 +87,7 @@ function toFormValues(employee) {
     // README Punkt 17: employments statt nodes -- siehe EmploymentEditor.jsx.
     // node/pensum_pct/title/is_team_lead werden 1:1 aus der API übernommen,
     // die id lassen wir bewusst weg (wird beim Speichern ohnehin komplett
-    // ersetzt, siehe EmployeeSerializer._sync_employments).
+    // ersetzt, siehe EmployeeSerializer._sync_nested).
     employments: employee.employments.map((e) => ({
       node: e.node,
       pensum_pct: e.pensum_pct,

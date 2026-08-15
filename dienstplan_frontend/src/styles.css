@@ -7,6 +7,23 @@
   --primary-soft: #e4efee;
   --warn: #c2542c;
   --warn-soft: #fbe9e2;
+  /* Semantische Status-Farben (README Block 9 Punkt 2, 2026-08): vorher
+     an ~10 Stellen als roher Hex-Wert einzeln wiederholt (v. a.
+     .status-badge--*-Modifier) statt über ein gemeinsames Token-Set --
+     künftige neue Status sollen diese Tokens wiederverwenden statt sich
+     eine eigene Farbe auszusuchen. --warn/--warn-soft (oben) decken den
+     "negativ/abgelehnt"-Fall bereits konsistent ab, hier nur die bisher
+     nicht tokenisierten Fälle ergänzt.
+     --status-positive: erfolgreich abgeschlossen/angenommen/aktiv (z. B.
+     Diensttausch angenommen, Abo aktiv, Wunschfrei gesetzt).
+     --status-progress: wartet auf einen weiteren Schritt, aber (noch)
+     nicht abgelehnt (z. B. von Mitarbeiter angenommen/wartet auf
+     Planer-Freigabe, Abo in der Testphase). */
+  --status-positive: #2e7d32;
+  --status-positive-soft: #e3f3e6;
+  --status-progress: #a15c00;
+  --status-progress-soft: #fff4e0;
+  --status-neutral-soft: #eee;
   --border: #dde3e0;
   --radius: 8px;
   --font-display: "Space Grotesk", system-ui, sans-serif;
@@ -2158,7 +2175,7 @@ thead .col-employee {
 }
 
 .time-deviation-badge.is-positive {
-  color: #2e7d32;
+  color: var(--status-positive);
 }
 
 .time-deviation-badge.is-negative {
@@ -2254,7 +2271,7 @@ thead .col-employee {
 }
 
 .entry-feedback .is-positive {
-  color: #2e7d32;
+  color: var(--status-positive);
   font-weight: 700;
 }
 
@@ -2286,19 +2303,19 @@ thead .col-employee {
 }
 
 .status-badge--employee_accepted {
-  background: #fff4e0;
-  color: #a15c00;
+  background: var(--status-progress-soft);
+  color: var(--status-progress);
 }
 
 .status-badge--accepted,
 .status-badge--approved {
-  background: #e3f3e6;
-  color: #2e7d32;
+  background: var(--status-positive-soft);
+  color: var(--status-positive);
 }
 
 .status-badge--declined,
 .status-badge--cancelled {
-  background: #eee;
+  background: var(--status-neutral-soft);
   color: var(--ink-muted);
 }
 
@@ -2313,21 +2330,21 @@ thead .col-employee {
 }
 
 .status-badge--confirmed {
-  background: #e3f3e6;
-  color: #2e7d32;
+  background: var(--status-positive-soft);
+  color: var(--status-positive);
 }
 
 /* README Block 6: Abrechnungsstatus -- dieselbe Farbsprache wie die
    Absenz-/Diensttausch-Status oben, eigene Modifier-Namen statt die
    bestehenden zweckzuentfremden. */
 .status-badge--active {
-  background: #e3f3e6;
-  color: #2e7d32;
+  background: var(--status-positive-soft);
+  color: var(--status-positive);
 }
 
 .status-badge--trialing {
-  background: #fff4e0;
-  color: #a15c00;
+  background: var(--status-progress-soft);
+  color: var(--status-progress);
 }
 
 .status-badge--past_due,
@@ -2337,7 +2354,7 @@ thead .col-employee {
 }
 
 .status-badge--canceled {
-  background: #eee;
+  background: var(--status-neutral-soft);
   color: var(--ink-muted);
 }
 
@@ -2537,8 +2554,8 @@ thead .col-employee {
 }
 
 .btn-record-time.is-confirmed {
-  color: #2e7d32;
-  box-shadow: 0 0 0 1px #2e7d32;
+  color: var(--status-positive);
+  box-shadow: 0 0 0 1px var(--status-positive);
 }
 
 .time-record-popover {
@@ -2578,8 +2595,8 @@ thead .col-employee {
 }
 
 .btn-wish.is-set.is-wunschfrei {
-  color: #2e7d32;
-  box-shadow: 0 0 0 1px #2e7d32;
+  color: var(--status-positive);
+  box-shadow: 0 0 0 1px var(--status-positive);
 }
 
 .btn-wish.is-set.is-wunschdienst {
@@ -3122,7 +3139,7 @@ thead .col-employee {
 }
 
 .year-day-wish-dot.is-wunschfrei {
-  background: #2e7d32;
+  background: var(--status-positive);
 }
 
 .year-day-wish-dot.is-wunschdienst {
@@ -3286,7 +3303,7 @@ thead .col-employee {
 }
 
 .landing-hero h1 {
-  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-family: var(--font-display);
   font-size: clamp(32px, 4.2vw, 50px);
   line-height: 1.16;
   letter-spacing: -0.01em;
@@ -3444,7 +3461,7 @@ thead .col-employee {
 }
 
 .landing-stat-value {
-  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-family: var(--font-display);
   font-size: 32px;
   font-weight: 500;
   color: var(--ink);
@@ -3548,7 +3565,7 @@ thead .col-employee {
 }
 
 .landing-showcase-copy h2 {
-  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-family: var(--font-display);
   font-weight: 500;
   font-size: clamp(22px, 2.6vw, 28px);
   letter-spacing: -0.01em;
@@ -3640,7 +3657,7 @@ thead .col-employee {
 }
 
 .landing-checklist h2 {
-  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-family: var(--font-display);
   font-weight: 500;
   font-size: clamp(20px, 2.4vw, 24px);
   letter-spacing: -0.01em;
@@ -3699,7 +3716,7 @@ thead .col-employee {
 }
 
 .landing-cta-band-inner h2 {
-  font-family: ui-serif, Georgia, "Times New Roman", serif;
+  font-family: var(--font-display);
   font-weight: 500;
   font-size: clamp(22px, 3vw, 30px);
   letter-spacing: -0.01em;

@@ -3500,10 +3500,14 @@ Abarbeitungszwang.
     `ShiftTradeRequest` sowie `approve()`/`reject()` auf `Absence` ergänzen, damit jede
     Statustransition demselben "Model besitzt die Transition, View ruft nur auf"-Muster folgt
     (überschneidet sich mit Punkt 3).
-12. **`EmployeeViewSet` als "God Class" (~520 Zeilen, 14+ Actions)**: `scheduling/views.py:
-    360-882` mischt CRUD, CSV-Import/-Export, Zugangsverwaltung (`setup_access`/`deactivate`/
-    `reactivate`) und 7 reine Reporting-Actions in einer Klasse. In `EmployeeReportingViewSet`/
-    -Mixin und eine Zugangsverwaltungs-Mixin aufteilen, CRUD+CSV-Import bleibt im Kern.
+12. ✅ **`EmployeeViewSet` als "God Class" (~520 Zeilen, 14+ Actions)**: mischte CRUD,
+    CSV-Import/-Export, Zugangsverwaltung (`setup_access`/`deactivate`/`reactivate`) und
+    7 reine Reporting-Actions in einer Klasse. Behoben durch Aufteilung in
+    `EmployeeReportingMixin` (Saldo/Fairness/Nacht-/Sonntagsarbeit/Lohnfortzahlung/
+    Monatsauswertung/Gleitzeit-Abrechnung) und `EmployeeAccessManagementMixin`
+    (`setup_access`/`deactivate`/`reactivate`) -- `EmployeeViewSet` selbst enthält nur noch
+    CRUD + CSV-Import und erbt von beiden Mixins. DRF sammelt `@action`-Methoden über die
+    komplette MRO ein, URLs/Verhalten bleiben identisch.
 13. ✅ **`PayrollExportView.get()` mischte vier Verantwortlichkeiten in ~110 Zeilen**:
     Monats-Parsing (bereits durch Punkt 4 gelöst), Mapping-Lookups, Pro-Mitarbeiter-Zeilenbau,
     CSV/JSON-Verzweigung inline. Behoben durch `_build_category_lookup`/`_build_employee_lines`-

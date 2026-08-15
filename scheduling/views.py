@@ -449,50 +449,17 @@ class SkillViewSet(TenantScopedViewSet):
     serializer_class = SkillSerializer
 
 
-class EmployeeViewSet(TenantScopedViewSet):
+class EmployeeReportingMixin:
     """
-    Stammdatenpflege (Nutzer-Feedback 2026-08): bei mehreren hundert
-    Mitarbeitenden skaliert "alles laden und im Frontend filtern" nicht mehr
-    -- Suche/Sortierung/Filterung laufen deshalb serverseitig, mit der
-    normalen DRF-Pagination (PAGE_SIZE=50) als Ergebnis. Andere Stellen der
-    App (Planblatt, Absenzen, Diensttausch, Dashboard), die weiterhin den
-    KOMPLETTEN Mitarbeiterbestand brauchen, rufen unverändert `GET /api/
-    employees/` ohne diese Parameter auf und paginieren clientseitig durch
-    (api.getEmployees()/requestAllPages) -- dieser Endpoint bleibt also für
-    beide Nutzungsarten kompatibel, nur die neue Stammdaten-Tabelle
-    (EmployeeSettings.jsx) nutzt `?search=`/`?ordering=`/`?node=`/
-    `?is_active=` aktiv.
+    Reine Selbstauskunfts-/Reporting-Actions von EmployeeViewSet (Saldo,
+    Fairness, Nacht-/Sonntagsarbeit, Lohnfortzahlung, Monatsauswertung,
+    Gleitzeit-Abrechnung) -- ausgelagert, damit EmployeeViewSet nicht CRUD,
+    Reporting UND Zugangsverwaltung in einer Klasse vereint (README Block
+    10, Code-Polishing: "EmployeeViewSet als God Class"). Reine
+    Struktur-Massnahme, keine Verhaltensänderung -- DRF sammelt
+    `@action`-Methoden über die komplette MRO einer ViewSet-Klasse ein,
+    unabhängig davon, in welcher Basisklasse sie stehen.
     """
-
-    permission_classes = [permissions.IsAuthenticated, IsTenantManager]
-    queryset = Employee.all_objects.all()
-    serializer_class = EmployeeSerializer
-    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["first_name", "last_name"]
-    ordering_fields = ["last_name", "first_name", "employment_pct", "is_active", "employment_start_date"]
-    ordering = ["last_name", "first_name"]
-
-    def get_queryset(self):
-        qs = super().get_queryset()
-        node_id = self.request.query_params.get("node")
-        if node_id:
-            qs = qs.filter(nodes__id=node_id)
-        is_active = self.request.query_params.get("is_active")
-        if is_active is not None:
-            qs = qs.filter(is_active=is_active.lower() in ("1", "true", "yes"))
-        return qs.distinct()
-
-    def perform_create(self, serializer):
-        # Abrechnung (README Block 6, 2026-08): jede neu angelegte aktive
-        # Mitarbeitende zählt sofort in Stripes Abo-Menge mit -- das
-        # Trial-Limit selbst wird bereits in EmployeeSerializer.validate()
-        # geprüft (Fehler kommt also nie hier an), sync_subscription_quantity
-        # ist ausserhalb der Trial-Phase (kein stripe_subscription_id) ein
-        # No-Op.
-        super().perform_create(serializer)
-        from core.billing import sync_subscription_quantity
-
-        sync_subscription_quantity(self.request.tenant)
 
     @action(detail=True, methods=["get"], url_path="weekly-overtime")
     def weekly_overtime(self, request, pk=None):
@@ -682,6 +649,14 @@ class EmployeeViewSet(TenantScopedViewSet):
             raise ValidationError(str(exc))
         return Response(MonthlySummarySerializer(employee.monthly_summary(year, month)).data)
 
+
+class EmployeeAccessManagementMixin:
+    """
+    Login-Zugang für eine bestehende Employee einrichten/deaktivieren/
+    reaktivieren -- ausgelagert aus EmployeeViewSet, siehe
+    EmployeeReportingMixin-Docstring (README Block 10, Code-Polishing).
+    """
+
     @action(detail=True, methods=["post"], url_path="setup-access")
     def setup_access(self, request, pk=None):
         """
@@ -805,6 +780,56 @@ class EmployeeViewSet(TenantScopedViewSet):
 
         serializer = self.get_serializer(employee)
         return Response(serializer.data)
+
+
+class EmployeeViewSet(EmployeeReportingMixin, EmployeeAccessManagementMixin, TenantScopedViewSet):
+    """
+    Stammdatenpflege (Nutzer-Feedback 2026-08): bei mehreren hundert
+    Mitarbeitenden skaliert "alles laden und im Frontend filtern" nicht mehr
+    -- Suche/Sortierung/Filterung laufen deshalb serverseitig, mit der
+    normalen DRF-Pagination (PAGE_SIZE=50) als Ergebnis. Andere Stellen der
+    App (Planblatt, Absenzen, Diensttausch, Dashboard), die weiterhin den
+    KOMPLETTEN Mitarbeiterbestand brauchen, rufen unverändert `GET /api/
+    employees/` ohne diese Parameter auf und paginieren clientseitig durch
+    (api.getEmployees()/requestAllPages) -- dieser Endpoint bleibt also für
+    beide Nutzungsarten kompatibel, nur die neue Stammdaten-Tabelle
+    (EmployeeSettings.jsx) nutzt `?search=`/`?ordering=`/`?node=`/
+    `?is_active=` aktiv.
+
+    CRUD + CSV-Import bleiben hier im Kern, Reporting-Actions und
+    Zugangsverwaltung stecken in EmployeeReportingMixin/
+    EmployeeAccessManagementMixin (README Block 10, Code-Polishing).
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsTenantManager]
+    queryset = Employee.all_objects.all()
+    serializer_class = EmployeeSerializer
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["first_name", "last_name"]
+    ordering_fields = ["last_name", "first_name", "employment_pct", "is_active", "employment_start_date"]
+    ordering = ["last_name", "first_name"]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        node_id = self.request.query_params.get("node")
+        if node_id:
+            qs = qs.filter(nodes__id=node_id)
+        is_active = self.request.query_params.get("is_active")
+        if is_active is not None:
+            qs = qs.filter(is_active=is_active.lower() in ("1", "true", "yes"))
+        return qs.distinct()
+
+    def perform_create(self, serializer):
+        # Abrechnung (README Block 6, 2026-08): jede neu angelegte aktive
+        # Mitarbeitende zählt sofort in Stripes Abo-Menge mit -- das
+        # Trial-Limit selbst wird bereits in EmployeeSerializer.validate()
+        # geprüft (Fehler kommt also nie hier an), sync_subscription_quantity
+        # ist ausserhalb der Trial-Phase (kein stripe_subscription_id) ein
+        # No-Op.
+        super().perform_create(serializer)
+        from core.billing import sync_subscription_quantity
+
+        sync_subscription_quantity(self.request.tenant)
 
     @action(detail=False, methods=["post"], url_path="import-csv")
     def import_csv(self, request):

@@ -3447,10 +3447,10 @@ Abarbeitungszwang.
    Membership-/Tenant-Auflösung, `check_permissions`/`check_throttles`). Gemeinsame Helper-Funktion
    in `core/tenancy.py` extrahieren, parametrisiert nach optionalem `employee_profile`/
    `set_current_tenant`/`enforce_billing_access`.
-2. **Stripe-Statusmapping-Dict verdoppelt**: identisches 7-Einträge-Dict in
+2. ✅ **Stripe-Statusmapping-Dict verdoppelt**: identisches 7-Einträge-Dict in
    `core/billing.py:282-290` (`handle_webhook_event`) und
-   `core/management/commands/sync_stripe_subscriptions.py:60-68`. Als Modul-Konstante
-   `core.billing.STRIPE_STATUS_MAP` einmal definieren, im Management-Command importieren.
+   `core/management/commands/sync_stripe_subscriptions.py:60-68`. Behoben durch
+   `core.billing.stripe_status_to_subscription_status()`, von beiden Stellen genutzt.
 3. **`DjangoValidationError`→DRF-`ValidationError`-Übersetzung sechsfach kopiert**: exakt dieselbe
    Zeile in `scheduling/views.py:1088,1183,1363,1374,1385,1485`. Helper-Funktion oder Decorator
    (z. B. `core.views.raise_as_drf_validation_error`) einführen.
@@ -3460,15 +3460,16 @@ Abarbeitungszwang.
    settle_overtime` (`scheduling/views.py:420-643`) sowie identisch zwischen
    `PayrollExportView.get` (`:1641-1650`) und `PlanExportView.get` (`:1841-1847`). Utility-Funktionen
    `parse_date_param`/`parse_year_month_param` extrahieren.
-5. **`has_permission`-Rumpf dreifach identisch**: `OwnEmployeeRecordPermission`,
+5. ✅ **`has_permission`-Rumpf dreifach identisch**: `OwnEmployeeRecordPermission`,
    `ShiftTradeRequestPermission`, `TimeRecordPermission` in `core/permissions.py:78-84,116-122,
-   154-160` haben denselben Methodenkörper. Gemeinsame Basisklasse (z. B.
-   `ManagerOrEmployeeWritePermission`), die drei subclassen nur noch `has_object_permission`.
-6. **Statusvergleich gegen rohe String-Literale statt Model-Enum**:
+   154-160` haben denselben Methodenkörper. Behoben durch
+   `_ManagerOrEmployeeCanWriteMixin`, alle drei subclassen jetzt nur noch
+   `has_object_permission`.
+6. ✅ **Statusvergleich gegen rohe String-Literale statt Model-Enum**:
    `OwnEmployeeRecordPermission.has_object_permission`/`TimeRecordPermission.has_object_permission`
    (`core/permissions.py:97,173`) vergleichen `obj.status` gegen `"pending"`/`"submitted"` samt
-   erklärendem Kommentar statt `Absence.Status.PENDING`/`TimeRecord.Status.SUBMITTED` zu
-   importieren und direkt zu nutzen.
+   erklärendem Kommentar. Behoben: `obj.status == obj.Status.PENDING`/
+   `obj.Status.SUBMITTED` (kein Zusatzimport nötig, `obj` ist bereits die Model-Instanz).
 7. **`username`-Eindeutigkeitsvalidator dreifach kopiert**: identische Prüfung + Fehlermeldung
    "Dieser Benutzername ist bereits vergeben." in `core/serializers.py:140-143` (
    `MembershipCreateSerializer`), `:183-186` (`SignupSerializer`),
@@ -3518,11 +3519,11 @@ Abarbeitungszwang.
     `if node_ids is not None: qs = qs.filter(...)`. Der zentrale Helper selbst ist bereits sauber
     (`_employee_scoped_node_ids` ist EIN gemeinsamer Ort) -- nur das Wiring drumherum ist
     dupliziert. Kleiner `apply_node_scope(qs, node_ids, field_lookup)`-Helper, niedrige Priorität.
-16. **CSV-Export-Boilerplate dreifach dupliziert**: `EmployeeViewSet.import_csv_template`
+16. ✅ **CSV-Export-Boilerplate dreifach dupliziert**: `EmployeeViewSet.import_csv_template`
     (`scheduling/views.py:875-877`), `PayrollExportView._csv_response` (`:1752-1754`) und
     `PlanExportView._csv_response` (`:1914-1916`) bauen je separat `HttpResponse(content_type=
-    "text/csv")` + `Content-Disposition`-Header + `csv.writer(response)`. Ein gemeinsamer
-    `csv_response(filename) -> (response, writer)`-Helper würde alle drei Stellen ersetzen.
+    "text/csv")` + `Content-Disposition`-Header + `csv.writer(response)`. Behoben durch
+    `scheduling.views.csv_response(filename) -> (response, writer)`, alle drei Stellen nutzen ihn.
 17. **`Employee`-Modell als "God Class"**: `scheduling/models.py:243-1515` (~1270 Zeilen,
     29 Methoden) vereint Alters-/Jugendschutz, Mutterschutz, Wochenstunden, Nachtarbeit,
     Fairness-Punkte, Zeitkonto/-saldo, Ferien, Lohnfortzahlung, Monatszusammenfassung und

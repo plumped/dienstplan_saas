@@ -3455,12 +3455,13 @@ Abarbeitungszwang.
    dieselbe Zeile in `scheduling/views.py:1088,1183,1363,1374,1385,1485`. Behoben durch den
    Context-Manager `scheduling.views.translate_model_validation_error()`, alle sechs Stellen
    nutzen ihn jetzt statt eigenem try/except.
-4. **Query-Param-Parsing (Datum/Jahr/Monat) 8+ fach dupliziert**: `try: date.fromisoformat(...)`/
-   `int(...)` + `except ValueError: raise ValidationError(...)` wiederholt sich über
-   `EmployeeViewSet.weekly_overtime/night_work/fairness/balance/sick_pay/monthly_summary/
-   settle_overtime` (`scheduling/views.py:420-643`) sowie identisch zwischen
-   `PayrollExportView.get` (`:1641-1650`) und `PlanExportView.get` (`:1841-1847`). Utility-Funktionen
-   `parse_date_param`/`parse_year_month_param` extrahieren.
+4. ✅ **Query-Param-Parsing (Datum/Jahr/Monat) 8+ fach dupliziert**: `try: date.fromisoformat(...)`/
+   `int(...)` + `except ValueError: raise ValidationError(...)` wiederholte sich über
+   `EmployeeViewSet.weekly_overtime/night_work/fairness/balance/sick_pay/monthly_summary`
+   sowie identisch zwischen `PayrollExportView.get` und `PlanExportView.get`. Behoben durch
+   `scheduling.views.parse_date_param()`/`parse_int_param()`/`parse_year_month_param()`, alle
+   Stellen nutzen sie jetzt (Ausnahme: `settle_overtime` liest aus dem POST-Body statt
+   Query-Params und bleibt bewusst unangetastet -- anderes Muster, keine Duplikation).
 5. ✅ **`has_permission`-Rumpf dreifach identisch**: `OwnEmployeeRecordPermission`,
    `ShiftTradeRequestPermission`, `TimeRecordPermission` in `core/permissions.py:78-84,116-122,
    154-160` haben denselben Methodenkörper. Behoben durch

@@ -98,6 +98,55 @@ def translate_model_validation_error():
         raise ValidationError(e.message_dict if hasattr(e, "message_dict") else e.messages) from e
 
 
+def parse_date_param(request, param_name, default=None):
+    """
+    Optionaler `?<param_name>=YYYY-MM-DD`-Query-Param, ISO-geparst -- vorher
+    an mehreren Actions (weekly_overtime/fairness/balance/sick_pay)
+    identisch als try/except date.fromisoformat wiederholt.
+    """
+    value = request.query_params.get(param_name)
+    if not value:
+        return default
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise ValidationError({param_name: "Ungültiges Datum, erwartet YYYY-MM-DD."})
+
+
+def parse_int_param(request, param_name, default=None, error_message="Ungültiger Wert."):
+    """
+    Optionaler `?<param_name>=<int>`-Query-Param -- vorher an mehreren
+    Actions (night_work/balance/monthly_summary) identisch als try/except
+    int(...) wiederholt.
+    """
+    value = request.query_params.get(param_name)
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        raise ValidationError({param_name: error_message})
+
+
+def parse_year_month_param(request, param_name="month"):
+    """
+    Pflicht-`?<param_name>=YYYY-MM`-Query-Param, liefert `(year, month)` --
+    vorher in PayrollExportView.get und PlanExportView.get identisch
+    dupliziert.
+    """
+    value = request.query_params.get(param_name)
+    if not value:
+        raise ValidationError({param_name: "Pflichtfeld, erwartet YYYY-MM."})
+    try:
+        year_str, month_str = value.split("-")
+        year, month = int(year_str), int(month_str)
+        if not 1 <= month <= 12:
+            raise ValueError
+    except ValueError:
+        raise ValidationError({param_name: "Ungültiges Format, erwartet YYYY-MM."})
+    return year, month
+
+
 def csv_response(filename):
     """
     Baut ein leeres CSV-HttpResponse samt Writer -- gemeinsamer Helper für
@@ -442,14 +491,7 @@ class EmployeeViewSet(TenantScopedViewSet):
         betroffenen Mitarbeiter selbst.
         """
         employee = self.get_object()
-        week_param = request.query_params.get("week")
-        if week_param:
-            try:
-                reference_date = date.fromisoformat(week_param)
-            except ValueError:
-                raise ValidationError({"week": "Ungültiges Datum, erwartet YYYY-MM-DD."})
-        else:
-            reference_date = timezone.localdate()
+        reference_date = parse_date_param(request, "week", default=timezone.localdate())
         summary = employee.weekly_hours_summary(reference_date)
         return Response(WeeklyOvertimeSerializer(summary).data)
 
@@ -463,14 +505,9 @@ class EmployeeViewSet(TenantScopedViewSet):
         weekly_overtime/balance für alle Rollen offen.
         """
         employee = self.get_object()
-        year_param = request.query_params.get("year")
-        if year_param:
-            try:
-                year = int(year_param)
-            except ValueError:
-                raise ValidationError({"year": "Ungültiges Jahr."})
-        else:
-            year = timezone.localdate().year
+        year = parse_int_param(
+            request, "year", default=timezone.localdate().year, error_message="Ungültiges Jahr."
+        )
         summary = employee.night_work_summary(year)
         return Response(NightWorkSummarySerializer(summary).data)
 
@@ -483,14 +520,7 @@ class EmployeeViewSet(TenantScopedViewSet):
         balance/night-work für alle Rollen offen.
         """
         employee = self.get_object()
-        as_of_param = request.query_params.get("as_of")
-        if as_of_param:
-            try:
-                reference_date = date.fromisoformat(as_of_param)
-            except ValueError:
-                raise ValidationError({"as_of": "Ungültiges Datum, erwartet YYYY-MM-DD."})
-        else:
-            reference_date = timezone.localdate()
+        reference_date = parse_date_param(request, "as_of", default=timezone.localdate())
         summary = employee.fairness_summary(reference_date)
         return Response(FairnessSummarySerializer(summary).data)
 
@@ -507,24 +537,8 @@ class EmployeeViewSet(TenantScopedViewSet):
         Ansicht auch für andere Mitarbeitende sehen können.
         """
         employee = self.get_object()
-        as_of_param = request.query_params.get("as_of")
-        if as_of_param:
-            try:
-                as_of_date = date.fromisoformat(as_of_param)
-            except ValueError:
-                raise ValidationError({"as_of": "Ungültiges Datum, erwartet YYYY-MM-DD."})
-        else:
-            as_of_date = timezone.localdate()
-
-        year_param = request.query_params.get("year")
-        if year_param:
-            try:
-                year = int(year_param)
-            except ValueError:
-                raise ValidationError({"year": "Ungültiges Jahr."})
-        else:
-            year = as_of_date.year
-
+        as_of_date = parse_date_param(request, "as_of", default=timezone.localdate())
+        year = parse_int_param(request, "year", default=as_of_date.year, error_message="Ungültiges Jahr.")
         data = self._balance_data(employee, as_of_date, year)
         return Response(EmployeeBalanceSerializer(data).data)
 
@@ -595,14 +609,7 @@ class EmployeeViewSet(TenantScopedViewSet):
         Mitarbeiter-Selbstauskunft, README Block 2.7).
         """
         employee = self.get_object()
-        as_of_param = request.query_params.get("as_of")
-        if as_of_param:
-            try:
-                as_of_date = date.fromisoformat(as_of_param)
-            except ValueError:
-                raise ValidationError({"as_of": "Ungültiges Datum, erwartet YYYY-MM-DD."})
-        else:
-            as_of_date = timezone.localdate()
+        as_of_date = parse_date_param(request, "as_of", default=timezone.localdate())
         summary = employee.sick_pay_summary(as_of_date)
         return Response(SickPaySummarySerializer(summary).data)
 
@@ -621,25 +628,11 @@ class EmployeeViewSet(TenantScopedViewSet):
         if request.membership.role not in (Membership.Role.ADMIN, Membership.Role.PLANNER):
             raise PermissionDenied("Nur Admin/Planer dürfen die Monatsauswertung einsehen.")
         employee = self.get_object()
-        year_param = request.query_params.get("year")
-        month_param = request.query_params.get("month")
         today = timezone.localdate()
-        if year_param:
-            try:
-                year = int(year_param)
-            except ValueError:
-                raise ValidationError({"year": "Ungültiges Jahr."})
-        else:
-            year = today.year
-        if month_param:
-            try:
-                month = int(month_param)
-            except ValueError:
-                raise ValidationError({"month": "Ungültiger Monat."})
-            if not 1 <= month <= 12:
-                raise ValidationError({"month": "Monat muss zwischen 1 und 12 liegen."})
-        else:
-            month = today.month
+        year = parse_int_param(request, "year", default=today.year, error_message="Ungültiges Jahr.")
+        month = parse_int_param(request, "month", default=today.month, error_message="Ungültiger Monat.")
+        if not 1 <= month <= 12:
+            raise ValidationError({"month": "Monat muss zwischen 1 und 12 liegen."})
         summary = employee.monthly_summary(year, month)
         return Response(MonthlySummarySerializer(summary).data)
 
@@ -1650,16 +1643,7 @@ class PayrollExportView(TenantScopedAPIMixin, APIView):
         if tenant is None:
             raise PermissionDenied("Kein aktiver Tenant.")
 
-        month_param = request.query_params.get("month")
-        if not month_param:
-            raise ValidationError({"month": "Pflichtfeld, erwartet YYYY-MM."})
-        try:
-            year_str, month_str = month_param.split("-")
-            year, month = int(year_str), int(month_str)
-            if not 1 <= month <= 12:
-                raise ValueError
-        except ValueError:
-            raise ValidationError({"month": "Ungültiges Format, erwartet YYYY-MM."})
+        year, month = parse_year_month_param(request)
 
         # Nutzer-Feedback (2026-08): "deaktivierte Kategorien gelten als
         # bewusst ausgeschlossen" -- eine Kategorie mit is_active=False hat
@@ -1845,16 +1829,7 @@ class PlanExportView(TenantScopedAPIMixin, APIView):
         node_param = request.query_params.get("node")
         if not node_param:
             raise ValidationError({"node": "Pflichtfeld."})
-        month_param = request.query_params.get("month")
-        if not month_param:
-            raise ValidationError({"month": "Pflichtfeld, erwartet YYYY-MM."})
-        try:
-            year_str, month_str = month_param.split("-")
-            year, month = int(year_str), int(month_str)
-            if not 1 <= month <= 12:
-                raise ValueError
-        except ValueError:
-            raise ValidationError({"month": "Ungültiges Format, erwartet YYYY-MM."})
+        year, month = parse_year_month_param(request)
 
         target = Node.all_objects.filter(tenant=tenant, pk=node_param).first()
         if target is None:

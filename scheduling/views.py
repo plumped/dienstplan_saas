@@ -42,6 +42,7 @@ from core.permissions import (
 from core.tenancy import apply_tenant_scoped_initial
 from core.views import TenantScopedAPIMixin
 
+from . import planning
 from .models import (
     Absence,
     AbsenceType,
@@ -2004,6 +2005,136 @@ class PlanExportView(TenantScopedAPIMixin, APIView):
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="plan-export-{year}-{month:02d}.pdf"'
         return response
+
+
+def _resolve_plan_scope(request, node_param):
+    """
+    Löst Tenant/Ziel-Node/Berechtigungs-Scope für einen Automatisierte-
+    Planung-Lauf auf -- identisches Muster wie PlanExportView.get()
+    (scope_ids = Station + direkte Team-Kinder, _employee_scoped_node_ids-
+    Schnittmengen-Check), gemeinsam genutzt von GeneratePlanView und
+    CommitPlanView.
+    """
+    tenant = request.tenant
+    if tenant is None:
+        raise PermissionDenied("Kein aktiver Tenant.")
+    if not node_param:
+        raise ValidationError({"node": "Pflichtfeld."})
+
+    target = Node.all_objects.filter(tenant=tenant, pk=node_param).first()
+    if target is None:
+        raise ValidationError({"node": "Unbekannte Station."})
+    scope_ids = [target.id] + [c.id for c in target.get_children()]
+
+    employee_profile = Employee.all_objects.filter(tenant=tenant, user=request.user).first()
+    allowed_ids = _employee_scoped_node_ids(request.membership, employee_profile)
+    if allowed_ids is not None and not (set(scope_ids) & set(allowed_ids)):
+        raise PermissionDenied("Keine Berechtigung für diese Station.")
+
+    return tenant, target, scope_ids
+
+
+class GeneratePlanView(TenantScopedAPIMixin, APIView):
+    """
+    README Block 2 Punkt 19 (Automatisierte Planung): erzeugt einen
+    CP-SAT-Entwurf für eine Station/einen Monat (scheduling.planning.
+    generate_draft_plan()) -- liest ausschliesslich, schreibt nichts
+    ("Vorschau statt Blindautomatik", siehe Modul-Docstring von
+    scheduling/planning.py). Antwort ist immer HTTP 200, auch bei
+    Unlösbarkeit -- ein unvollständiger Entwurf ist ein normales Ergebnis,
+    kein Fehler.
+
+    Admin/Planer-only wie PayrollExportView (kein Selbstauskunfts-
+    Endpoint, sondern stationsweite Massendaten über alle Mitarbeitenden).
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        membership = request.membership
+        if not membership or membership.role not in (Membership.Role.ADMIN, Membership.Role.PLANNER):
+            raise PermissionDenied("Nur Admin/Planer dürfen die automatisierte Planung starten.")
+
+        node_param = request.query_params.get("node")
+        year, month = parse_year_month_param(request)
+        tenant, target, scope_ids = _resolve_plan_scope(request, node_param)
+
+        result = planning.generate_draft_plan(tenant, scope_ids, year, month)
+
+        return Response(
+            {
+                "status": result.status,
+                "solver_status": result.solver_status,
+                "assignments": [
+                    {
+                        "employee_id": a.employee_id,
+                        "date": a.date.isoformat(),
+                        "template_id": a.template_id,
+                        "node_id": a.node_id,
+                    }
+                    for a in result.assignments
+                ],
+                "warnings": result.warnings,
+                "shortfalls": result.shortfalls,
+            }
+        )
+
+
+class CommitPlanView(TenantScopedAPIMixin, APIView):
+    """
+    README Block 2 Punkt 19: persistiert eine (vom Planer ggf. reduzierte)
+    Liste von Entwurfs-Zuweisungen aus GeneratePlanView --
+    scheduling.planning.commit_draft_assignments() validiert und speichert
+    jede Zeile einzeln (eigener Savepoint, siehe dessen Docstring), damit
+    eine einzelne zwischenzeitlich kollidierende Zeile nicht die ganze
+    Übernahme verhindert.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        membership = request.membership
+        if not membership or membership.role not in (Membership.Role.ADMIN, Membership.Role.PLANNER):
+            raise PermissionDenied("Nur Admin/Planer dürfen die automatisierte Planung übernehmen.")
+
+        node_param = request.data.get("node")
+        tenant, target, scope_ids = _resolve_plan_scope(request, node_param)
+
+        raw_assignments = request.data.get("assignments")
+        if not isinstance(raw_assignments, list):
+            raise ValidationError({"assignments": "Pflichtfeld, erwartet eine Liste."})
+
+        specs = []
+        for entry in raw_assignments:
+            try:
+                specs.append(
+                    {
+                        "employee_id": int(entry["employee_id"]),
+                        "node_id": int(entry["node_id"]),
+                        "date": date.fromisoformat(entry["date"]),
+                        "template_id": int(entry["template_id"]),
+                    }
+                )
+            except (KeyError, TypeError, ValueError):
+                raise ValidationError({"assignments": f"Ungültiger Eintrag: {entry!r}."})
+
+        created, skipped = planning.commit_draft_assignments(tenant, specs)
+
+        return Response(
+            {
+                "created": ShiftAssignmentSerializer(created, many=True).data,
+                "skipped": [
+                    {
+                        "employee_id": s["employee_id"],
+                        "node_id": s["node_id"],
+                        "date": s["date"].isoformat(),
+                        "template_id": s["template_id"],
+                        "error": s["error"],
+                    }
+                    for s in skipped
+                ],
+            }
+        )
 
 
 class EmployeeDataExportView(TenantScopedAPIMixin, APIView):

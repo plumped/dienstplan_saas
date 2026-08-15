@@ -5,11 +5,15 @@ sehr grossen scheduling/tests.py, analog core/tests_billing.py.
 """
 from datetime import date, time, timedelta
 
+from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
+from rest_framework import status
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APITestCase
 
-from core.models import Tenant
+from core.models import Membership, Tenant
 
 from .models import (
     Absence,
@@ -23,6 +27,8 @@ from .models import (
 )
 from .planning import commit_draft_assignments, generate_draft_plan
 from .tests import TwoTenantFixtureMixin, make_station
+
+User = get_user_model()
 
 
 class PlanningTestBase(TestCase):
@@ -549,3 +555,147 @@ class GeneratePlanCommandTests(PlanningTestBase):
     def test_missing_required_argument_raises_command_error(self):
         with self.assertRaises(CommandError):
             call_command("generate_plan", "--year", 2026, "--month", 9)
+
+
+class PlanGenerateAndCommitViewTests(APITestCase):
+    """
+    GeneratePlanView/CommitPlanView (README Block 2 Punkt 19) -- Rollen-/
+    Scope-Verhalten identisch zu PlanExportView (siehe dortige Tests),
+    Admin-ODER-Planer-Beschränkung wie PayrollExportView.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik Plan API", slug="klinik-plan-api")
+        self.node = make_station(self.tenant, "Station A")
+        self.other_node = make_station(self.tenant, "Station B")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst",
+            start_time=time(7, 0), end_time=time(15, 0), break_minutes=30, minimum_staffing=1,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee.nodes.add(self.node)
+
+        self.admin_user = User.objects.create_user(username="pg-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+        self.planner_user = User.objects.create_user(username="pg-planner", password="pw-not-real-123!")
+        planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        planner_membership.scoped_nodes.add(self.node)
+
+        self.outsider_planner_user = User.objects.create_user(
+            username="pg-outsider-planner", password="pw-not-real-123!"
+        )
+        outsider_membership = Membership.objects.create(
+            user=self.outsider_planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        outsider_membership.scoped_nodes.add(self.other_node)
+
+        self.employee_user = User.objects.create_user(username="pg-employee", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_employee_role_forbidden_to_generate(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get("/api/plan-generate/", {"node": self.node.id, "month": "2026-09"})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_planner_without_scope_forbidden_to_generate(self):
+        self.auth_as(self.outsider_planner_user)
+        response = self.client.get("/api/plan-generate/", {"node": self.node.id, "month": "2026-09"})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_missing_node_param_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-generate/", {"month": "2026-09"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_missing_month_param_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-generate/", {"node": self.node.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_generate_never_writes_to_db(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-generate/", {"node": self.node.id, "month": "2026-09"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "ok")
+        self.assertEqual(len(response.data["assignments"]), 30)
+        self.assertEqual(ShiftAssignment.objects.count(), 0)
+
+    def test_planner_with_scope_can_generate(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/plan-generate/", {"node": self.node.id, "month": "2026-09"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_commit_persists_returned_assignments(self):
+        self.auth_as(self.admin_user)
+        generated = self.client.get("/api/plan-generate/", {"node": self.node.id, "month": "2026-09"})
+        response = self.client.post(
+            "/api/plan-commit/",
+            {"node": self.node.id, "month": "2026-09", "assignments": generated.data["assignments"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["created"]), 30)
+        self.assertEqual(response.data["skipped"], [])
+        self.assertEqual(ShiftAssignment.objects.count(), 30)
+
+    def test_commit_skips_row_conflicting_with_concurrent_manual_entry(self):
+        self.auth_as(self.admin_user)
+        generated = self.client.get("/api/plan-generate/", {"node": self.node.id, "month": "2026-09"})
+        first = generated.data["assignments"][0]
+        # Simuliert eine zwischenzeitliche manuelle Stempelung genau dieser
+        # Zuweisung, bevor der Entwurf übernommen wird.
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee_id=first["employee_id"], node_id=first["node_id"],
+            date=date.fromisoformat(first["date"]), template_id=first["template_id"],
+        )
+        response = self.client.post(
+            "/api/plan-commit/",
+            {"node": self.node.id, "month": "2026-09", "assignments": generated.data["assignments"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["created"]), 29)
+        self.assertEqual(len(response.data["skipped"]), 1)
+
+    def test_commit_rejects_cross_tenant_employee_id_per_row(self):
+        other_tenant = Tenant.objects.create(name="Andere Klinik", slug="andere-klinik-plan-api")
+        other_employee = Employee.objects.create(
+            tenant=other_tenant, first_name="Fremd", last_name="X", employment_pct=100
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/plan-commit/",
+            {
+                "node": self.node.id,
+                "month": "2026-09",
+                "assignments": [
+                    {
+                        "employee_id": other_employee.id,
+                        "node_id": self.node.id,
+                        "date": "2026-09-01",
+                        "template_id": self.template.id,
+                    }
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["created"], [])
+        self.assertEqual(len(response.data["skipped"]), 1)
+        self.assertEqual(ShiftAssignment.objects.count(), 0)
+
+    def test_commit_employee_role_forbidden(self):
+        self.auth_as(self.employee_user)
+        response = self.client.post(
+            "/api/plan-commit/", {"node": self.node.id, "month": "2026-09", "assignments": []}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

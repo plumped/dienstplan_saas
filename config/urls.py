@@ -11,7 +11,9 @@ from core.billing_views import (
 )
 from core.views import ChangePasswordView, MeView, SignupView, TenantHolidaysView, TenantView
 from scheduling.views import (
+    CommitPlanView,
     EmployeeDataExportView,
+    GeneratePlanView,
     PayrollExportView,
     PlanExportView,
     UnderstaffedShiftsView,
@@ -43,6 +45,10 @@ urlpatterns = [
     path('api/payroll-export/', PayrollExportView.as_view()),
     # README Block 2 Punkt 5: Planblatt-Export (PDF/CSV), siehe PlanExportView-Docstring.
     path('api/plan-export/', PlanExportView.as_view()),
+    # README Block 2 Punkt 19: Automatisierte Planung (CP-SAT-Entwurf) + Übernahme,
+    # siehe scheduling/planning.py.
+    path('api/plan-generate/', GeneratePlanView.as_view()),
+    path('api/plan-commit/', CommitPlanView.as_view()),
     path('api/auth/token/', obtain_auth_token),
     # README Block 3: Self-Signup (Direkt-Registrierung ohne E-Mail-Versand),
     # siehe core.views.SignupView-Docstring -- neben obtain_auth_token der

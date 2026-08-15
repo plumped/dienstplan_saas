@@ -258,7 +258,7 @@ entstanden sind, nicht neu sortiert nach Status):
 | 2 | Kernfunktionen Praxisalltag | 31 von 32 Punkten erledigt | Automatisierte Planung (19) |
 | 3 | Onboarding & Self-Signup | ✅ Punkte 1-4 umgesetzt | Punkt 4: Setup-Wizard mit dem Direktanlage-Formular aus Block 2.1 verschmelzen statt separat zu lassen |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
-| 5 | Datenschutz (revDSG) & Rechtliches | nichts umgesetzt | kompletter Block (AVV, Löschkonzept, Betroffenenrechte) |
+| 5 | Datenschutz (revDSG) & Rechtliches | ✅ Punkte 1, 2, 3, 5 umgesetzt | Punkt 4: Hosting-Standort ist eine offene Infrastruktur-Entscheidung |
 | 6 | Abrechnung (nur falls kommerziell verkauft) | nichts umgesetzt | Zahlungsanbieter, Trial/Limits |
 | 7 | Zeitmanagement | ✅ vollständig umgesetzt | — |
 | 8 | Öffentliche/Partner-API für externe Integrationen (Lesen + Schreiben) | nichts umgesetzt | kompletter Block (scoped API-Credentials, Rate-Limiting, Idempotency, OpenAPI-Doku, Fehlerformat, Konflikt-sicheres Schreiben, Versionierung, Webhooks) |
@@ -3168,15 +3168,53 @@ Wechsel) -- der Setup-Wizard bietet an, die Beispieldaten zu löschen/ersetzen.
 
 ### 5. Datenschutz (revDSG) & Rechtliches
 
-1. **Auftragsverarbeitungsvertrag (AVV)**-Vorlage für Kund:innen, da Personendaten von
-   Mitarbeitenden (inkl. Krankheitsabsenzen — besondere Personendaten nach Art. 5 lit. c revDSG)
-   verarbeitet werden.
-2. **Datenschutzerklärung, AGB, Impressum**.
-3. **Löschkonzept/Aufbewahrungsfristen** klären (u. a. Lohnunterlagen: 10 Jahre nach OR 958f;
-   Absenz-/Krankheitsdaten deutlich kürzer aufbewahren).
-4. **Hosting-Standort** (Schweiz/EU) festlegen und dokumentieren — für Gesundheitsbetriebe oft
-   ein Verkaufsargument bzw. eine Kundenanforderung.
-5. **Betroffenenrechte** (Auskunft/Löschung/Berichtigung) technisch umsetzbar machen.
+✅ **Punkte 1, 2, 3, 5 umgesetzt (2026-08)**, orientiert am revDSG (in Kraft seit 1.9.2023) als
+primärer Rechtsgrundlage (Schweizer Anbieter, Schweizer Kundschaft), ergänzt um einen expliziten
+DSGVO-Hinweis für den Grenzfall EU-ansässiger Grenzgänger-Mitarbeitender (Art. 3 Abs. 2 DSGVO).
+**Wichtig: alle Rechtstexte (Punkt 1+2) sind als Entwurf gekennzeichnet und ersetzen keine
+anwaltliche Prüfung** — vor Live-Schaltung müssen sie von einer Fachperson geprüft und alle
+Platzhalter (Firmenname/Adresse/UID/Kontakt) mit echten Daten befüllt werden. Ein erfundenes
+Impressum wäre selbst ein Rechtsverstoss (Art. 3 UWG), deshalb wurden dort bewusst keine
+Firmendaten geraten.
+
+1. ✅ **Auftragsverarbeitungsvertrag (AVV)**-Vorlage: `docs/legal/avv-vorlage.md` — Gegenstand/
+   Dauer, Pflichten der Auftragsbearbeiterin (inkl. Meldepflicht bei Datenschutzverletzung binnen
+   72 Stunden, Art. 24 revDSG), Unterauftragsbearbeiter-Tabelle (Stripe konkret, Hosting/E-Mail als
+   Platzhalter da noch nicht produktiv), TOMs-Anhang (Art. 8 revDSG), Löschung/Rückgabe nach
+   Vertragsende, Signaturblock. Wird pro Kundschaft unterschrieben, nicht öffentlich angezeigt.
+2. ✅ **Datenschutzerklärung, AGB, Impressum**: `docs/legal/datenschutzerklaerung.md`,
+   `docs/legal/agb.md`, `docs/legal/impressum.md` — jeweils mit Artikel-Zitaten (Art. 5 lit. c, 6,
+   19-21, 25, 28, 32 revDSG etc.) und einer "Entwurf — keine Rechtsberatung"-Warnung. Im Frontend
+   als eigene Seiten (`LegalPrivacyPolicy.jsx`/`LegalTerms.jsx`/`LegalImprint.jsx`, gerendert über
+   den gemeinsamen `LegalPage.jsx`-Wrapper) über das bestehende Screen-State-Muster aus `App.jsx`
+   erreichbar, verlinkt im `LandingPage.jsx`-Footer. `SignupForm.jsx` verlangt seit diesem Schritt
+   eine Pflicht-Checkbox ("AGB akzeptiert/Datenschutzerklärung zur Kenntnis genommen").
+3. ✅ **Löschkonzept/Aufbewahrungsfristen**: `scheduling/management/commands/
+   purge_expired_personal_data.py` (analog `deactivate_expired_employees.py`, mit `--dry-run`).
+   Anonymisiert `Employee`-Datensätze 10 Jahre nach `termination_date` (Art. 958f OR) —
+   Name/Geburtsdatum werden überschrieben, der verknüpfte `User`-Account hart gelöscht,
+   `ShiftAssignment`/`TimeRecord` bleiben als Buchungsbeleg bestehen. Leert `Absence.note` (bei
+   `counts_as_sick_leave=True`) und `Pregnancy.notes` 2 Jahre nach dem jeweiligen Ereignis
+   (Verhältnismässigkeit, Art. 6 Abs. 2 revDSG). **Behandelt explizit auch die
+   `django-simple-history`-Zeilen dieser Modelle mit** (`Employee.history.filter(...).update(...)`
+   etc.) — ohne das wäre die Anonymisierung nur Fassade, da der Audit-Trail unabhängig vom
+   Live-Datensatz weiterbesteht und ihn sonst überleben würde. Kein automatischer Cron in diesem
+   Schritt (kein Scheduler im Projekt vorhanden); empfohlen wird ein monatlicher manueller/
+   Cron-Aufruf. Kein Self-Service-Hard-Delete durch Mitarbeitende selbst, da datenschutzrechtlich
+   der Tenant/Arbeitgeber Verantwortlicher ist (Art. 328b OR), nicht die einzelne Person —
+   Löschung/Berichtigung läuft über den bestehenden Admin/Planer-Weg (`deactivate`-Action,
+   Employee-Bearbeiten-Formular).
+4. **Offen** — **Hosting-Standort** (Schweiz/EU) ist eine reine Infrastruktur-Entscheidung, die
+   nicht im Rahmen dieses Schritts getroffen wurde (überschneidet sich mit Block 4/Postgres-
+   Umstieg). In der Datenschutzerklärung als `[Platzhalter]` vorgesehen (Abschnitt 10).
+5. ✅ **Betroffenenrechte technisch**: `GET /api/me/data-export/`
+   (`scheduling/views.py::EmployeeDataExportView`) liefert alle personenbezogenen Daten der
+   eingeloggten Person als JSON (Account, Employee-Profil, Absenzen, Zuweisungen, Zeiterfassung,
+   Wünsche, Schwangerschaften) — Umsetzung von Art. 25 revDSG (Auskunft) und Art. 28 revDSG
+   (Datenübertragbarkeit), rein self-scoped über `request.user`. Im Frontend als Button "Meine
+   Daten exportieren" in der Topbar (sichtbar für jede eingeloggte Person, nicht nur Admins),
+   lädt die JSON-Antwort per Blob-Download herunter (`api.downloadMyDataExport()`, gleiches Muster
+   wie der bestehende Lohn-/Plan-CSV-Export).
 
 ### 6. Abrechnung (falls kommerziell verkauft)
 

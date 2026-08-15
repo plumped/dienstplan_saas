@@ -188,7 +188,7 @@ class TenantScopedViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def initial(self, request, *args, **kwargs):
-        apply_tenant_scoped_initial(self, request, *args, bind_scheduling_context=True, **kwargs)
+        apply_tenant_scoped_initial(self, request, *args, resolve_employee_profile=True, **kwargs)
 
     def get_queryset(self):
         tenant = self.request.tenant

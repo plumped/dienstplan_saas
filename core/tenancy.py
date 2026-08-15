@@ -36,7 +36,7 @@ def resolve_tenant_for_user(user):
     return membership.tenant if membership else None
 
 
-def apply_tenant_scoped_initial(view, request, *args, bind_scheduling_context=False,
+def apply_tenant_scoped_initial(view, request, *args, resolve_employee_profile=False,
                                  enforce_billing=True, **kwargs):
     """
     Gemeinsame initial()-Logik aller drei tenant-gescopten Basisklassen
@@ -50,17 +50,28 @@ def apply_tenant_scoped_initial(view, request, *args, bind_scheduling_context=Fa
     (siehe Moduldocstring oben für den Token-Auth-Grund, warum das nicht per
     Middleware passiert).
 
-    bind_scheduling_context=True (nur TenantScopedViewSet) setzt zusätzlich
-    request.employee_profile und die Tenant-ContextVar (set_current_tenant,
-    zweite Verteidigungslinie für TenantScopedManager, siehe dessen
-    Docstring) -- lazy-importiert Employee, damit core weiterhin nichts von
-    scheduling auf Modulebene importiert (gleiches Muster wie
-    core.views._task_counts()).
+    set_current_tenant() (ContextVar, zweite Verteidigungslinie für
+    TenantScopedManager, siehe dessen Docstring) wird für ALLE drei
+    Basisklassen unbedingt aufgerufen -- Nutzer-Feedback (2026-08): vorher
+    nur bei TenantScopedViewSet gesetzt, was TenantScopedAPIMixin/
+    _TenantScopedNoBillingGateMixin-Endpunkte (TenantView, MembershipViewSet,
+    PayrollExportView, BillingStatusView, u. a.) ohne diese zweite
+    Absicherung liess, obwohl sie ausnahmslos ebenfalls tenant-gescopte
+    Modelle lesen. set_current_tenant importiert nur core.context (kein
+    scheduling-Import nötig, siehe core.context selbst), deshalb unproblematisch
+    auch für core-Views.
+
+    resolve_employee_profile=True (nur TenantScopedViewSet) setzt zusätzlich
+    request.employee_profile -- lazy-importiert Employee, damit core
+    weiterhin nichts von scheduling auf Modulebene importiert (gleiches
+    Muster wie core.views._task_counts()).
 
     enforce_billing=False (nur _TenantScopedNoBillingGateMixin) lässt
     enforce_billing_access() aus, damit sich ein gesperrter Tenant über die
     Billing-Views noch selbst freischalten kann.
     """
+    from core.context import set_current_tenant
+
     view.format_kwarg = view.get_format_suffix(**kwargs)
     neg = view.perform_content_negotiation(request)
     request.accepted_renderer, request.accepted_media_type = neg
@@ -72,15 +83,14 @@ def apply_tenant_scoped_initial(view, request, *args, bind_scheduling_context=Fa
     tenant = membership.tenant if membership else None
     request.tenant = tenant
     request.membership = membership
+    set_current_tenant(tenant)
 
-    if bind_scheduling_context:
-        from core.context import set_current_tenant
+    if resolve_employee_profile:
         from scheduling.models import Employee
 
         request.employee_profile = (
             Employee.all_objects.filter(tenant=tenant, user=request.user).first() if tenant else None
         )
-        set_current_tenant(tenant)
 
     view.check_permissions(request)
     view.check_throttles(request)

@@ -311,6 +311,54 @@ class TenantScopedAPIMixinCrossTenantTests(TwoTenantFixtureMixin, APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
+class TenantScopedAPIMixinContextVarTests(TwoTenantFixtureMixin, APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "fix das bitte das alles doppelt gesichert
+    ist" -- core.tenancy.apply_tenant_scoped_initial() ruft set_current_tenant()
+    inzwischen für ALLE drei Basisklassen auf, nicht mehr nur für
+    TenantScopedViewSet (siehe TenantScopedViewSetContextVarTests unten für
+    dasselbe Testmuster). PayrollExportView (nutzt TenantScopedAPIMixin) ruft
+    Employee.effective_cost_center() auf, das intern über Node.objects
+    (ContextVar-gefiltert) läuft -- ideal, um zu prüfen, dass die ContextVar
+    jetzt auch für diese Endpunkt-Familie während eines echten Requests
+    korrekt gesetzt ist.
+    """
+
+    def test_context_var_reflects_request_tenant_during_payroll_export(self):
+        # effective_cost_center() wird nur für Mitarbeitende mit tatsächlichen
+        # Lohn-Rohdaten-Zeilen aufgerufen (siehe PayrollExportView._build_employee_lines,
+        # "if lines:") -- deshalb hier eine Zuweisung + eine aktive
+        # PayrollCategoryMapping anlegen, damit employee_a im Export erscheint.
+        ShiftAssignment.objects.create(
+            tenant=self.tenant_a,
+            employee=self.employee_a,
+            node=self.node_a,
+            date=date(2026, 8, 3),
+            template=self.template_a,
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant_a,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        Membership.objects.filter(user=self.user_a).update(role=Membership.Role.ADMIN)
+        self.auth_as(self.user_a)
+        seen_tenants = []
+        original = Node.effective_cost_center
+
+        def spy(self_node):
+            seen_tenants.append(get_current_tenant())
+            return original(self_node)
+
+        with mock.patch.object(Node, "effective_cost_center", spy):
+            response = self.client.get("/api/payroll-export/?month=2026-08")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["employees"]), 1)
+        self.assertTrue(seen_tenants)
+        self.assertTrue(all(t == self.tenant_a for t in seen_tenants))
+
+
 class TenantScopedViewSetContextVarTests(TwoTenantFixtureMixin, APITestCase):
     """
     Regressionstest für README Block 10 Punkt #1: TenantScopedViewSet.initial()

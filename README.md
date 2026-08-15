@@ -3445,20 +3445,37 @@ Abarbeitungszwang.
    (core.billing_views) bauten alle drei manuell dieselbe DRF-`APIView.initial()`-Sequenz nach
    (Content-Negotiation, Authentifizierung, Membership-/Tenant-Auflösung,
    `check_permissions`/`check_throttles`). Behoben durch `core.tenancy.
-   apply_tenant_scoped_initial(view, request, *args, bind_scheduling_context=False,
+   apply_tenant_scoped_initial(view, request, *args, resolve_employee_profile=False,
    enforce_billing=True, **kwargs)` -- alle drei Klassen rufen ihn nur noch auf.
-   `bind_scheduling_context=True` (nur `TenantScopedViewSet`) setzt zusätzlich
-   `request.employee_profile` und die Tenant-ContextVar (`set_current_tenant`, lazy-importiert
-   `scheduling.models.Employee`, damit `core` weiterhin nichts von `scheduling` auf Modulebene
-   importiert). `enforce_billing=False` (nur `_TenantScopedNoBillingGateMixin`) lässt
-   `enforce_billing_access()` aus. Sicherheitskritischer Code (läuft bei praktisch jedem
-   API-Request) -- vor dem Refactor wurden gezielt zwei Test-Lücken geschlossen: ein
-   Cross-Tenant-Isolationstest für die `TenantScopedAPIMixin`-Endpunkte (die bisher nur die
-   `TenantScopedViewSet`-Endpunkte hatten) und ein Test, der beweist, dass `set_current_tenant()`
-   während eines echten API-Requests wirkt (empirisch verifiziert: schlägt fehl, wenn der Aufruf
-   entfernt wird). In vier einzeln committeten Schritten umgesetzt (Tests zuerst, dann Helper
-   isoliert hinzugefügt, dann die drei Call-Sites nacheinander migriert, kleinster Blast-Radius
-   zuerst), nach jedem Schritt gezielt und am Ende mit der vollen Suite verifiziert.
+   `resolve_employee_profile=True` (nur `TenantScopedViewSet`) setzt zusätzlich
+   `request.employee_profile` (lazy-importiert `scheduling.models.Employee`, damit `core`
+   weiterhin nichts von `scheduling` auf Modulebene importiert). `enforce_billing=False` (nur
+   `_TenantScopedNoBillingGateMixin`) lässt `enforce_billing_access()` aus. Sicherheitskritischer
+   Code (läuft bei praktisch jedem API-Request) -- vor dem Refactor wurden gezielt zwei
+   Test-Lücken geschlossen: ein Cross-Tenant-Isolationstest für die `TenantScopedAPIMixin`-
+   Endpunkte (die bisher nur die `TenantScopedViewSet`-Endpunkte hatten) und ein Test, der
+   beweist, dass `set_current_tenant()` während eines echten API-Requests wirkt (empirisch
+   verifiziert: schlägt fehl, wenn der Aufruf entfernt wird). In vier einzeln committeten
+   Schritten umgesetzt (Tests zuerst, dann Helper isoliert hinzugefügt, dann die drei Call-Sites
+   nacheinander migriert, kleinster Blast-Radius zuerst), nach jedem Schritt gezielt und am Ende
+   mit der vollen Suite verifiziert.
+
+   Nachbesserung (Nutzer-Feedback: "fix das bitte das alles doppelt gesichert ist"): `initial()`
+   setzte die Tenant-ContextVar (zweite Verteidigungslinie für `TenantScopedManager`) ursprünglich
+   nur bei `bind_scheduling_context=True`, also nur für `TenantScopedViewSet`-Endpunkte --
+   `TenantScopedAPIMixin`/`_TenantScopedNoBillingGateMixin`-Endpunkte (`TenantView`,
+   `MembershipViewSet`, `PayrollExportView`, `BillingStatusView` u. a.) hatten dadurch nur die
+   erste, explizite `request.tenant`-Filterung, keine zweite Absicherung. Vor der Änderung
+   verifiziert, dass keine dieser Views absichtlich auf ungefiltertes Cross-Tenant-Lesen über den
+   Standard-Manager angewiesen ist (`User.objects`/`Tenant.objects`/`Membership.objects` sind
+   ohnehin nicht ContextVar-gefiltert, da diese Modelle nicht von `TenantScopedModel` erben;
+   `MembershipSerializer.scoped_nodes` bekommt durch die ContextVar sogar eine zusätzliche,
+   frühere Absicherung, ohne die bestehende `validate_scoped_nodes()`-Prüfung überflüssig zu
+   machen). `set_current_tenant()` wird jetzt in `apply_tenant_scoped_initial()` unbedingt für
+   alle drei Basisklassen aufgerufen, das `resolve_employee_profile`-Flag steuert nur noch die
+   `employee_profile`-Auflösung. Neuer Regressionstest (analog zum bestehenden, über
+   `PayrollExportView` statt `TenantScopedViewSet`) beweist die Wirkung während eines echten
+   Requests, ebenfalls empirisch verifiziert (schlägt fehl, wenn der Aufruf entfernt wird).
 2. ✅ **Stripe-Statusmapping-Dict verdoppelt**: identisches 7-Einträge-Dict in
    `core/billing.py:282-290` (`handle_webhook_event`) und
    `core/management/commands/sync_stripe_subscriptions.py:60-68`. Behoben durch

@@ -1701,10 +1701,11 @@ class Absence(TenantScopedModel):
     überlappenden Zeitraum -- aber nur, solange sie APPROVED ist (siehe
     _check_no_absence_conflict auf ShiftAssignment). Genehmigungs-Workflow
     (MVP-Fahrplan, Block 2.3): Von Mitarbeitenden erstellte Absenzen starten
-    als PENDING und müssen von Admin/Planer freigegeben werden
-    (AbsenceViewSet.approve/reject); von Admin/Planer selbst erstellte
-    Absenzen sind sofort APPROVED (AbsenceViewSet.perform_create), weil die
-    Freigabe in dem Fall bereits durch die anlegende Person erfolgt ist.
+    als PENDING und müssen von Admin/Planer freigegeben werden (approve()/
+    reject(), aufgerufen von AbsenceViewSet.approve/reject); von Admin/
+    Planer selbst erstellte Absenzen sind sofort APPROVED
+    (AbsenceViewSet.perform_create), weil die Freigabe in dem Fall bereits
+    durch die anlegende Person erfolgt ist.
 
     Umgekehrte Richtung (Bugfix 2026-08, Arbeitszeitmodell): eine APPROVED
     Absenz darf ebenfalls nicht mit bereits bestehenden Schicht-Zuweisungen
@@ -1841,6 +1842,26 @@ class Absence(TenantScopedModel):
                     f"{len(conflicts)} Dienst-Zuweisung(en) (z. B. {conflicts[0]}) -- diese zuerst im "
                     "Planblatt entfernen, bevor eine genehmigte Absenz für diesen Zeitraum angelegt wird."
                 )
+
+    def approve(self):
+        """
+        Admin/Planer-Freigabe. Ruft clean() auf (nicht bloss full_clean()),
+        weil erst der APPROVED-Status den Konflikt-Check gegen bestehende
+        Schicht-Zuweisungen oben in clean() aktiviert -- eine PENDING-Absenz
+        mit Konflikt ist erlaubt, eine APPROVED nicht.
+        """
+        if self.status != Absence.Status.PENDING:
+            raise ValidationError("Nur offene Absenzanträge können genehmigt werden.")
+        self.status = Absence.Status.APPROVED
+        self.clean()
+        self.save(update_fields=["status"])
+
+    def reject(self):
+        """Admin/Planer lehnt einen offenen Absenzantrag ab -- kein clean() nötig, REJECTED hat keine Konfliktregel."""
+        if self.status != Absence.Status.PENDING:
+            raise ValidationError("Nur offene Absenzanträge können abgelehnt werden.")
+        self.status = Absence.Status.REJECTED
+        self.save(update_fields=["status"])
 
 
 class TimeTemplate(TenantScopedModel):
@@ -2818,6 +2839,22 @@ class ShiftTradeRequest(TenantScopedModel):
                 "Nur offene oder von der Zielperson angenommene Anfragen können abgelehnt werden."
             )
         self.status = self.Status.REJECTED
+        self.resolved_at = timezone.now()
+        self.save(update_fields=["status", "resolved_at"])
+
+    def decline(self):
+        """Zielperson lehnt eine offene Anfrage selbst ab -- zu unterscheiden von reject() (Planer) und cancel() (anbietende Person)."""
+        if self.status != self.Status.PENDING:
+            raise ValidationError("Nur offene Tauschanfragen können abgelehnt werden.")
+        self.status = self.Status.DECLINED
+        self.resolved_at = timezone.now()
+        self.save(update_fields=["status", "resolved_at"])
+
+    def cancel(self):
+        """Anbietende Person zieht eine offene oder bereits von der Zielperson angenommene Anfrage zurück."""
+        if self.status not in (self.Status.PENDING, self.Status.EMPLOYEE_ACCEPTED):
+            raise ValidationError("Nur offene oder angenommene Tauschanfragen können zurückgezogen werden.")
+        self.status = self.Status.CANCELLED
         self.resolved_at = timezone.now()
         self.save(update_fields=["status", "resolved_at"])
 

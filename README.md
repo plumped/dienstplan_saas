@@ -3495,13 +3495,14 @@ Abarbeitungszwang.
     `TimeRecordAdmin.save_formset` (`scheduling/admin.py`) waren wortgleich (Tenant auf
     Inline-Instanzen stempeln). Behoben durch Verschieben nach `TenantScopedAdminMixin`
     (`core/admin.py`), beide Kopien entfernt.
-11. **Statustransitions inkonsistent implementiert**: `ShiftTradeRequest.accept()/approve()/
-    reject()` sind Model-Methoden, aber `ShiftTradeRequestViewSet.decline`/`cancel`
-    (`scheduling/views.py:1389-1411`) und `AbsenceViewSet.approve`/`reject` (`:1174-1196`) bauen
-    dieselbe Art Statuswechsel direkt im View statt als Model-Methode. `decline()`/`cancel()` auf
-    `ShiftTradeRequest` sowie `approve()`/`reject()` auf `Absence` ergänzen, damit jede
-    Statustransition demselben "Model besitzt die Transition, View ruft nur auf"-Muster folgt
-    (überschneidet sich mit Punkt 3).
+11. ✅ **Statustransitions inkonsistent implementiert**: `ShiftTradeRequest.accept()/approve()/
+    reject()` waren Model-Methoden, aber `ShiftTradeRequestViewSet.decline`/`cancel` und
+    `AbsenceViewSet.approve`/`reject` bauten denselben Statuswechsel direkt im View statt als
+    Model-Methode. Behoben durch `ShiftTradeRequest.decline()`/`cancel()` sowie
+    `Absence.approve()`/`reject()` als neue Model-Methoden (Status-Check + `ValidationError` bei
+    ungültigem Übergang + Statusmutation + `save(update_fields=[...])`, gleiches Muster wie
+    `accept()`/`approve()`/`reject()`); die Views rufen die Methode nur noch auf (gewrappt in
+    `translate_model_validation_error()`, Punkt 3) und behalten die Notification-Aufrufe.
 12. ✅ **`EmployeeViewSet` als "God Class" (~520 Zeilen, 14+ Actions)**: mischte CRUD,
     CSV-Import/-Export, Zugangsverwaltung (`setup_access`/`deactivate`/`reactivate`) und
     7 reine Reporting-Actions in einer Klasse. Behoben durch Aufteilung in

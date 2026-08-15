@@ -1227,22 +1227,16 @@ class AbsenceViewSet(TenantScopedViewSet):
     @action(detail=True, methods=["post"])
     def approve(self, request, pk=None):
         absence = self.get_object()
-        if absence.status != Absence.Status.PENDING:
-            raise ValidationError("Nur offene Absenzanträge können genehmigt werden.")
-        absence.status = Absence.Status.APPROVED
         with translate_model_validation_error():
-            absence.clean()
-        absence.save(update_fields=["status"])
+            absence.approve()
         notify_absence_decision(absence)
         return Response(self.get_serializer(absence).data)
 
     @action(detail=True, methods=["post"])
     def reject(self, request, pk=None):
         absence = self.get_object()
-        if absence.status != Absence.Status.PENDING:
-            raise ValidationError("Nur offene Absenzanträge können abgelehnt werden.")
-        absence.status = Absence.Status.REJECTED
-        absence.save(update_fields=["status"])
+        with translate_model_validation_error():
+            absence.reject()
         notify_absence_decision(absence)
         return Response(self.get_serializer(absence).data)
 
@@ -1433,26 +1427,19 @@ class ShiftTradeRequestViewSet(TenantScopedViewSet):
 
     @action(detail=True, methods=["post"])
     def decline(self, request, pk=None):
+        """Zielperson lehnt selbst ab (zu unterscheiden von `reject`, das Admin/Planer auslöst)."""
         trade_request = self.get_object()
-        if trade_request.status != ShiftTradeRequest.Status.PENDING:
-            raise ValidationError("Nur offene Tauschanfragen können abgelehnt werden.")
-        trade_request.status = ShiftTradeRequest.Status.DECLINED
-        trade_request.resolved_at = timezone.now()
-        trade_request.save(update_fields=["status", "resolved_at"])
+        with translate_model_validation_error():
+            trade_request.decline()
         notify_trade_declined(trade_request)
         return Response(self.get_serializer(trade_request).data)
 
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
+        """Anbietende Person zieht die Anfrage selbst zurück."""
         trade_request = self.get_object()
-        if trade_request.status not in (
-            ShiftTradeRequest.Status.PENDING,
-            ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED,
-        ):
-            raise ValidationError("Nur offene oder angenommene Tauschanfragen können zurückgezogen werden.")
-        trade_request.status = ShiftTradeRequest.Status.CANCELLED
-        trade_request.resolved_at = timezone.now()
-        trade_request.save(update_fields=["status", "resolved_at"])
+        with translate_model_validation_error():
+            trade_request.cancel()
         return Response(self.get_serializer(trade_request).data)
 
 

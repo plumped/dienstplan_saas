@@ -84,6 +84,28 @@ def set_m2m_fields(instance, m2m_data):
         getattr(instance, field_name).set(value)
 
 
+def build_instance_for_clean(serializer, attrs, model_cls, fields, set_tenant=False):
+    """
+    Baut eine (unsaved) Instanz für serializer.validate(): bei Update die
+    bestehende Instanz (serializer.instance), bei Create ein leeres
+    model_cls() -- setzt darauf die übergebenen `fields`, sofern im Payload
+    vorhanden (`if field in attrs`), und optional den Tenant aus dem
+    Request-Kontext. Ruft NICHT selbst instance.clean() auf, damit
+    Aufrufer, die davor/danach noch eigene Logik brauchen (z. B. eine
+    Status-Vorbelegung vor dem Absenz/Zuweisungs-Konflikt-Check), das
+    weiterhin selbst steuern. Vorher an fünf Serializern (ShiftAssignment/
+    Absence/ShiftPreference/TimeRecord/ShiftTradeRequest) identisch als
+    "Instanz bauen + setattr-Schleife"-Gerüst wiederholt.
+    """
+    instance = serializer.instance or model_cls()
+    for field in fields:
+        if field in attrs:
+            setattr(instance, field, attrs[field])
+    if set_tenant:
+        instance.tenant = serializer.context["request"].tenant
+    return instance
+
+
 class NodeSerializer(serializers.ModelSerializer):
     # Bewusst kein PrimaryKeyRelatedField(queryset=Node.objects...): der
     # TenantScopedManager würde die Queryset-Filterung beim Laden dieses
@@ -573,11 +595,9 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
         ruft model.clean() auf, damit der Ruhezeit-Check aus dem Model auch
         über die API greift (nicht nur im Django Admin).
         """
-        instance = self.instance or ShiftAssignment()
-        for field in ["employee", "node", "date", "template"]:
-            if field in attrs:
-                setattr(instance, field, attrs[field])
-        instance.tenant = self.context["request"].tenant
+        instance = build_instance_for_clean(
+            self, attrs, ShiftAssignment, ["employee", "node", "date", "template"], set_tenant=True
+        )
         instance.clean()
         return attrs
 
@@ -680,10 +700,9 @@ class AbsenceSerializer(serializers.ModelSerializer):
         return ", ".join(names) if names else "—"
 
     def validate(self, attrs):
-        instance = self.instance or Absence()
-        for field in ["employee", "start_date", "end_date", "day_portion", "type"]:
-            if field in attrs:
-                setattr(instance, field, attrs[field])
+        instance = build_instance_for_clean(
+            self, attrs, Absence, ["employee", "start_date", "end_date", "day_portion", "type"]
+        )
         if self.instance is None:
             # Neuanlage: status ist read_only und wird erst in
             # AbsenceViewSet.perform_create() gesetzt (Admin/Planer ->
@@ -722,10 +741,7 @@ class ShiftPreferenceSerializer(serializers.ModelSerializer):
         fields = ["id", "employee", "date", "type", "template", "note"]
 
     def validate(self, attrs):
-        instance = self.instance or ShiftPreference()
-        for field in ["date", "type", "template"]:
-            if field in attrs:
-                setattr(instance, field, attrs[field])
+        instance = build_instance_for_clean(self, attrs, ShiftPreference, ["date", "type", "template"])
         instance.clean()
 
         # unique_together (employee, date) greift hier nicht automatisch als
@@ -831,11 +847,13 @@ class TimeRecordSerializer(serializers.ModelSerializer):
         # segments wird separat behandelt (nested write, siehe create/update)
         # -- nicht Teil der einfachen setattr-Schleife wie die Skalarfelder.
         segments_data = attrs.get("segments")
-        instance = self.instance or TimeRecord()
-        for field in ["assignment", "actual_start", "actual_end", "actual_break_minutes", "note"]:
-            if field in attrs:
-                setattr(instance, field, attrs[field])
-        instance.tenant = self.context["request"].tenant
+        instance = build_instance_for_clean(
+            self,
+            attrs,
+            TimeRecord,
+            ["assignment", "actual_start", "actual_end", "actual_break_minutes", "note"],
+            set_tenant=True,
+        )
         # "segments" fehlt im Payload (PATCH ohne Zeitänderung) -> None ->
         # TimeRecord.effective_segments() greift auf bereits gespeicherte
         # Segmente zurück statt auf einen leeren Pending-Zustand.
@@ -967,10 +985,12 @@ class ShiftTradeRequestSerializer(serializers.ModelSerializer):
             if obj is not None and obj.tenant_id != tenant.id:
                 raise serializers.ValidationError({field_name: "Gehört nicht zu diesem Tenant."})
 
-        instance = self.instance or ShiftTradeRequest()
-        for field in ["requester_assignment", "target_employee", "target_assignment"]:
-            if field in attrs:
-                setattr(instance, field, attrs[field])
-        instance.tenant = tenant
+        instance = build_instance_for_clean(
+            self,
+            attrs,
+            ShiftTradeRequest,
+            ["requester_assignment", "target_employee", "target_assignment"],
+            set_tenant=True,
+        )
         instance.clean()
         return attrs

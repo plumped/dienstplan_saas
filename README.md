@@ -3477,12 +3477,14 @@ Abarbeitungszwang.
    `MembershipCreateSerializer`), `:183-186` (`SignupSerializer`),
    `scheduling/serializers.py:306-310` (`EmployeeAccessSetupSerializer`). Behoben durch
    `core.serializers.validate_unique_username()`, von allen drei Stellen genutzt.
-8. **"Instanz bauen + setattr-Schleife + `instance.clean()`"-Muster fünffach**:
+8. ✅ **"Instanz bauen + setattr-Schleife + `instance.clean()`"-Muster fünffach**:
    `ShiftAssignmentSerializer.validate`, `AbsenceSerializer.validate`,
    `ShiftPreferenceSerializer.validate`, `TimeRecordSerializer.validate`,
-   `ShiftTradeRequestSerializer.validate` (`scheduling/serializers.py:571-583,683-704,725-749,
-   831-845,964-977`) wiederholen dasselbe Gerüst mit unterschiedlicher Feldliste. Helper
-   `validate_via_model_clean(serializer, attrs, model_cls, fields, extra=...)` extrahieren.
+   `ShiftTradeRequestSerializer.validate` wiederholten dasselbe Gerüst mit unterschiedlicher
+   Feldliste. Behoben durch `build_instance_for_clean(serializer, attrs, model_cls, fields,
+   set_tenant=False)`, alle fünf `validate()`-Methoden nutzen ihn jetzt -- ruft bewusst NICHT
+   selbst `instance.clean()` auf, damit Aufrufer mit zusätzlicher Logik vor/nach dem Clean
+   (Status-Vorbelegung, Unique-Check) das weiterhin selbst steuern.
 9. **Nested-Child-Sync-create()/update()-Paar dreifach dupliziert**: `EmployeeSerializer`
    (employments), `TimeTemplateSerializer` (segments), `TimeRecordSerializer` (segments) in
    `scheduling/serializers.py:237-288,507-543,847-882` implementieren praktisch identische

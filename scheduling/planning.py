@@ -147,6 +147,42 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
     employee_skill_ids = {e.id: {s.id for s in e.skills.all()} for e in employees}
     employee_node_ids = {e.id: {n.id for n in e.nodes.all()} for e in employees}
 
+    # README Punkt 17: eine Station mit Team-Kindern zeigt Templates, die
+    # DIREKT auf der Station selbst liegen, als geteilten Katalog für ALLE
+    # ihre Teams (siehe PlanGrid.jsx: stampTemplates -- "ein Schichttyp
+    # direkt auf der Station gilt als geteilter Katalog für jede markierte
+    # Team-Zeile"). Mitarbeitende sind aber nie der Station selbst
+    # zugeordnet, sondern jeweils ihrem Team -- ein simples
+    # `template.node_id in emp_node_ids` (wie unten) würde daher für JEDES
+    # stationsweite Template null Kandidaten finden. station_node ist der
+    # Knoten mit der geringsten Tiefe im Scope (die Station selbst, siehe
+    # _resolve_plan_scope: scope_ids = [Station] + [ihre Team-Kinder]);
+    # team_node_ids sind alle übrigen Scope-Knoten.
+    scope_nodes = list(Node.all_objects.filter(tenant=tenant, pk__in=scope_node_ids))
+    station_node = min(scope_nodes, key=lambda n: n.depth)
+    team_node_ids = {n.id for n in scope_nodes if n.id != station_node.id}
+
+    def resolve_assignment_node_id(template, emp_node_ids):
+        """
+        Liefert die Team-/Stations-Id, auf die eine neue ShiftAssignment für
+        dieses Template/diese Mitarbeiterin gebucht würde -- None, wenn die
+        Mitarbeiterin für dieses Template nicht in Frage kommt. Ein
+        teamspezifisches Template (node_id != Station) verlangt exakte
+        Team-Zugehörigkeit; ein stationsweites Template (node_id ==
+        Station) verlangt nur, dass die Mitarbeiterin IRGENDEINEM Team
+        dieser Station angehört -- die neue Zuweisung landet dann auf genau
+        diesem Team (nie auf der Station selbst, die bei vorhandenen Teams
+        ohnehin keine direkten Zuweisungen tragen darf, siehe
+        ShiftAssignment._check_node_has_no_children).
+        """
+        if template.node_id in emp_node_ids:
+            return template.node_id
+        if template.node_id == station_node.id:
+            matching_teams = sorted(emp_node_ids & team_node_ids)
+            if matching_teams:
+                return matching_teams[0]
+        return None
+
     context_assignments = list(
         ShiftAssignment.all_objects.filter(
             tenant=tenant, employee_id__in=employee_ids, date__range=[context_start, context_end]
@@ -217,6 +253,12 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
     # (employee_id, date) -> [(template_id, is_special, start_min, end_min, hours, is_unpopular)]
     day_candidate_info = defaultdict(list)
 
+    # (employee_id, template_id) -> Knoten, auf den eine neue Zuweisung
+    # gebucht würde (siehe resolve_assignment_node_id oben) -- unabhängig
+    # vom Datum, daher einmal pro Mitarbeiter/Template statt pro Kandidat
+    # berechnet.
+    assignment_node_by_employee_template = {}
+
     for employee in employees:
         emp_node_ids = employee_node_ids.get(employee.id, set())
         for d in month_dates:
@@ -229,8 +271,10 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
                 continue
 
             for template in valid_templates:
-                if template.node_id not in emp_node_ids:
+                assignment_node_id = resolve_assignment_node_id(template, emp_node_ids)
+                if assignment_node_id is None:
                     continue
+                assignment_node_by_employee_template[(employee.id, template.id)] = assignment_node_id
                 if template.required_skill_id and template.required_skill_id not in employee_skill_ids[employee.id]:
                     continue
                 is_special = template.category == TimeTemplate.Category.SPECIAL
@@ -526,7 +570,14 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
         if solver.Value(var):
             assignments.append(
                 DraftAssignment(
-                    employee_id=employee_id, date=d, template_id=template_id, node_id=template_by_id[template_id].node_id
+                    employee_id=employee_id,
+                    date=d,
+                    template_id=template_id,
+                    # Nie template.node_id direkt (das wäre bei einem
+                    # stationsweiten Template die Station selbst -- eine
+                    # ShiftAssignment darf dort bei vorhandenen Teams nicht
+                    # landen, siehe resolve_assignment_node_id oben).
+                    node_id=assignment_node_by_employee_template[(employee_id, template_id)],
                 )
             )
 

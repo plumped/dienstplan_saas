@@ -101,6 +101,76 @@ class MinimumStaffingTests(PlanningTestBase):
         self.assertTrue(any("Frühdienst" in w for w in result.warnings))
 
 
+class TeamHierarchyTests(PlanningTestBase):
+    """
+    Nutzer-Feedback: bei einer Station mit Team-Kindern (README Punkt 17)
+    fand die Automatik trotz vorhandener, aktiver Mitarbeitender keine
+    Kandidaten für ein Template, das direkt auf der STATION liegt (der
+    normale Fall für einen "geteilten" Schichttyp) -- weil Mitarbeitende
+    nie der Station selbst zugeordnet sind, sondern jeweils ihrem Team.
+    self.node/self.template aus PlanningTestBase sind hier bewusst NICHT
+    verwendet (keine Teams dort) -- eigenes Fixture mit Station + einem
+    Team-Kind.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.team = self.node.add_child(tenant=self.tenant, name="Team Nacht")
+        # Stationsweites Template -- liegt auf self.node (der Station), nicht
+        # auf self.team, analog zu einem in der Praxis üblichen "für alle
+        # Teams gültigen" Schichttyp (siehe PlanGrid.jsx: stampTemplates).
+        self.template.minimum_staffing = 2
+        self.template.save()
+
+    def make_team_employee(self, first_name):
+        employee = Employee.objects.create(tenant=self.tenant, first_name=first_name, last_name="Team", employment_pct=100)
+        employee.nodes.add(self.team)
+        return employee
+
+    def test_station_level_template_finds_team_scoped_employees(self):
+        # 3 statt 2 Mitarbeitende: bei minimum_staffing=2 und genau 2
+        # Personen würde der harte Wochenruhetag-Constraint (mindestens ein
+        # freier Tag pro Woche und Person) an manchen Tagen zwangsläufig
+        # einen Fehlbedarf erzeugen -- 3 Personen lassen genug Spielraum,
+        # damit der eigentliche Test-Fokus (findet die Automatik die
+        # team-zugeordneten Mitarbeitenden überhaupt) nicht von einem
+        # unabhängigen Kapazitäts-Engpass überlagert wird.
+        self.make_team_employee("Anna")
+        self.make_team_employee("Bea")
+        self.make_team_employee("Clara")
+        # self.generate() (PlanningTestBase) übergibt nur [self.node.id] --
+        # ein echter Aufrufer (GeneratePlanView._resolve_plan_scope) löst den
+        # Scope IMMER inklusive Team-Kinder auf, siehe Modul-Docstring.
+        result = generate_draft_plan(self.tenant, [self.node.id, self.team.id], 2026, 9)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.shortfalls, [])
+        days = {a.date for a in result.assignments if a.template_id == self.template.id}
+        self.assertEqual(len(days), 30)
+
+    def test_new_assignment_lands_on_team_not_station(self):
+        self.make_team_employee("Anna")
+        self.make_team_employee("Bea")
+        result = generate_draft_plan(self.tenant, [self.node.id, self.team.id], 2026, 9)
+        node_ids = {a.node_id for a in result.assignments}
+        # Nie auf der Station selbst -- die hat ein Team-Kind und darf laut
+        # ShiftAssignment._check_node_has_no_children keine direkten
+        # Zuweisungen tragen.
+        self.assertNotIn(self.node.id, node_ids)
+        self.assertEqual(node_ids, {self.team.id})
+
+    def test_team_specific_template_still_requires_exact_team_match(self):
+        other_team = self.node.add_child(tenant=self.tenant, name="Team Tag")
+        team_only_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.team, name="Nachtdienst",
+            start_time=time(20, 0), end_time=time(6, 0), break_minutes=30, minimum_staffing=1,
+        )
+        outsider = Employee.objects.create(tenant=self.tenant, first_name="Chris", last_name="Andernorts", employment_pct=100)
+        outsider.nodes.add(other_team)
+        result = generate_draft_plan(self.tenant, [self.node.id, self.team.id, other_team.id], 2026, 9)
+        team_only_assignments = [a for a in result.assignments if a.template_id == team_only_template.id]
+        self.assertEqual(team_only_assignments, [])
+
+
 class RequiredSkillTests(PlanningTestBase):
     def test_only_skilled_employees_assigned(self):
         skill = Skill.objects.create(tenant=self.tenant, name="Reanimation")

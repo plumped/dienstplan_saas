@@ -140,6 +140,13 @@ function weekdayLabel(year, month, day) {
   return WEEKDAYS_SHORT[jsDay === 0 ? 6 : jsDay - 1];
 }
 
+// 0=Montag ... 6=Sonntag -- dieselbe Konvention wie Employee.fixed_weekdays_off
+// im Backend (date.weekday()), siehe scheduling.planning.
+function weekdayIndex(year, month, day) {
+  const jsDay = new Date(year, month - 1, day).getDay();
+  return jsDay === 0 ? 6 : jsDay - 1;
+}
+
 // Löst für einen im NodeSelector gewählten Knoten die zugehörige Station
 // (Elternknoten, falls der gewählte Knoten selbst ein Team ist) plus alle
 // ihre Team-Kinder auf -- unabhängig davon, ob im Selector die Station
@@ -1466,6 +1473,11 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     );
                     const weekend = ["Sa", "So"].includes(weekdayLabel(year, month, d));
                     const holidayName = holidays.get(date);
+                    // Automatisierte Planung mit Auffülldienst (2026-08):
+                    // rein informativ -- zeigt, warum die Automatik diesen
+                    // Tag nie bespielt (siehe planning.py), blockiert
+                    // manuelles Stempeln aber nicht.
+                    const fixedDayOff = (emp.fixed_weekdays_off ?? []).includes(weekdayIndex(year, month, d));
                     const canOfferTrade = canManage || me?.employee?.id === emp.id;
                     // Workflow-Redesign (2026-08): Markierung ist jetzt pro Tag
                     // (nicht pro Slot) -- derselbe Wert geht an beide
@@ -1583,8 +1595,10 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                     return (
                       <td
                         key={d}
-                        className={[weekend && "is-weekend", holidayName && "is-holiday"].filter(Boolean).join(" ")}
-                        title={holidayName || undefined}
+                        className={[weekend && "is-weekend", holidayName && "is-holiday", fixedDayOff && "is-fixed-day-off"]
+                          .filter(Boolean)
+                          .join(" ")}
+                        title={holidayName || (fixedDayOff ? "Fester freier Tag (Wochenmuster)" : undefined)}
                       >
                         <div className={`day-cell${marked ? " is-marked" : ""}`}>
                           {/* Polypoint-Vorbild (2026-08): die Zelle bleibt IMMER

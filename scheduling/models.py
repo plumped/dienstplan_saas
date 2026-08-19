@@ -259,6 +259,26 @@ class Employee(TenantScopedModel):
         "unter 18 Jahren -- ohne Angabe wird der Mitarbeiter als volljährig behandelt.",
     )
     employment_pct = models.PositiveSmallIntegerField(help_text="Pensum in %, z. B. 80")
+    # Nutzer-Feedback (2026-08, Automatisierte Planung mit Auffülldienst):
+    # employment_pct allein sagt nur "wie viel", nicht "an welchen
+    # Wochentagen" -- für die Automatik (siehe scheduling.planning) reicht
+    # das nicht, um z. B. eine 60%-Kraft nur an ihren tatsächlich
+    # vereinbarten Tagen einzuplanen statt einfach irgendwelche Tage bis zum
+    # Wochenlimit aufzufüllen. Dasselbe Feld deckt auch ein Team ohne
+    # Wochenend-Betrieb ab (dort tragen dann auch 100%-Kräfte Sa+So ein) --
+    # bewusst kein separates "Betriebstage"-Konzept auf Node/TimeTemplate,
+    # um das Modell nicht zu verdoppeln. Wirkt NUR in der automatisierten
+    # Planung (harter Ausschluss, siehe generate_draft_plan) -- manuelles
+    # Stempeln im Planblatt bleibt an diesen Tagen weiterhin möglich, falls
+    # im Einzelfall doch nötig.
+    fixed_weekdays_off = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Wochentage, die fest arbeitsfrei sind (0=Montag ... 6=Sonntag, wie "
+        "date.weekday()). Für Teilzeit das individuelle Wochenmuster, für ein Team ohne "
+        "Wochenend-Betrieb z. B. [5, 6] auch bei Vollzeitkräften. Leer = keine festen freien Tage "
+        "(übliches Vollzeit-Muster, nur der gesetzliche Wochenruhetag gilt).",
+    )
     employment_start_date = models.DateField(
         default=_default_employment_start_date,
         help_text="Eintrittsdatum -- Startpunkt für das Jahressoll im Arbeitszeitmodell "
@@ -331,6 +351,21 @@ class Employee(TenantScopedModel):
 
     def __str__(self):
         return f"{self.first_name} {self.last_name}"
+
+    def clean(self):
+        if self.fixed_weekdays_off:
+            if not isinstance(self.fixed_weekdays_off, list) or any(
+                not isinstance(d, int) or not (0 <= d <= 6) for d in self.fixed_weekdays_off
+            ):
+                raise ValidationError(
+                    "fixed_weekdays_off muss eine Liste von Wochentagen 0 (Montag) bis 6 (Sonntag) sein."
+                )
+            if len(set(self.fixed_weekdays_off)) == 7:
+                raise ValidationError("fixed_weekdays_off darf nicht alle sieben Wochentage umfassen.")
+
+    def has_fixed_day_off(self, day):
+        """True, wenn `day` laut Wochenmuster fest arbeitsfrei ist (siehe fixed_weekdays_off)."""
+        return day.weekday() in self.fixed_weekdays_off
 
     def _age_on(self, reference_date):
         """Alter in vollen Jahren am reference_date, oder None ohne bekanntes Geburtsdatum."""

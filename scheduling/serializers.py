@@ -230,6 +230,7 @@ class EmployeeSerializer(NestedWritableSerializerMixin, serializers.ModelSeriali
             "last_name",
             "birth_date",
             "employment_pct",
+            "fixed_weekdays_off",
             "employment_start_date",
             "termination_date",
             "nodes",
@@ -266,6 +267,16 @@ class EmployeeSerializer(NestedWritableSerializerMixin, serializers.ModelSeriali
                     f"In der Testphase sind maximal {tenant.trial_employee_limit} aktive "
                     "Mitarbeitende möglich -- für mehr bitte ein Abo abschliessen."
                 )
+        # fixed_weekdays_off (2026-08, Automatisierte Planung mit Auffülldienst):
+        # Employee.save() ruft clean() nicht automatisch auf (anders als
+        # ModelForm) -- der Wertebereichs-Check dort greift über die API nur,
+        # wenn er hier explizit ausgelöst wird, analog zu ShiftAssignment/
+        # Absence/ShiftPreference weiter unten (DRF übersetzt das
+        # resultierende django.core.exceptions.ValidationError automatisch in
+        # eine saubere 400-Antwort, kein eigenes except nötig).
+        if "fixed_weekdays_off" in attrs:
+            instance = build_instance_for_clean(self, attrs, Employee, ["fixed_weekdays_off"])
+            instance.clean()
         return attrs
 
     def _membership(self, obj):

@@ -1109,6 +1109,12 @@ thead .col-employee {
   background: #fef1e2;
 }
 
+/* Automatisierte Planung mit Auffülldienst (2026-08): Employee.fixed_weekdays_off
+   -- rein informativ, blockiert manuelles Stempeln nicht (siehe PlanGrid.jsx). */
+.plan-grid td.is-fixed-day-off {
+  background: var(--status-neutral-soft);
+}
+
 .shift-chip-btn {
   width: 100%;
   height: 26px;
@@ -1431,6 +1437,19 @@ thead .col-employee {
 .login-card .checkbox-row {
   flex-direction: row;
   align-items: center;
+}
+
+/* Automatisierte Planung mit Auffülldienst (2026-08): Employee.fixed_weekdays_off
+   -- sieben .checkbox-row (siehe oben) nebeneinander statt untereinander. */
+.weekday-checkbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 4px;
+}
+
+.weekday-checkbox {
+  gap: 4px;
 }
 
 .panel-form h3 {

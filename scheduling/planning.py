@@ -262,6 +262,12 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
     for employee in employees:
         emp_node_ids = employee_node_ids.get(employee.id, set())
         for d in month_dates:
+            # Wochenmuster (README, Automatisierte Planung mit Auffülldienst):
+            # ein fest arbeitsfreier Wochentag ist kein Fehlbedarf und keine
+            # Absenz -- er blockt hier hart, bevor überhaupt ein Kandidat für
+            # irgendein Template entsteht, genau wie ein Absenz-Volltag unten.
+            if employee.has_fixed_day_off(d):
+                continue
             day_absences = absences_by_employee_date.get((employee.id, d), [])
             if any(a.day_portion == Absence.DayPortion.FULL for a in day_absences):
                 continue

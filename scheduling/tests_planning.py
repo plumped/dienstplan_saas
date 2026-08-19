@@ -6,6 +6,7 @@ sehr grossen scheduling/tests.py, analog core/tests_billing.py.
 from datetime import date, time, timedelta
 
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
@@ -345,6 +346,59 @@ class MaternityProtectionTests(PlanningTestBase):
         self.assertEqual([a for a in self.assignments_for(result, employee) if a.template_id == night_template.id], [])
         # Der reguläre Tagesdienst bleibt weiterhin erlaubt.
         self.assertTrue(any(a.template_id == self.template.id for a in self.assignments_for(result, employee)))
+
+
+class FixedWeekdaysOffTests(PlanningTestBase):
+    """
+    Employee.fixed_weekdays_off (2026-08, Automatisierte Planung mit
+    Auffülldienst): ein fest arbeitsfreier Wochentag ist kein Fehlbedarf und
+    keine Absenz -- er blockt hart, bevor überhaupt ein Kandidat entsteht
+    (siehe generate_draft_plan). Deckt sowohl das individuelle
+    Teilzeit-Wochenmuster ab als auch, bei allen Vollzeitkräften gesetzt,
+    ein Team ohne Wochenend-Betrieb.
+    """
+
+    def test_fixed_weekday_off_excludes_employee_but_day_stays_covered(self):
+        employee = self.make_employee("Anna", fixed_weekdays_off=[4])  # Freitag
+        self.make_employee("Bea")
+        result = self.generate()
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.shortfalls, [])
+        self.assertFalse(any(a.date.weekday() == 4 for a in self.assignments_for(result, employee)))
+
+    def test_fixed_weekday_off_does_not_affect_other_weekdays(self):
+        employee = self.make_employee("Anna", fixed_weekdays_off=[4])  # Freitag
+        self.make_employee("Bea")
+        result = self.generate()
+        self.assertTrue(any(a.date.weekday() != 4 for a in self.assignments_for(result, employee)))
+
+    def test_whole_team_weekend_off_leaves_saturdays_sundays_unassigned(self):
+        # Team ohne Wochenend-Betrieb: auch eine 100%-Kraft trägt Sa+So ein.
+        employee = self.make_employee("Anna", fixed_weekdays_off=[5, 6])
+        result = self.generate()
+        weekend_assignments = [a for a in self.assignments_for(result, employee) if a.date.weekday() in (5, 6)]
+        self.assertEqual(weekend_assignments, [])
+        # Fehlbedarf an den Wochenendtagen ist hier erwartet (einzige Person
+        # im Fixture, minimum_staffing=1) -- kein Solver-Fehler, sondern
+        # Konsequenz der Testdaten.
+        weekend_shortfalls = [s for s in result.shortfalls if date.fromisoformat(s["date"]).weekday() in (5, 6)]
+        self.assertEqual(len(weekend_shortfalls), 8)  # 4 Sa + 4 So im September 2026
+
+    def test_all_seven_weekdays_off_is_rejected(self):
+        employee = Employee(
+            tenant=self.tenant, first_name="Anna", last_name="Test", employment_pct=100,
+            fixed_weekdays_off=list(range(7)),
+        )
+        with self.assertRaises(ValidationError):
+            employee.clean()
+
+    def test_out_of_range_value_is_rejected(self):
+        employee = Employee(
+            tenant=self.tenant, first_name="Anna", last_name="Test", employment_pct=100,
+            fixed_weekdays_off=[7],
+        )
+        with self.assertRaises(ValidationError):
+            employee.clean()
 
 
 class AbsenceTests(PlanningTestBase):

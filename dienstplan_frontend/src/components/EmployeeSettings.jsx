@@ -48,12 +48,17 @@ const SORT_COLUMNS = [
   { field: "is_active", label: "Status" },
 ];
 
+// 0=Montag ... 6=Sonntag, wie date.weekday() im Backend (scheduling.models:
+// Employee.fixed_weekdays_off) -- dieselbe Konvention wie PlanGrid.jsx.
+const WEEKDAY_LABELS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+
 function emptyForm() {
   return {
     first_name: "",
     last_name: "",
     birth_date: "",
     employment_pct: 100,
+    fixed_weekdays_off: [],
     employment_start_date: new Date().toISOString().slice(0, 10),
     termination_date: "",
     employments: [],
@@ -82,6 +87,7 @@ function toFormValues(employee) {
     last_name: employee.last_name,
     birth_date: employee.birth_date ?? "",
     employment_pct: employee.employment_pct,
+    fixed_weekdays_off: employee.fixed_weekdays_off ?? [],
     employment_start_date: employee.employment_start_date,
     termination_date: employee.termination_date ?? "",
     // README Punkt 17: employments statt nodes -- siehe EmploymentEditor.jsx.
@@ -437,6 +443,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
       last_name: form.last_name.trim(),
       birth_date: form.birth_date || null,
       employment_pct: Number(form.employment_pct),
+      fixed_weekdays_off: form.fixed_weekdays_off,
       employment_start_date: form.employment_start_date,
       termination_date: form.termination_date || null,
       employments: form.employments,
@@ -696,6 +703,34 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
               {fieldError("employment_pct")}
             </label>
           </div>
+          <label>
+            Feste freie Wochentage
+            <div className="weekday-checkbox-row">
+              {WEEKDAY_LABELS.map((label, weekday) => (
+                <label key={weekday} className="checkbox-row weekday-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={form.fixed_weekdays_off.includes(weekday)}
+                    onChange={(e) =>
+                      setForm((prev) => ({
+                        ...prev,
+                        fixed_weekdays_off: e.target.checked
+                          ? [...prev.fixed_weekdays_off, weekday]
+                          : prev.fixed_weekdays_off.filter((d) => d !== weekday),
+                      }))
+                    }
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <span className="panel-hint">
+              Wochentage, die grundsätzlich arbeitsfrei sind (Teilzeit-Muster, oder Sa/So für ein Team
+              ohne Wochenend-Betrieb). Die automatisierte Planung ("Automatisch planen") plant diese Tage
+              nie ein -- manuelles Stempeln im Planblatt bleibt trotzdem möglich.
+            </span>
+            {fieldError("fixed_weekdays_off")}
+          </label>
           <label>
             Skills
             <select

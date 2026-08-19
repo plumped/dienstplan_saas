@@ -472,31 +472,27 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     return map;
   }, [activeDraftAssignments]);
 
-  // Stempel-Leiste zeigt nur die Schichttypen der tatsächlich markierten
-  // Zeilen (Team-Knoten aus dem dritten Teil jedes markedCells-Schlüssels,
-  // siehe startMark) -- sind Zellen aus mehreren Teams markiert, wird die
-  // Vereinigung ihrer jeweiligen Schichttypen angezeigt. Ein Schichttyp
-  // direkt auf der Station (t.node === stationId) gilt als geteilter
-  // Katalog für jede markierte Team-Zeile und zählt daher immer mit --
-  // sonst würde die Stempelleiste bei stationsweiten Schichttypen (der
-  // Normalfall, solange niemand manuell auf Team-Ebene umgestellt hat)
-  // komplett leer bleiben.
-  // README (2026-08, Bugfix): vorher lieferte dieser useMemo bei leerer
-  // Auswahl `[]`, wodurch die komplette Stempelleiste (3 Zeilen) erst beim
-  // ersten markierten Tag erschien -- das liess das ganze Planblatt genau in
-  // dem Moment nach unten springen, in dem der Nutzer den ersten Tag anklickt,
-  // wodurch nachfolgende Klicks/Ziehen auf die falschen, jetzt verschobenen
-  // Zellen trafen. Fallback jetzt: die stationsweiten (geteilten) Vorlagen
-  // schon vor jeder Markierung zeigen -- das ist der weit überwiegende Fall
-  // (README Punkt 17: "ein Schichttyp auf einer Station steht allen Teams
-  // gemeinsam zur Verfügung"), reserviert den Platz von Anfang an und wächst
-  // nur noch in dem selteneren Fall team-spezifischer Vorlagen nach dem
-  // Markieren.
+  // Stempel-Leiste zeigt die Vereinigung aus stationsweiten Schichttypen
+  // (t.node === stationId, geteilter Katalog für alle Teams) und den
+  // Schichttypen JEDES aktuell sichtbaren Teams (teamNodes) -- unabhängig
+  // davon, ob/welche Zeile gerade markiert ist.
+  //
+  // README (2026-08, Bugfix): ursprünglich lieferte dieser useMemo bei
+  // leerer Auswahl `[]` (Leiste komplett leer bis zur ersten Markierung,
+  // liess das Planblatt beim ersten Klick nach unten springen). Ein erster
+  // Fix zeigte die stationsweiten Vorlagen schon vorher, liess team-
+  // spezifische aber weiterhin erst nach dem Markieren der jeweiligen Zeile
+  // erscheinen -- für eine Station mit mehreren team-spezifischen
+  // Schichttypen wirkte das wie ein Rätsel ("warum sehe ich erst alle
+  // Dienste, wenn ich einen Tag auswähle?", Nutzer-Feedback 2026-08). Jetzt
+  // immer die volle Vereinigung aller sichtbaren Zeilen zeigen: kein
+  // Überraschungseffekt mehr, und da teamNodes (anders als markedCells)
+  // unabhängig von der Markierung feststeht, bleibt die Leiste von Anfang
+  // an stabil -- kein erneutes Springen.
   const stampTemplates = useMemo(() => {
-    if (markedCells.size === 0) return templates.filter((t) => t.node === stationId);
-    const markedRowNodeIds = new Set(Array.from(markedCells, (key) => Number(key.split(":")[2])));
-    return templates.filter((t) => t.node === stationId || markedRowNodeIds.has(t.node));
-  }, [templates, markedCells, stationId]);
+    const visibleTeamNodeIds = new Set(teamNodes.map((n) => n.id));
+    return templates.filter((t) => t.node === stationId || visibleTeamNodeIds.has(t.node));
+  }, [templates, teamNodes, stationId]);
 
   // Nutzer-Feedback (2026-08): Stempelleiste soll mehrzeilig sein -- eine
   // Zeile für reguläre Dienste, eine für Spezialitäten (z. B. Pikettdienst,

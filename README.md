@@ -255,7 +255,7 @@ entstanden sind, nicht neu sortiert nach Status):
 | Block | Thema | Status | Aktuell offen |
 |---|---|---|---|
 | 1 | Schweizer Arbeitsgesetz (ArG) | ✅ vollständig umgesetzt (17 von 17 Punkten) | — |
-| 2 | Kernfunktionen Praxisalltag | ✅ vollständig umgesetzt (38 von 38 Punkten) | — |
+| 2 | Kernfunktionen Praxisalltag | ✅ vollständig umgesetzt (39 von 39 Punkten) | — |
 | 3 | Onboarding & Self-Signup | ✅ Punkte 1-4 umgesetzt | Punkt 4: Setup-Wizard mit dem Direktanlage-Formular aus Block 2.1 verschmelzen statt separat zu lassen |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
 | 5 | Datenschutz (revDSG) & Rechtliches | ✅ Punkte 1, 2, 3, 5 umgesetzt | Punkt 4: Hosting-Standort ist eine offene Infrastruktur-Entscheidung |
@@ -268,8 +268,8 @@ Punkt 30/31 (Lohn-Export) ebenfalls (Nutzerentscheid 2026-08: "näher am Verkauf
 einfachere Plan-Export aus Punkt 5) -- Punkt 5 danach als nächstes nachgezogen, danach Punkt 20
 (Fairness-Punktesystem, bewusst vor Punkt 19 priorisiert, weil Punkt 19 die Fairness-Punkte als
 Eingabe nutzen soll), danach Punkt 19 (Automatisierte Planung) selbst umgesetzt. Block 2 ist damit
-vollständig abgeschlossen (38 von 38 Punkten). Block 4/5 (Produktion) bewusst zurückgestellt, bis die
-Funktionalität steht.
+vollständig abgeschlossen -- zuletzt Punkt 39 (Auffülldienst, baut auf Punkt 19 auf, 39 von 39
+Punkten). Block 4/5 (Produktion) bewusst zurückgestellt, bis die Funktionalität steht.
 
 ### 1. Schweizer Arbeitsgesetz (ArG) — Regel-Engine vervollständigen
 
@@ -3080,6 +3080,47 @@ Kundensystem, deshalb Punkt 30 (Mapping) vor Punkt 31 (Export).
       erneuter Login-Versuch nach Reaktivierung klappt tatsächlich). Volle Suite (600 Tests) grün, mit
       Playwright verifiziert (Deaktivieren → Reaktivieren → Status wieder "Aktiv", Login-Zugang
       tatsächlich wiederhergestellt).
+
+39. ✅ **Auffülldienst: Automatisierte Planung für Teams ohne Zahlen-Ziel pro Dienst** (2026-08).
+    Nutzer-Feedback am konkreten Fallbeispiel (ICT: Frühdienst 1 Person, Spätdienst 1 Person,
+    "Gleitzeit" für alle übrigen Teammitglieder): `minimum_staffing` (Punkt 19) ist eine feste
+    Zielzahl, Boden UND Deckel -- dafür gibt es keine sinnvolle Zahl, wenn "alle, die sonst nichts
+    haben" gemeint ist, die tatsächliche Anzahl schwankt täglich mit Absenzen/Teilzeit-Mustern.
+    Deckt drei zusammenhängende Lücken ab, die dieses Fallbeispiel aufdeckte:
+
+    - **`Employee.fixed_weekdays_off`**: bislang kannte das Modell nur `employment_pct` (eine
+      Prozentzahl, kein Wochenmuster). Neues Feld (Liste 0=Montag..6=Sonntag) deckt sowohl das
+      individuelle Teilzeit-Muster als auch, bei allen Vollzeitkräften gesetzt, ein Team ohne
+      Wochenend-Betrieb ab -- bewusst kein separates "Betriebstage"-Konzept auf Node/TimeTemplate,
+      um das Modell nicht zu verdoppeln. Blockt diese Tage hart in der Automatik (wie ein
+      Absenz-Volltag), lässt manuelles Stempeln aber unberührt. Settings-UI: Wochentag-Checkboxen
+      in `EmployeeSettings.jsx`; `PlanGrid.jsx` markiert den Tag rein informativ.
+    - **Genehmigungsprozess für Wunschfrei/Wunschdienst**: Nutzer-Feedback "auch hier braucht es
+      einen Genehmigungsprozess" -- `ShiftPreference` bekommt ein `status`-Feld
+      (PENDING/APPROVED/REJECTED, analog `Absence`) mit `approve()`/`reject()`, ausschliesslich
+      Admin/Planer vorbehalten (nie der eigenen Person, auch nicht dem Antragsteller selbst).
+      Anlegen bleibt höchstpersönlich (kein Manager-Override, anders als bei Absence). PENDING
+      bleibt weich (überschreibbar wie bisher), APPROVED gilt für die Automatik hart, REJECTED wird
+      ignoriert. Frontend: der bisher rein informative Wunsch-Badge im Planblatt ist für Admin/
+      Planer jetzt anklickbar (Popover Freigeben/Ablehnen), solange der Wunsch offen ist.
+    - **`TimeTemplate.fills_remaining_capacity`**: kein Zahlen-Ziel, sondern "jede an diesem Tag
+      arbeitspflichtige, für dieses Team eingeteilte Person ohne anderen regulären Dienst bekommt
+      automatisch diesen". Validiert: keine Mindestbesetzung, keine Pflicht-Qualifikation, keine
+      Spezialität, höchstens einer pro Team (`TimeTemplate.clean()`). Im Solver
+      (`scheduling/planning.py`) von der Boden/Deckel-Logik aus Punkt 19 ausgenommen -- stattdessen
+      eine eigene Pflicht-Anwesenheits-Untergrenze pro Woche: wer bereits einen strukturell freien
+      Tag hat (`fixed_weekdays_off`), muss an allen übrigen verfügbaren Tagen arbeiten (der
+      gesetzliche Wochenruhetag ist damit schon erfüllt); ohne festes Muster bleibt weiterhin ein
+      frei wählbarer Ruhetag pro Woche. Mit Schlupfvariable statt hartem Zwang (`CATCHALL_
+      UNCOVERED_WEIGHT`, zwischen Mindestbesetzung und Wunsch-Präferenzen eingeordnet) -- ein
+      einzelner Regelkonflikt (z. B. Ruhezeit) macht das Modell dadurch nie unlösbar, sondern
+      erzeugt nur eine lesbare Warnung ("X: an Y Tag(en) im Monat konnte kein Dienst automatisch
+      zugeteilt werden"). Settings-UI: Checkbox in `TimeTemplateSettings.jsx`, setzt Mindest-
+      besetzung/Pflicht-Skill beim Aktivieren automatisch zurück.
+
+    In drei Etappen umgesetzt und einzeln committet (Wochenmuster, Genehmigungsprozess,
+    Auffülldienst-Schichttyp) -- jede Etappe für sich lauffähig und mit eigenen Tests, da die
+    dritte auf den ersten beiden aufbaut. Volle Suite (790 Tests) grün.
 
 ### 3. Onboarding & Mandantenfähigkeit für Self-Signup
 

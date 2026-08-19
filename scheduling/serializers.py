@@ -537,10 +537,22 @@ class TimeTemplateSerializer(NestedWritableSerializerMixin, serializers.ModelSer
             "color",
             "required_skill",
             "minimum_staffing",
+            "fills_remaining_capacity",
             "category",
             "surcharge_pct",
             "segments",
         ]
+
+    def validate(self, attrs):
+        # fills_remaining_capacity (2026-08, Automatisierte Planung mit
+        # Auffülldienst): TimeTemplate.save() ruft clean() nicht automatisch
+        # auf -- analog zu Employee.fixed_weekdays_off oben.
+        instance = build_instance_for_clean(
+            self, attrs, TimeTemplate,
+            ["node", "minimum_staffing", "required_skill", "category", "fills_remaining_capacity"],
+        )
+        instance.clean()
+        return attrs
 
     def validate_segments(self, value):
         ordered = sorted(value, key=lambda s: s.get("order", 0))

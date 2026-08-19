@@ -31,6 +31,7 @@ function emptyForm(defaultNodeId) {
     color: "#2563eb",
     required_skill: "",
     minimum_staffing: 0,
+    fills_remaining_capacity: false,
     category: "shift",
     surcharge_pct: 0,
     segments: [],
@@ -48,6 +49,7 @@ function toFormValues(template) {
     color: template.color,
     required_skill: template.required_skill ?? "",
     minimum_staffing: template.minimum_staffing,
+    fills_remaining_capacity: template.fills_remaining_capacity ?? false,
     category: template.category ?? "shift",
     surcharge_pct: template.surcharge_pct ?? 0,
     segments: (template.segments ?? []).map((s) => ({
@@ -159,6 +161,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
       color: form.color,
       required_skill: form.required_skill || null,
       minimum_staffing: Number(form.minimum_staffing) || 0,
+      fills_remaining_capacity: form.fills_remaining_capacity,
       category: form.category,
       surcharge_pct: form.category === "special" ? Number(form.surcharge_pct) || 0 : 0,
       segments: form.segments.map((s, i) => ({ order: i, start_time: s.start_time, end_time: s.end_time })),
@@ -270,6 +273,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                       <td>
                         {t.segments?.length > 1 && <span className="entry-note">{t.segments.length} Segmente</span>}
                         {t.minimum_staffing > 0 && <span className="entry-note"> min. {t.minimum_staffing} Pers.</span>}
+                        {t.fills_remaining_capacity && <span className="entry-note"> Auffülldienst</span>}
                         {t.surcharge_pct > 0 && <span className="entry-note"> Zuschlag {t.surcharge_pct}%</span>}
                       </td>
                       <td onClick={(e) => e.stopPropagation()}>
@@ -397,6 +401,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                   Erforderlicher Skill (optional)
                   <select
                     value={form.required_skill}
+                    disabled={form.fills_remaining_capacity}
                     onChange={(e) => setForm((prev) => ({ ...prev, required_skill: e.target.value }))}
                   >
                     <option value="">— keiner —</option>
@@ -415,6 +420,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                     type="number"
                     min="0"
                     value={form.minimum_staffing}
+                    disabled={form.fills_remaining_capacity}
                     onChange={(e) => setForm((prev) => ({ ...prev, minimum_staffing: e.target.value }))}
                   />
                   <span className="panel-hint">
@@ -455,6 +461,33 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                     </span>
                   </label>
                 )}
+              </div>
+              <div className="panel-form-row">
+                <label className="checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={form.fills_remaining_capacity}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setForm((prev) => ({
+                        ...prev,
+                        fills_remaining_capacity: checked,
+                        // Backend lehnt beides gleichzeitig ab (TimeTemplate.clean()) --
+                        // beim Aktivieren gleich mit zurücksetzen statt den Nutzer über
+                        // einen Validierungsfehler stolpern zu lassen.
+                        minimum_staffing: checked ? 0 : prev.minimum_staffing,
+                        required_skill: checked ? "" : prev.required_skill,
+                      }));
+                    }}
+                  />
+                  Auffülldienst (z. B. "Gleitzeit")
+                </label>
+                <span className="panel-hint">
+                  Statt einer festen Mindestbesetzung erhalten alle an diesem Tag arbeitspflichtigen
+                  Mitarbeitenden dieses Teams, die keinen anderen Dienst haben, automatisch diesen
+                  Schichttyp -- die Anzahl ergibt sich täglich neu, statt fest vorgegeben zu sein.
+                  Höchstens ein Auffülldienst pro Team; setzt Mindestbesetzung auf 0 voraus.
+                </span>
               </div>
 
               <h3>Blockstruktur (optional, Block 1.9)</h3>

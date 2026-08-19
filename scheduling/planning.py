@@ -31,6 +31,7 @@ from datetime import date, datetime, time, timedelta
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 
 from ortools.sat.python import cp_model
 
@@ -51,6 +52,11 @@ SOLVER_TIME_LIMIT_SECONDS = 20
 # dass eine höhere Priorität eine niedrigere immer dominiert (Mindestbesetzung
 # schlägt jeden Fairness-/Wunsch-Kompromiss, siehe Plan-Dokument).
 SHORTFALL_WEIGHT = 100_000
+# Zwischen SHORTFALL_WEIGHT (echte Mindestbesetzung, höchste Priorität) und
+# WISH_FREE_VIOLATION_WEIGHT (weiche Präferenz) eingeordnet: fehlende
+# Zuteilung im Auffülldienst ist kein Betriebsrisiko wie eine unterbesetzte
+# Pflichtschicht, aber wichtiger als ein Wunsch.
+CATCHALL_UNCOVERED_WEIGHT = 10_000
 WISH_FREE_VIOLATION_WEIGHT = 800
 WISH_SHIFT_MATCH_REWARD = 500
 SPECIAL_BALANCE_WEIGHT = 50
@@ -109,15 +115,19 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
     context_start = month_start - timedelta(days=6)
     context_end = month_end + timedelta(days=6)
 
+    # Ein Auffülldienst (fills_remaining_capacity) hat bewusst
+    # minimum_staffing=0 (siehe TimeTemplate.clean()) -- er braucht trotzdem
+    # eine eigene Aufnahme hier, sonst würde ihn schon dieser erste Filter
+    # ausschliessen, bevor er überhaupt als Kandidat in Frage kommt.
     all_templates = list(
-        TimeTemplate.all_objects.filter(
-            tenant=tenant, node_id__in=scope_node_ids, minimum_staffing__gt=0
-        ).select_related("required_skill")
+        TimeTemplate.all_objects.filter(tenant=tenant, node_id__in=scope_node_ids)
+        .filter(Q(minimum_staffing__gt=0) | Q(fills_remaining_capacity=True))
+        .select_related("required_skill")
     )
     if not all_templates:
         return PlanGenerationResult(
             status="no_candidates",
-            warnings=["Keine Schichttypen mit Mindestbesetzung > 0 für diese Station hinterlegt."],
+            warnings=["Keine Schichttypen mit Mindestbesetzung > 0 oder Auffülldienst für diese Station hinterlegt."],
         )
 
     valid_templates = []
@@ -183,6 +193,21 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
             if matching_teams:
                 return matching_teams[0]
         return None
+
+    # employee_id -> der EINE Auffülldienst (fills_remaining_capacity), der
+    # für das Team dieser Mitarbeiterin gilt, falls vorhanden (siehe
+    # TimeTemplate.clean(): höchstens einer pro Team). Steuert unten die
+    # neue Pflicht-Anwesenheits-Regel -- ohne Auffülldienst im Team bleibt
+    # das bisherige, rein minimum_staffing-getriebene Verhalten unverändert.
+    catch_all_templates = [t for t in valid_templates if t.fills_remaining_capacity]
+    employee_catchall = {}
+    if catch_all_templates:
+        for employee in employees:
+            emp_node_ids = employee_node_ids.get(employee.id, set())
+            for t in catch_all_templates:
+                if resolve_assignment_node_id(t, emp_node_ids) is not None:
+                    employee_catchall[employee.id] = t
+                    break
 
     context_assignments = list(
         ShiftAssignment.all_objects.filter(
@@ -481,8 +506,15 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
                 model.Add(day_max_end >= e).OnlyEnforceIf(var)
             model.Add(day_max_end - day_min_start <= max_daily_span_minutes)
 
-    # 5. Wöchentlicher freier Tag (mirrors _check_weekly_rest_day()).
+    # 5. Wöchentlicher freier Tag (mirrors _check_weekly_rest_day()) --
+    #    zusätzlich, NUR für Mitarbeitende mit Auffülldienst im Team (siehe
+    #    employee_catchall oben): eine Pflicht-Anwesenheits-Untergrenze, mit
+    #    Schlupfvariable statt eines harten Zwangs, damit ein einzelner
+    #    Regelkonflikt (z. B. Ruhezeit) nie das ganze Modell unlösbar macht,
+    #    sondern nur eine Warnung erzeugt (siehe unten nach dem Solve).
+    catchall_uncovered_vars = {}
     for employee in employees:
+        catchall_template = employee_catchall.get(employee.id)
         for week_start in weeks:
             week_dates = [week_start + timedelta(days=i) for i in range(7)]
             fixed_occupied = 0
@@ -509,6 +541,20 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
                 occupied_vars.append(occ)
             if occupied_vars or fixed_occupied:
                 model.Add(sum(occupied_vars) + fixed_occupied <= 6)
+                if catchall_template is not None:
+                    # Wer bereits einen strukturell freien Wochentag hat
+                    # (fixed_weekdays_off), erfüllt den gesetzlichen
+                    # Wochenruhetag damit schon -- an den übrigen Tagen
+                    # dieser Woche gibt es dann keinen Grund mehr, jemanden
+                    # unbeplant zu lassen (min_required = alle verfügbaren
+                    # Tage). Ohne festes Muster bleibt EIN frei wählbarer
+                    # Ruhetag pro Woche nötig (min_required = verfügbare
+                    # Tage minus 1), wie bislang beim reinen <=6 oben.
+                    eligible_days = fixed_occupied + len(occupied_vars)
+                    min_required = eligible_days if employee.fixed_weekdays_off else max(eligible_days - 1, 0)
+                    uncovered = model.NewIntVar(0, 7, f"catchall_uncovered_{employee.id}_{week_start.isoformat()}")
+                    model.Add(sum(occupied_vars) + fixed_occupied + uncovered >= min_required)
+                    catchall_uncovered_vars[(employee.id, week_start)] = uncovered
 
     # 6. Mindestbesetzung mit Fehlbedarfs-Schlupfvariable -- der einzige
     #    wirklich neue harte Ziel-Constraint (bislang nirgends durchgesetzt,
@@ -520,6 +566,12 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
 
     shortfall_vars = {}
     for template in valid_templates:
+        # Auffülldienst hat kein Zahlen-Ziel (minimum_staffing=0, siehe
+        # TimeTemplate.clean()) -- Boden/Deckel dieser Schleife WÜRDEN ihn
+        # sonst auf 0 Zuweisungen kappen (max(0, 0-fixed_count) <= 0). Seine
+        # eigene Pflicht-Anwesenheits-Regel lebt stattdessen in Abschnitt 5.
+        if template.fills_remaining_capacity:
+            continue
         for d in month_dates:
             eligible_vars = [
                 candidates[(e.id, d, template.id)] for e in employees if (e.id, d, template.id) in candidates
@@ -541,6 +593,8 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
 
     # Zielfunktion
     objective_terms = [SHORTFALL_WEIGHT * sum(shortfall_vars.values())] if shortfall_vars else []
+    if catchall_uncovered_vars:
+        objective_terms.append(CATCHALL_UNCOVERED_WEIGHT * sum(catchall_uncovered_vars.values()))
 
     for (employee_id, d, template_id), var in candidates.items():
         if (employee_id, d) in wish_free:
@@ -666,6 +720,22 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
                     "filled": filled,
                 }
             )
+
+    # Pflicht-Anwesenheit im Auffülldienst nicht vollständig erfüllbar (siehe
+    # Abschnitt 5 oben) -- pro Mitarbeiterin über den Monat aggregiert statt
+    # pro Woche, damit die Warnliste bei mehreren betroffenen Wochen nicht
+    # unnötig lang wird.
+    catchall_uncovered_days = defaultdict(int)
+    for (employee_id, week_start), uncovered_var in catchall_uncovered_vars.items():
+        amount = solver.Value(uncovered_var)
+        if amount > 0:
+            catchall_uncovered_days[employee_id] += amount
+    for employee_id, day_count in catchall_uncovered_days.items():
+        employee = employee_by_id[employee_id]
+        warnings.append(
+            f"{employee}: an {day_count} Tag(en) im Monat konnte kein Dienst automatisch zugeteilt werden "
+            "(Regelkonflikt, z. B. Ruhezeit)."
+        )
 
     wish_free_violations = sum(
         1

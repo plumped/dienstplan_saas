@@ -1970,12 +1970,48 @@ class TimeTemplate(TenantScopedModel):
         "eigenen Lohnart-Code braucht (z. B. 'Pikett Wochentag' und 'Pikett Wochenende' können in "
         "der Kundenlohnsoftware unterschiedliche Codes haben).",
     )
+    # Nutzer-Feedback (2026-08, Automatisierte Planung): "es gibt Dienste
+    # (Fr\u00fch/Sp\u00e4t) mit fixer Personenzahl -- und einen, den alle anderen im
+    # Team bekommen, die keinen der beiden haben (z. B. Gleitzeit)".
+    # minimum_staffing (fixe Zielzahl, Boden UND Deckel) kann das nicht
+    # abbilden -- die Anzahl variiert t\u00e4glich mit Absenzen/Teilzeit-Mustern.
+    # fills_remaining_capacity kehrt die Logik um: kein Zahlen-Ziel, sondern
+    # "jede an diesem Tag arbeitspflichtige, f\u00fcr dieses Team eingeteilte
+    # Person, die keinen anderen regul\u00e4ren Dienst hat, bekommt diesen"
+    # (siehe scheduling.planning: von minimum_staffing-Boden/Deckel
+    # ausgenommen, stattdessen eigene Pflicht-Anwesenheits-Constraint pro
+    # Woche, zusammen mit Employee.fixed_weekdays_off).
+    fills_remaining_capacity = models.BooleanField(
+        default=False,
+        help_text="Auff\u00fclldienst: statt einer festen Mindestbesetzung erhalten alle an diesem Tag "
+        "arbeitspflichtigen Mitarbeitenden dieses Teams, die keinen anderen regul\u00e4ren Dienst haben, "
+        "automatisch diesen Schichttyp (z. B. 'Gleitzeit'). H\u00f6chstens ein Auff\u00fclldienst pro Team.",
+    )
 
     class Meta:
         ordering = ["start_time"]
 
     def __str__(self):
         return f"{self.name} ({self.start_time}\u2013{self.end_time})"
+
+    def clean(self):
+        if self.fills_remaining_capacity:
+            if self.minimum_staffing:
+                raise ValidationError(
+                    "Ein Auff\u00fclldienst kann keine Mindestbesetzung haben -- die Anzahl ergibt sich "
+                    "automatisch aus den \u00fcbrigen Zuweisungen des Tages."
+                )
+            if self.required_skill_id:
+                raise ValidationError("Ein Auff\u00fclldienst kann keine Pflicht-Qualifikation verlangen.")
+            if self.category == TimeTemplate.Category.SPECIAL:
+                raise ValidationError("Ein Auff\u00fclldienst kann keine Spezialit\u00e4t (Pikett o. \u00c4.) sein.")
+            if (
+                self.node_id
+                and TimeTemplate.all_objects.filter(node_id=self.node_id, fills_remaining_capacity=True)
+                .exclude(pk=self.pk)
+                .exists()
+            ):
+                raise ValidationError("F\u00fcr diesen Knoten existiert bereits ein Auff\u00fclldienst.")
 
     def effective_segments(self):
         """

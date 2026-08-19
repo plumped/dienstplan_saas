@@ -566,6 +566,141 @@ class ApprovedWishPreferenceTests(PlanningTestBase):
         self.assertEqual(without_preference.warnings, with_rejected_preference.warnings)
 
 
+class CatchAllTemplateTests(PlanningTestBase):
+    """
+    TimeTemplate.fills_remaining_capacity ("Auffülldienst", 2026-08) --
+    Nutzer-Beispiel: Frühdienst/Spätdienst mit fixer Mindestbesetzung=1
+    (self.template aus PlanningTestBase + self.spaet), Gleitzeit für alle
+    übrigen Teammitglieder ohne festes Zahlen-Ziel.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.spaet = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Spätdienst",
+            start_time=time(13, 0), end_time=time(21, 0), break_minutes=30, minimum_staffing=1,
+        )
+        self.gleitzeit = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Gleitzeit",
+            start_time=time(9, 0), end_time=time(17, 0), break_minutes=30,
+            fills_remaining_capacity=True,
+        )
+        self.month_dates = [date(2026, 9, i) for i in range(1, 31)]
+
+    def test_catchall_covers_the_rest_of_the_team(self):
+        for name in ("Anna", "Bea", "Clara", "Dora"):
+            self.make_employee(name)
+        result = self.generate()
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.shortfalls, [])
+        self.assertEqual(result.warnings, [])
+        fruehdienst_days = {a.date for a in result.assignments if a.template_id == self.template.id}
+        spaetdienst_days = {a.date for a in result.assignments if a.template_id == self.spaet.id}
+        self.assertEqual(fruehdienst_days, set(self.month_dates))
+        self.assertEqual(spaetdienst_days, set(self.month_dates))
+        self.assertTrue(any(a.template_id == self.gleitzeit.id for a in result.assignments))
+
+    def test_catchall_excluded_from_no_candidates_check(self):
+        # Station mit AUSSCHLIESSLICH einem Auffülldienst (kein
+        # minimum_staffing-Template) -- der Query-Fix ganz oben in
+        # generate_draft_plan() muss ihn trotzdem finden.
+        self.template.delete()
+        self.spaet.delete()
+        self.make_employee("Anna")
+        result = self.generate()
+        self.assertEqual(result.status, "ok")
+        self.assertTrue(any(a.template_id == self.gleitzeit.id for a in result.assignments))
+
+    def test_catchall_respects_fixed_weekdays_off(self):
+        self.template.delete()
+        self.spaet.delete()
+        employee = self.make_employee("Anna", fixed_weekdays_off=[5, 6])  # Sa+So
+        result = self.generate()
+        self.assertEqual(result.status, "ok")
+        # fixed_weekdays_off deckt den Wochenruhetag bereits ab -- an den
+        # verbleibenden Wochentagen darf deshalb kein zusätzlicher freier Tag
+        # mehr entstehen (kein Fehlbedarfs-Hinweis).
+        self.assertEqual(result.warnings, [])
+        weekend_assignments = [a for a in result.assignments if a.date.weekday() in (5, 6)]
+        self.assertEqual(weekend_assignments, [])
+        weekday_dates = {d for d in self.month_dates if d.weekday() not in (5, 6)}
+        self.assertEqual({a.date for a in result.assignments}, weekday_dates)
+
+    def test_catchall_leaves_one_flexible_rest_day_per_full_week_without_fixed_pattern(self):
+        self.template.delete()
+        self.spaet.delete()
+        self.make_employee("Anna")  # kein fixed_weekdays_off
+        result = self.generate()
+        self.assertEqual(result.warnings, [])
+        assigned_dates = {a.date for a in result.assignments}
+        full_weeks = {}
+        for d in self.month_dates:
+            full_weeks.setdefault(d - timedelta(days=d.weekday()), []).append(d)
+        for days in full_weeks.values():
+            if len(days) == 7:  # nur vollständig im Monat liegende Wochen prüfen
+                occupied = sum(1 for d in days if d in assigned_dates)
+                self.assertEqual(occupied, 6)
+
+    def test_catchall_uncovered_produces_warning_not_infeasible(self):
+        # Gleitzeit = 7.5h/Tag; bei max. 20h/Woche sind höchstens 2 statt der
+        # geforderten 6 Arbeitstage möglich -- erzwingt zuverlässig
+        # catchall_uncovered > 0, ohne das Modell unlösbar zu machen.
+        self.template.delete()
+        self.spaet.delete()
+        self.tenant.maximum_weekly_hours = 20
+        self.tenant.save()
+        self.make_employee("Anna")
+        result = self.generate()
+        self.assertEqual(result.status, "ok")
+        self.assertTrue(any("konnte kein Dienst automatisch zugeteilt werden" in w for w in result.warnings))
+
+
+class TimeTemplateFillsRemainingCapacityValidationTests(TestCase):
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik Auffuelldienst", slug="klinik-auffuelldienst")
+        self.node = make_station(self.tenant, "Station A")
+
+    def test_cannot_set_minimum_staffing(self):
+        template = TimeTemplate(
+            tenant=self.tenant, node=self.node, name="Gleitzeit",
+            start_time=time(9, 0), end_time=time(17, 0),
+            fills_remaining_capacity=True, minimum_staffing=1,
+        )
+        with self.assertRaises(ValidationError):
+            template.clean()
+
+    def test_cannot_require_skill(self):
+        skill = Skill.objects.create(tenant=self.tenant, name="Reanimation")
+        template = TimeTemplate(
+            tenant=self.tenant, node=self.node, name="Gleitzeit",
+            start_time=time(9, 0), end_time=time(17, 0),
+            fills_remaining_capacity=True, required_skill=skill,
+        )
+        with self.assertRaises(ValidationError):
+            template.clean()
+
+    def test_cannot_be_special_category(self):
+        template = TimeTemplate(
+            tenant=self.tenant, node=self.node, name="Pikett",
+            start_time=time(9, 0), end_time=time(17, 0),
+            fills_remaining_capacity=True, category=TimeTemplate.Category.SPECIAL,
+        )
+        with self.assertRaises(ValidationError):
+            template.clean()
+
+    def test_only_one_per_node(self):
+        TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Gleitzeit",
+            start_time=time(9, 0), end_time=time(17, 0), fills_remaining_capacity=True,
+        )
+        second = TimeTemplate(
+            tenant=self.tenant, node=self.node, name="Gleitzeit 2",
+            start_time=time(8, 0), end_time=time(16, 0), fills_remaining_capacity=True,
+        )
+        with self.assertRaises(ValidationError):
+            second.clean()
+
+
 class FairnessBiasTests(PlanningTestBase):
     def setUp(self):
         super().setUp()

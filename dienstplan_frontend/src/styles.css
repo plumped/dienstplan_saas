@@ -1431,6 +1431,20 @@ thead .col-employee {
   align-items: center;
 }
 
+/* Settings-Panel-Polish (2026-08): .option-card und .color-picker-trigger
+   sind (wie .checkbox-row oben) selbst <label>-Elemente -- ohne diese
+   Überschreibung gewinnt ".panel-form label { flex-direction: column }"
+   (höhere Spezifität: 1 Klasse + 1 Element schlägt 1 Klasse allein) und
+   zwingt ihre Kinder in eine Spalte statt einer Zeile. Beim Farbwähler war
+   das sofort sichtbar (Swatch/Hex/Chevron gestapelt statt nebeneinander);
+   bei den Options-Karten sah es zufällig noch passabel aus, weil Icon und
+   Textblock trotzdem block-artig nebeneinander wirkten -- computed style
+   war aber ebenso column, also derselbe Bug, nur weniger auffällig. */
+.panel-form .option-card,
+.panel-form .color-picker-trigger {
+  flex-direction: row;
+}
+
 /* README Block 5 (2026-08): dieselbe Korrektur wie .panel-form .checkbox-row oben, hier für die
    AGB-Checkbox in SignupForm.jsx -- .login-card label erbt sonst dieselbe
    flex-direction: column mit ebenfalls höherer Spezifität als .checkbox-row allein. */
@@ -1473,6 +1487,14 @@ thead .col-employee {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 20px;
+  /* Settings-Panel-Polish (2026-08): minimale Tiefe statt reiner
+     1px-Kontur -- fällt auf --bg (leicht grau) deutlicher als Fläche auf,
+     ohne wie ein schwerer Material-Schatten zu wirken. Betrifft ALLE
+     Verwender dieser Basisklasse (bewusst, da eine dezente Karten-Tiefe
+     überall im Frontend passt, anders als die settings-form-*-Klassen
+     unten, die gezielt nur bei Verwendung des neuen Kopfzeilen-Musters
+     greifen). */
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
 }
 
 .panel-list--full {
@@ -1900,6 +1922,51 @@ thead .col-employee {
    Verwender dieser Basisklassen (Dashboard, TimeRecordPanel,
    TradeRequestPanel, MembershipAccessSettings, ...) bleiben dadurch
    unverändert. */
+/* Nutzer-Feedback (2026-08, Vergleich mit Vorbild-Screenshot): dezenter
+   Punkteraster + zwei verwaschene Kreise oben rechts, nur bei Formularen
+   mit dem neuen Kopfzeilen-Muster (:has() statt einer eigenen Modifier-
+   Klasse an jedem Verwender) -- rein dekorativ, deshalb pointer-events:
+   none und per z-index hinter den eigentlichen Formularinhalt gelegt
+   (sonst läge die absolut positionierte Dekoration über allem, auch ohne
+   z-index -- positionierte Elemente stapeln sich unabhängig von der
+   DOM-Reihenfolge immer über unpositionierten). */
+.panel-form:has(.settings-form-header) {
+  position: relative;
+  overflow: hidden;
+}
+
+.panel-form:has(.settings-form-header) > * {
+  position: relative;
+  z-index: 1;
+}
+
+.panel-form:has(.settings-form-header)::before,
+.panel-form:has(.settings-form-header)::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.panel-form:has(.settings-form-header)::before {
+  top: -70px;
+  right: -60px;
+  width: 220px;
+  height: 220px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 35% 35%, var(--primary-soft), transparent 72%);
+}
+
+.panel-form:has(.settings-form-header)::after {
+  top: 14px;
+  right: 70px;
+  width: 84px;
+  height: 84px;
+  background-image: radial-gradient(var(--border) 1.5px, transparent 1.5px);
+  background-size: 13px 13px;
+  opacity: 0.7;
+}
+
 .settings-form-header {
   display: flex;
   align-items: flex-start;
@@ -1912,15 +1979,37 @@ thead .col-employee {
   align-items: center;
   justify-content: center;
   flex: none;
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: var(--primary-soft);
-  color: var(--primary);
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background: var(--primary);
+  color: var(--surface);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.16);
 }
 
 .settings-form-header h2 {
   margin-bottom: 0;
+}
+
+/* Tooltip-"?" neben einem Feld-Label (Vorbild-Screenshot) -- bewusst nur
+   das native title-Attribut statt eines eigenen Popover-Widgets: die
+   Erklärung steht ohnehin schon als .panel-hint sichtbar unter dem Feld,
+   das "?" ist hier reine visuelle Anlehnung ans Vorbild, kein zweiter,
+   redundanter Erklärmechanismus. */
+.field-tooltip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--ink-muted);
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+  cursor: help;
 }
 
 .settings-form-subtitle {
@@ -2027,8 +2116,8 @@ thead .col-employee {
 }
 
 .color-picker-swatch {
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 20px;
   border-radius: 5px;
   border: 1px solid var(--border);
 }

@@ -129,7 +129,15 @@ export default function AbsenceTypeSettings({ onError }) {
           </div>
         </div>
         <label>
-          Name
+          <span>
+            Name
+            <span
+              className="field-tooltip"
+              title="Wird im Planblatt, Jahresplan und in Abwesenheitsanträgen angezeigt."
+            >
+              ?
+            </span>
+          </span>
           <input
             type="text"
             placeholder="z. B. Ferien, Krankheit, Homeoffice"
@@ -148,7 +156,15 @@ export default function AbsenceTypeSettings({ onError }) {
             <span className="panel-hint">Diese Farbe wird als Chip-Hintergrund im Plan und Jahresplan angezeigt.</span>
           </label>
           <label>
-            Kürzel (optional)
+            <span>
+              Kürzel (optional)
+              <span
+                className="field-tooltip"
+                title="Kurzform für die Chip-Anzeige, z. B. im engen Jahresplan-Raster."
+              >
+                ?
+              </span>
+            </span>
             <input
               type="text"
               maxLength={50}

@@ -447,6 +447,12 @@ export const api = {
   updateShiftPreference: (id, payload) =>
     request(`/shift-preferences/${id}/`, { method: "PATCH", body: payload }),
   deleteShiftPreference: (id) => request(`/shift-preferences/${id}/`, { method: "DELETE" }),
+  // Genehmigungsprozess (2026-08, Automatisierte Planung mit Auffülldienst):
+  // nur Admin/Planer (ShiftPreferencePermission), siehe PlanGrid.jsx/ShiftCell.jsx.
+  approveShiftPreference: (id) =>
+    request(`/shift-preferences/${id}/approve/`, { method: "POST", affectsTasks: true }),
+  rejectShiftPreference: (id) =>
+    request(`/shift-preferences/${id}/reject/`, { method: "POST", affectsTasks: true }),
 
   getTimeRecords: (dateFrom, dateTo) =>
     requestAllPages(

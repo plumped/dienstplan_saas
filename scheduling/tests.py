@@ -5151,6 +5151,75 @@ class ShiftPreferenceTests(APITestCase):
             self.assertEqual(response.status_code, status.HTTP_200_OK)
             self.assertEqual(len(response.data["results"]), 1)
 
+    def test_status_defaults_to_pending_and_cannot_be_set_via_payload(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/", {"date": "2026-08-10", "type": "wunschfrei", "status": "approved"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], "pending")
+
+    def test_employee_cannot_approve_or_reject_own_preference(self):
+        # Genehmigungsprozess (2026-08, Automatisierte Planung mit
+        # Auffülldienst): analog zu Absence darf niemand den eigenen Wunsch
+        # selbst freigeben, siehe ShiftPreferencePermission.
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.alice_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-preferences/{pref.id}/approve/").status_code, status.HTTP_403_FORBIDDEN
+        )
+        self.assertEqual(
+            self.client.post(f"/api/shift-preferences/{pref.id}/reject/").status_code, status.HTTP_403_FORBIDDEN
+        )
+
+    def test_planner_can_approve_and_reject_preference(self):
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/shift-preferences/{pref.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "approved")
+
+        other = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.bob, date=date(2026, 8, 11), type=ShiftPreference.Type.FREE
+        )
+        response = self.client.post(f"/api/shift-preferences/{other.id}/reject/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "rejected")
+
+    def test_hr_cannot_approve_preference(self):
+        # HR ist wie überall "nur Reporting" -- kein Manager-Recht.
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.hr_user)
+        response = self.client.post(f"/api/shift-preferences/{pref.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_approve_already_decided_preference_is_rejected(self):
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE,
+            status=ShiftPreference.Status.APPROVED,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/shift-preferences/{pref.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_employee_cannot_edit_or_delete_after_decision(self):
+        # Ein entschiedener Wunsch ist nur noch lesbar -- die Automatik
+        # behandelt eine Freigabe als harte Vorgabe (scheduling.planning),
+        # die nicht nachträglich unbemerkt verändert werden soll.
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE,
+            status=ShiftPreference.Status.APPROVED,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.delete(f"/api/shift-preferences/{pref.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
 
 class NotificationsAndTaskCountsTests(APITestCase):
     """

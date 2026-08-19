@@ -23,7 +23,9 @@ from core.models import Membership
 from core.notifications import (
     notify_absence_decision,
     notify_new_absence_request,
+    notify_new_shift_preference_request,
     notify_new_trade_request,
+    notify_shift_preference_decision,
     notify_trade_accepted_by_employee,
     notify_trade_declined,
     notify_trade_decision,
@@ -1289,7 +1291,24 @@ class ShiftPreferenceViewSet(TenantScopedViewSet):
         employee_profile = self.request.employee_profile
         if not employee_profile:
             raise PermissionDenied("Nur mit eigenem Mitarbeiterprofil möglich.")
-        serializer.save(tenant=self.request.tenant, employee=employee_profile)
+        preference = serializer.save(tenant=self.request.tenant, employee=employee_profile)
+        notify_new_shift_preference_request(preference)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        preference = self.get_object()
+        with translate_model_validation_error():
+            preference.approve()
+        notify_shift_preference_decision(preference)
+        return Response(self.get_serializer(preference).data)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        preference = self.get_object()
+        with translate_model_validation_error():
+            preference.reject()
+        notify_shift_preference_decision(preference)
+        return Response(self.get_serializer(preference).data)
 
 
 class ShiftTradeRequestViewSet(TenantScopedViewSet):

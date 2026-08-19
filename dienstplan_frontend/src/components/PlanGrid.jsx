@@ -546,6 +546,23 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
     }
   }
 
+  // Genehmigungsprozess (2026-08, Automatisierte Planung mit Auffülldienst):
+  // nur für canManage (ShiftPreferencePermission verweigert Mitarbeitenden
+  // approve/reject serverseitig ohnehin, siehe ShiftCell.jsx).
+  async function handleDecideWish(preference, decision) {
+    try {
+      const decided =
+        decision === "approve"
+          ? await api.approveShiftPreference(preference.id)
+          : await api.rejectShiftPreference(preference.id);
+      setPreferences((prev) => prev.map((p) => (p.id === decided.id ? decided : p)));
+      return true;
+    } catch (e) {
+      onError(e.message);
+      return false;
+    }
+  }
+
   async function handleSaveTimeRecord(assignmentId, record, payload) {
     try {
       const saved = record
@@ -1583,6 +1600,8 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
                           canEditOwnWish={canEditOwnWish}
                           onSaveWish={(payload) => handleSaveWish(date, preference, payload)}
                           onDeleteWish={() => handleDeleteWish(preference)}
+                          onApproveWish={() => handleDecideWish(preference, "approve")}
+                          onRejectWish={() => handleDecideWish(preference, "reject")}
                           showWishBadge={slotIndex === 0}
                           marked={marked}
                           onMarkStart={() => startMark(emp.id, date, rowNodeId)}

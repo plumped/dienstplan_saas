@@ -199,29 +199,41 @@ class PregnancyPermission(BasePermission):
         return bool(employee_profile) and obj.employee_id == employee_profile.id
 
 
-class ShiftPreferencePermission(BasePermission):
+class ShiftPreferencePermission(_ManagerOrEmployeeCanWriteMixin, BasePermission):
     """
-    Wunschfrei/Wunschdienst (Block 2.13): reine Selbstauskunft ohne
-    Fremdbestimmung -- anders als bei Absence/TimeRecord dürfen hier auch
-    Admin/Planer KEINE Wünsche für andere Personen anlegen/ändern/löschen,
-    weil ein Wunsch per Definition höchstpersönlich ist (kein "im Auftrag
-    von"-Fall wie bei Absenzen). ShiftPreferenceViewSet.perform_create
-    erzwingt zusätzlich employee=request.employee_profile, unabhängig
-    davon, was im Payload mitgeschickt wurde. Lesen ist wie beim übrigen
-    Planblatt für jede Rolle offen (der Planer muss die Wünsche aller
-    Mitarbeitenden sehen können, um sie bei der Planung zu berücksichtigen).
-    """
+    Wunschfrei/Wunschdienst (Block 2.13): Anlegen bleibt reine
+    Selbstauskunft ohne Fremdbestimmung -- Admin/Planer dürfen weiterhin
+    KEINE Wünsche für andere Personen anlegen/ändern/löschen, weil ein
+    Wunsch per Definition höchstpersönlich ist (kein "im Auftrag von"-Fall
+    wie bei Absenzen). ShiftPreferenceViewSet.perform_create erzwingt
+    zusätzlich employee=request.employee_profile, unabhängig davon, was im
+    Payload mitgeschickt wurde. Lesen ist wie beim übrigen Planblatt für
+    jede Rolle offen (der Planer muss die Wünsche aller Mitarbeitenden
+    sehen können, um sie bei der Planung zu berücksichtigen).
 
-    def has_permission(self, request, view):
-        if request.method in SAFE_METHODS:
-            return True
-        return bool(getattr(request, "employee_profile", None))
+    Nutzer-Feedback (2026-08, Automatisierte Planung mit Auffülldienst): die
+    einzige neue Ausnahme von "höchstpersönlich" sind die Genehmigungs-
+    Actions `approve`/`reject` -- die bleiben Admin/Planer vorbehalten und
+    Mitarbeitenden immer verwehrt (sonst könnte man seinen eigenen Wunsch
+    selbst freigeben), analog zu Absence (siehe OwnEmployeeRecordPermission).
+    Direktes Ändern/Löschen bleibt wie bisher der antragstellenden Person
+    vorbehalten, jetzt zusätzlich nur solange status == PENDING -- ein schon
+    entschiedener Wunsch ist nur noch lesbar, weil eine APPROVED-Freigabe
+    von der Automatik als harte Vorgabe behandelt wird (siehe
+    scheduling.planning) und nicht nachträglich unbemerkt verändert werden
+    soll.
+    """
 
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
             return True
+        membership = getattr(request, "membership", None)
+        if view.action in ("approve", "reject"):
+            return bool(membership and membership.role in MANAGER_ROLES)
         employee_profile = getattr(request, "employee_profile", None)
-        return bool(employee_profile) and obj.employee_id == employee_profile.id
+        if not employee_profile or obj.employee_id != employee_profile.id:
+            return False
+        return obj.status == obj.Status.PENDING
 
 
 class IsTenantManagerOrHR(BasePermission):

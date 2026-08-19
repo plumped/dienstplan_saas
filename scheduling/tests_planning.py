@@ -489,6 +489,83 @@ class WishPreferenceTests(PlanningTestBase):
         self.assertTrue(any("Wunschfrei" in w for w in result.warnings))
 
 
+class ApprovedWishPreferenceTests(PlanningTestBase):
+    """
+    Genehmigungsprozess (2026-08, Automatisierte Planung mit Auffülldienst):
+    ein APPROVED-Wunsch gilt hart, ein REJECTED wird ignoriert -- anders als
+    der weiche PENDING-Fall oben (WishPreferenceTests), der bei Bedarf
+    überschrieben werden darf.
+    """
+
+    def test_approved_wunschfrei_hard_blocks_even_without_alternative(self):
+        # Nur eine Person -- anders als beim PENDING-Pendant oben
+        # (test_wunschfrei_overridden_with_warning_when_no_alternative) darf
+        # der Solver das hier NICHT überschreiben, auch wenn das einen
+        # Fehlbedarf erzeugt.
+        anna = self.make_employee("Anna")
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=anna, date=date(2026, 9, 7),
+            type=ShiftPreference.Type.FREE, status=ShiftPreference.Status.APPROVED,
+        )
+        result = self.generate()
+        chosen = [a for a in result.assignments if a.date == date(2026, 9, 7)]
+        self.assertEqual(chosen, [])
+        self.assertTrue(any(s["date"] == "2026-09-07" for s in result.shortfalls))
+
+    def test_approved_wunschdienst_forces_the_wished_template(self):
+        anna = self.make_employee("Anna")
+        self.make_employee("Bea")
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=anna, date=date(2026, 9, 7),
+            type=ShiftPreference.Type.SHIFT, template=self.template, status=ShiftPreference.Status.APPROVED,
+        )
+        result = self.generate()
+        chosen = [a for a in result.assignments if a.date == date(2026, 9, 7)]
+        self.assertEqual(len(chosen), 1)
+        self.assertEqual(chosen[0].employee_id, anna.id)
+
+    def test_approved_wunschdienst_in_conflict_with_rest_period_produces_warning(self):
+        late_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Spätdienst",
+            start_time=time(13, 0), end_time=time(21, 0), break_minutes=30, minimum_staffing=0,
+        )
+        anna = self.make_employee("Anna")
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=anna, node=self.node, date=date(2026, 9, 1), template=late_template
+        )
+        # 21:00 Ende am 1.9., self.template beginnt 07:00 am 2.9. -> nur 10h
+        # Ruhezeit < 11h Minimum -- der Kandidat entsteht dadurch gar nicht.
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=anna, date=date(2026, 9, 2),
+            type=ShiftPreference.Type.SHIFT, template=self.template, status=ShiftPreference.Status.APPROVED,
+        )
+        result = self.generate()
+        self.assertEqual(result.status, "ok")
+        blocked = [a for a in result.assignments if a.employee_id == anna.id and a.date == date(2026, 9, 2)]
+        self.assertEqual(blocked, [])
+        self.assertTrue(any("Genehmigter Wunschdienst" in w for w in result.warnings))
+
+    def test_rejected_preference_is_ignored(self):
+        # Deterministischer Vergleich zweier Läufe (solver.parameters.
+        # random_seed ist fest) statt einer Annahme über EIN konkretes Datum
+        # -- bei nur einer Person ist ohnehin unbestimmt, welcher Wochentag
+        # zum Wochenruhetag wird (kein Kostenunterschied zwischen den
+        # Wochentagen ohne eine echte Präferenz), das wäre also kein
+        # verlässlicher Beleg dafür, dass REJECTED wirkungslos bleibt.
+        anna = self.make_employee("Anna")
+        without_preference = self.generate()
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=anna, date=date(2026, 9, 7),
+            type=ShiftPreference.Type.FREE, status=ShiftPreference.Status.REJECTED,
+        )
+        with_rejected_preference = self.generate()
+        self.assertEqual(
+            [(a.employee_id, a.date, a.template_id) for a in without_preference.assignments],
+            [(a.employee_id, a.date, a.template_id) for a in with_rejected_preference.assignments],
+        )
+        self.assertEqual(without_preference.warnings, with_rejected_preference.warnings)
+
+
 class FairnessBiasTests(PlanningTestBase):
     def setUp(self):
         super().setUp()

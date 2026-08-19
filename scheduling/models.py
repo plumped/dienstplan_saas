@@ -2713,14 +2713,23 @@ class ShiftAssignment(TenantScopedModel):
 class ShiftPreference(TenantScopedModel):
     """
     Wunschfrei/Wunschdienst (MVP-Fahrplan Block 2.13): ein Hinweis der
-    Mitarbeitenden an den Planer, KEIN Anspruch und KEINE Sperre -- anders
-    als Absence blockiert das hier nichts in der Regel-Engine
-    (ShiftAssignment.clean() prüft ShiftPreference bewusst nicht) und
-    braucht keinen Genehmigungs-Workflow. Höchstpersönlich: nur die
-    betroffene Person selbst darf ihre eigenen Wünsche anlegen/ändern/
-    löschen, nicht einmal Admin/Planer dürfen das stellvertretend tun
-    (siehe ShiftPreferencePermission) -- anders als bei Absence, wo
-    Admin/Planer für andere anlegen dürfen.
+    Mitarbeitenden an den Planer -- standardmässig (PENDING) KEIN Anspruch
+    und KEINE Sperre, anders als Absence. Höchstpersönlich: nur die
+    betroffene Person selbst darf ihre eigenen Wünsche anlegen (siehe
+    ShiftPreferencePermission) -- anders als bei Absence, wo Admin/Planer
+    für andere anlegen dürfen. Ändern/Löschen bleibt der Mitarbeiter-Rolle
+    nur erlaubt, solange der Wunsch noch nicht entschieden ist (status ==
+    PENDING) -- analog zu Absence, siehe OwnEmployeeRecordPermission.
+
+    Nutzer-Feedback (2026-08, Automatisierte Planung mit Auffülldienst):
+    "auch hier braucht es einen Genehmigungsprozess" -- ein von Admin/Planer
+    freigegebener Wunsch soll für die Automatik hart gelten (kein
+    überschreibbarer Kompromiss mehr wie bei PENDING), ein abgelehnter wie
+    nicht vorhanden. approve()/reject() (Block 2.3-Muster, siehe Absence)
+    ergänzen deshalb jetzt einen echten Status statt der bisherigen reinen
+    Selbstauskunft ohne Entscheidungsschritt. Die Auswirkung auf den Solver
+    lebt in scheduling.planning (APPROVED hart, PENDING weiter weich wie
+    bisher, REJECTED ignoriert), nicht hier im Model.
 
     Ein Eintrag pro Mitarbeiter und Tag (unique_together), damit sich
     Wunschfrei und Wunschdienst am selben Tag nicht widersprechen können.
@@ -2729,6 +2738,11 @@ class ShiftPreference(TenantScopedModel):
     class Type(models.TextChoices):
         FREE = "wunschfrei", "Wunschfrei"
         SHIFT = "wunschdienst", "Wunschdienst"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Offen"
+        APPROVED = "approved", "Freigegeben"
+        REJECTED = "rejected", "Abgelehnt"
 
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name="shift_preferences")
     date = models.DateField()
@@ -2741,6 +2755,7 @@ class ShiftPreference(TenantScopedModel):
         related_name="+",
         help_text="Nur bei Wunschdienst gesetzt -- der gewünschte Schichttyp.",
     )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     note = models.CharField(max_length=200, blank=True)
 
     class Meta:
@@ -2755,6 +2770,20 @@ class ShiftPreference(TenantScopedModel):
             raise ValidationError("Wunschdienst braucht einen gewünschten Schichttyp.")
         if self.type == self.Type.FREE and self.template_id:
             raise ValidationError("Wunschfrei darf keinen Schichttyp haben.")
+
+    def approve(self):
+        """Admin/Planer-Freigabe -- macht den Wunsch für die Automatik hart (siehe scheduling.planning)."""
+        if self.status != ShiftPreference.Status.PENDING:
+            raise ValidationError("Nur offene Wünsche können freigegeben werden.")
+        self.status = ShiftPreference.Status.APPROVED
+        self.save(update_fields=["status"])
+
+    def reject(self):
+        """Admin/Planer lehnt einen offenen Wunsch ab -- für die Automatik dann wie nicht vorhanden."""
+        if self.status != ShiftPreference.Status.PENDING:
+            raise ValidationError("Nur offene Wünsche können abgelehnt werden.")
+        self.status = ShiftPreference.Status.REJECTED
+        self.save(update_fields=["status"])
 
 
 class ShiftTradeRequest(TenantScopedModel):

@@ -61,6 +61,26 @@ def notify_absence_decision(absence):
     )
 
 
+def notify_new_shift_preference_request(preference):
+    """Mitarbeiter hat einen Wunsch eingetragen (PENDING) -- Admin/Planer informieren (2026-08)."""
+    _send(
+        f"Neuer Wunsch: {preference.employee}",
+        f"{preference.employee} hat einen Wunsch eingetragen ({preference.get_type_display()}, "
+        f"{preference.date}) und wartet auf Freigabe.",
+        _manager_emails(preference.tenant),
+    )
+
+
+def notify_shift_preference_decision(preference):
+    """Wunsch freigegeben/abgelehnt -- die antragstellende Person informieren (2026-08)."""
+    decision = "freigegeben" if preference.status == preference.Status.APPROVED else "abgelehnt"
+    _send(
+        f"Dein Wunsch wurde {decision}",
+        f"Dein Wunsch ({preference.get_type_display()}, {preference.date}) wurde {decision}.",
+        [_employee_email(preference.employee)],
+    )
+
+
 def notify_new_trade_request(trade_request):
     """Neue Tauschanfrage -- die Zielperson informieren."""
     requester = trade_request.requester_assignment.employee

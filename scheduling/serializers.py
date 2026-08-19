@@ -748,7 +748,11 @@ class ShiftPreferenceSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ShiftPreference
-        fields = ["id", "employee", "date", "type", "template", "note"]
+        fields = ["id", "employee", "date", "type", "template", "status", "note"]
+        # status wird ausschliesslich über ShiftPreferenceViewSet.approve/reject
+        # gesetzt (2026-08) -- niemals direkt aus dem Payload, sonst könnte
+        # sich jemand seinen eigenen Wunsch selbst freigeben.
+        read_only_fields = ["status"]
 
     def validate(self, attrs):
         instance = build_instance_for_clean(self, attrs, ShiftPreference, ["date", "type", "template"])

@@ -2855,6 +2855,24 @@ thead .col-employee {
   cursor: default;
 }
 
+/* Genehmigungsprozess (2026-08, Automatisierte Planung mit Auffülldienst):
+   .is-pending/.is-approved/.is-rejected überlagern die Typ-Farbe
+   (is-wunschfrei/is-wunschdienst) oben mit dem Entscheidungsstatus. */
+.btn-wish.is-pending {
+  box-shadow: 0 0 0 1px var(--status-progress);
+}
+
+.btn-wish.is-rejected {
+  color: var(--ink-muted);
+  box-shadow: 0 0 0 1px var(--border);
+  opacity: 0.6;
+}
+
+.wish-decision-popover p {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
 .wish-popover {
   z-index: 30;
   background: var(--surface);

@@ -37,6 +37,12 @@ export default function ShiftCell({
   canEditOwnWish = false,
   onSaveWish,
   onDeleteWish,
+  // Genehmigungsprozess (2026-08, Automatisierte Planung mit Auffülldienst):
+  // nur für canEdit (Admin/Planer) und nur, solange preference.status ===
+  // "pending" -- ein entschiedener Wunsch ist nur noch lesbar (siehe
+  // ShiftPreferencePermission).
+  onApproveWish,
+  onRejectWish,
   // Workflow-Redesign (2026-08, Nutzer-Feedback: "erst Tage markieren, dann
   // beplanen -- nicht umgekehrt"): ein Klick auf eine Zelle markiert IMMER
   // (kein separater "selectionMode" mehr) -- das tatsächliche Beplanen
@@ -80,6 +86,8 @@ export default function ShiftCell({
   const [savingTime, setSavingTime] = useState(false);
   const [wishing, setWishing] = useState(false);
   const [savingWish, setSavingWish] = useState(false);
+  const [decidingWish, setDecidingWish] = useState(false);
+  const [decidingWishBusy, setDecidingWishBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const selectRef = useRef(null);
   const recordBadgeRef = useRef(null);
@@ -112,6 +120,13 @@ export default function ShiftCell({
   async function handleDeleteWish() {
     const ok = await onDeleteWish();
     if (ok) setWishing(false);
+  }
+
+  async function handleDecideWish(decision) {
+    setDecidingWishBusy(true);
+    const ok = await (decision === "approve" ? onApproveWish() : onRejectWish());
+    setDecidingWishBusy(false);
+    if (ok) setDecidingWish(false);
   }
 
   // Block 2.13: Badge oben links auf der eigenen, heutigen/zukünftigen
@@ -160,14 +175,62 @@ export default function ShiftCell({
     }
     if (canEdit && preference) {
       const wishedTemplate = preference.template ? templates.find((t) => t.id === preference.template) : null;
-      const title =
-        preference.type === "wunschfrei"
-          ? "Wunschfrei geäussert"
-          : `Wunschdienst geäussert: ${wishedTemplate?.name ?? "?"}`;
+      const wishLabel =
+        preference.type === "wunschfrei" ? "Wunschfrei" : `Wunschdienst: ${wishedTemplate?.name ?? "?"}`;
+      const status = preference.status ?? "pending";
+      // Genehmigungsprozess (2026-08): nur ein offener (PENDING) Wunsch ist
+      // für den Planer anklickbar -- ein bereits entschiedener bleibt wie
+      // bisher rein informativ (siehe ShiftPreferencePermission).
+      if (status !== "pending") {
+        const decisionLabel = status === "approved" ? "freigegeben" : "abgelehnt";
+        return (
+          <span
+            className={`btn-wish is-set is-${preference.type} is-readonly is-${status}`}
+            title={`${wishLabel} (${decisionLabel})`}
+            aria-hidden="true"
+          >
+            {WISH_GLYPHS[preference.type]}
+          </span>
+        );
+      }
       return (
-        <span className={`btn-wish is-set is-${preference.type} is-readonly`} title={title} aria-hidden="true">
-          {WISH_GLYPHS[preference.type]}
-        </span>
+        <>
+          <button
+            ref={wishBadgeRef}
+            type="button"
+            className={`btn-wish is-set is-${preference.type} is-pending`}
+            title={`${wishLabel} -- offen, zum Entscheiden klicken`}
+            onClick={() => setDecidingWish((v) => !v)}
+          >
+            {WISH_GLYPHS[preference.type]}
+            <span className="visually-hidden"> {wishLabel} -- offen</span>
+          </button>
+          {decidingWish && (
+            <FloatingPopover anchorRef={wishBadgeRef} onClose={() => setDecidingWish(false)} className="wish-popover">
+              <div className="wish-decision-popover">
+                <p>{wishLabel}</p>
+                <div className="entry-actions">
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={decidingWishBusy}
+                    onClick={() => handleDecideWish("approve")}
+                  >
+                    Freigeben
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost btn-danger-ghost"
+                    disabled={decidingWishBusy}
+                    onClick={() => handleDecideWish("reject")}
+                  >
+                    Ablehnen
+                  </button>
+                </div>
+              </div>
+            </FloatingPopover>
+          )}
+        </>
       );
     }
     return null;

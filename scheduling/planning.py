@@ -144,6 +144,7 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
             status="no_candidates", warnings=warnings + ["Keine aktiven Mitarbeitenden für diese Station."]
         )
     employee_ids = [e.id for e in employees]
+    employee_by_id = {e.id: e for e in employees}
     employee_skill_ids = {e.id: {s.id for s in e.skills.all()} for e in employees}
     employee_node_ids = {e.id: {n.id for n in e.nodes.all()} for e in employees}
 
@@ -206,12 +207,27 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
             absences_by_employee_date[(absence.employee_id, cursor)].append(absence)
             cursor += timedelta(days=1)
 
+    # Genehmigungsprozess (2026-08, Automatisierte Planung mit Auffülldienst):
+    # ein noch offener (PENDING) Wunsch bleibt wie bisher ein weicher
+    # Zielfunktions-Term (wish_free/wish_shift, siehe Objective weiter
+    # unten); ein von Admin/Planer freigegebener (APPROVED) gilt für die
+    # Automatik hart (approved_wish_free/approved_wish_shift, siehe
+    # Kandidaten-Schleife unten -- analog zu Absence, aber ohne eigenes
+    # Absence-Objekt). Ein abgelehnter (REJECTED) wird hier komplett
+    # ignoriert, als gäbe es ihn nicht.
     wish_free = set()
     wish_shift = {}
+    approved_wish_free = set()
+    approved_wish_shift = {}
     for pref in ShiftPreference.all_objects.filter(
         tenant=tenant, employee_id__in=employee_ids, date__range=[month_start, month_end]
-    ):
-        if pref.type == ShiftPreference.Type.FREE:
+    ).exclude(status=ShiftPreference.Status.REJECTED):
+        if pref.status == ShiftPreference.Status.APPROVED:
+            if pref.type == ShiftPreference.Type.FREE:
+                approved_wish_free.add((pref.employee_id, pref.date))
+            else:
+                approved_wish_shift[(pref.employee_id, pref.date)] = pref.template_id
+        elif pref.type == ShiftPreference.Type.FREE:
             wish_free.add((pref.employee_id, pref.date))
         else:
             wish_shift[(pref.employee_id, pref.date)] = pref.template_id
@@ -271,12 +287,35 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
             day_absences = absences_by_employee_date.get((employee.id, d), [])
             if any(a.day_portion == Absence.DayPortion.FULL for a in day_absences):
                 continue
+            # Genehmigter Wunschfrei (siehe oben): identisch hart wie ein
+            # Absenz-Volltag -- der ganze Tag bleibt frei von Kandidaten.
+            if (employee.id, d) in approved_wish_free:
+                continue
             minor = is_minor(employee, d)
             m_status = maternity_status(employee, d)
             if m_status in ("full_ban", "consent_required"):
                 continue
+            # Genehmigter Wunschdienst (siehe oben): verdrängt an diesem Tag
+            # jedes andere Template -- nur das gewünschte kommt überhaupt als
+            # Kandidat in Frage (unten hart auf 1 gesetzt, siehe nach der
+            # Kandidaten-Schleife; existiert der Kandidat gar nicht, weil ein
+            # anderer harter Regel-Check ihn ausschliesst, entsteht dort eine
+            # Konflikt-Warnung statt eines stillen Widerspruchs).
+            approved_shift_template_id = approved_wish_shift.get((employee.id, d))
 
             for template in valid_templates:
+                # Nur reguläre Templates verdrängen -- ein Wunschdienst
+                # ("ich will genau DIESEN Dienst") sagt nichts über Pikett/
+                # Spezialitäten (category=SPECIAL) aus, die oft zusätzlich
+                # zu einem regulären Dienst laufen (z. B. Pikett am Abend
+                # nach einem Tagdienst). Bleibt deshalb normal kandidierbar,
+                # anders als bei Wunschfrei/Absenz (dort ganzer Tag blockt).
+                if (
+                    approved_shift_template_id is not None
+                    and template.category != TimeTemplate.Category.SPECIAL
+                    and template.id != approved_shift_template_id
+                ):
+                    continue
                 assignment_node_id = resolve_assignment_node_id(template, emp_node_ids)
                 if assignment_node_id is None:
                     continue
@@ -341,6 +380,26 @@ def generate_draft_plan(tenant, scope_node_ids, year, month):
                 hours = ShiftAssignment._shift_hours(d, template)
                 day_candidate_info[(employee.id, d)].append(
                     (template.id, is_special, to_minutes(shift_start), to_minutes(shift_end), hours, is_unpopular)
+                )
+
+    # Genehmigter Wunschdienst hart erzwingen (siehe approved_wish_shift
+    # oben): existiert der Kandidat (das gewünschte Template hat die
+    # Kandidaten-Schleife überlebt), wird er auf 1 fixiert. Existiert er
+    # NICHT, stand die Freigabe im Widerspruch zu einer anderen harten Regel
+    # (z. B. Ruhezeit zu einer bereits fixen Nachbarschicht, fehlender
+    # Skill) -- dann bleibt es bei einer für Menschen lesbaren Warnung statt
+    # eines stillen, unbemerkten Verstosses.
+    for (employee_id, d), template_id in approved_wish_shift.items():
+        var = candidates.get((employee_id, d, template_id))
+        if var is not None:
+            model.Add(var == 1)
+        else:
+            employee = employee_by_id.get(employee_id)
+            template = template_by_id.get(template_id)
+            if employee and template:
+                warnings.append(
+                    f"Genehmigter Wunschdienst von {employee} am {d:%d.%m.%Y} ({template.name}) steht im "
+                    "Konflikt mit einer anderen harten Regel und konnte nicht automatisch übernommen werden."
                 )
 
     weeks = sorted({_week_start(d) for d in month_dates})

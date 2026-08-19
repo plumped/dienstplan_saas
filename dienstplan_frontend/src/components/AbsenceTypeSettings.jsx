@@ -186,11 +186,14 @@ export default function AbsenceTypeSettings({ onError }) {
             </span>
             <span className="option-card-body">
               <span className="option-card-title">
-                <input
-                  type="checkbox"
-                  checked={form.deducts_vacation_days}
-                  onChange={(e) => setForm((prev) => ({ ...prev, deducts_vacation_days: e.target.checked }))}
-                />
+                <span className="pretty-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={form.deducts_vacation_days}
+                    onChange={(e) => setForm((prev) => ({ ...prev, deducts_vacation_days: e.target.checked }))}
+                  />
+                  <span className="pretty-checkbox-box" aria-hidden="true" />
+                </span>
                 Zieht Ferientage vom Ferienanspruch ab
               </span>
               <p className="option-card-desc">
@@ -205,11 +208,14 @@ export default function AbsenceTypeSettings({ onError }) {
             </span>
             <span className="option-card-body">
               <span className="option-card-title">
-                <input
-                  type="checkbox"
-                  checked={form.counts_as_sick_leave}
-                  onChange={(e) => setForm((prev) => ({ ...prev, counts_as_sick_leave: e.target.checked }))}
-                />
+                <span className="pretty-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={form.counts_as_sick_leave}
+                    onChange={(e) => setForm((prev) => ({ ...prev, counts_as_sick_leave: e.target.checked }))}
+                  />
+                  <span className="pretty-checkbox-box" aria-hidden="true" />
+                </span>
                 Zählt gegen den Lohnfortzahlungs-Anspruch bei Krankheit
               </span>
               <p className="option-card-desc">

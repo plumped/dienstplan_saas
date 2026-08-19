@@ -33,6 +33,12 @@
   --status-neutral-soft: #eee;
   --border: #dde3e0;
   --radius: 8px;
+  /* Nutzer-Feedback (2026-08): "möglichst modern, sofort ein Eye-Catcher,
+     spiel mit Transitions und Hover-Effekten" -- ein Easing-Token statt an
+     jeder Stelle "ease"/"ease-out" zu wiederholen, damit sich alle neuen
+     Hover-/Entrance-Effekte gleich "anfühlen" (Material-Design-Standard-
+     Kurve: schnell rein, sanft raus -- wirkt organischer als linear/ease). */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --font-display: "Space Grotesk", system-ui, sans-serif;
   --font-body: "Inter", system-ui, sans-serif;
 }
@@ -260,7 +266,7 @@ button {
   padding: 7px 14px;
   border-radius: 6px;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.14);
-  transition: filter 0.15s ease, box-shadow 0.15s ease;
+  transition: filter 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
 }
 
 /* Nutzer-Feedback (2026-08, Nachtrag): ein pauschales align-self: flex-start
@@ -280,12 +286,14 @@ button {
 
 .btn-primary:hover:not(:disabled) {
   filter: brightness(0.92);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.2);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.22);
+  transform: translateY(-1px);
 }
 
 .btn-primary:active:not(:disabled) {
   filter: brightness(0.86);
   box-shadow: none;
+  transform: translateY(0);
 }
 
 button:disabled {
@@ -1500,6 +1508,29 @@ thead .col-employee {
   box-shadow:
     0 1px 2px rgba(15, 23, 42, 0.05),
     0 8px 24px rgba(15, 23, 42, 0.07);
+  /* "sofort ein Eye-Catcher": beide Panels fahren beim ersten Rendern
+     (Tab-Wechsel, Reload) leicht nach oben ein statt einfach dazustehen --
+     .panel-list startet minimal später (0.08s) als .panel-form, damit der
+     Blick zuerst vom Formular zur Liste "wandert" statt beide simultan
+     aufpoppen zu lassen. `both` hält den Endzustand nach Ablauf, `paused`-
+     Risiko (Element bliebe unsichtbar ohne JS) besteht hier nicht, da die
+     Animation selbst (nicht ihr Start) das Element von opacity:0 einblendet. */
+  animation: settings-panel-in 0.45s var(--ease) both;
+}
+
+.panel-list {
+  animation-delay: 0.08s;
+}
+
+@keyframes settings-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .panel-list--full {
@@ -1666,6 +1697,21 @@ thead .col-employee {
   border-radius: 6px;
   color: var(--ink);
   background: var(--surface);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+
+/* "modern, Eye-Catcher": ein weicher Farbring statt des groben
+   Browser-Default-Outlines beim Fokussieren -- dieselbe Sprache wie die
+   Hover-Schatten der Buttons/Karten oben, nur als Ring statt als Lift
+   (ein Eingabefeld "hebt" sich nicht, es "leuchtet" beim Fokus). Gilt
+   auch für Checkboxen/den unsichtbaren Farbwähler-Input, damit
+   Tastatur-Navigation nirgends unsichtbar wird. */
+.panel-form input:focus-visible,
+.panel-form select:focus-visible,
+.panel-list-filter:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
 }
 
 .panel-form input:disabled {
@@ -1960,6 +2006,23 @@ thead .col-employee {
   height: 220px;
   border-radius: 999px;
   background: radial-gradient(circle at 35% 35%, var(--primary-soft), transparent 72%);
+  /* Nutzer-Feedback (2026-08): "sofort ein Eye-Catcher" -- ein sehr
+     langsames, sanftes Pulsieren macht die sonst rein statische
+     Dekoration "lebendig", ohne (bei 7s Zyklus, kaum merklicher
+     Grössenänderung) abzulenken. */
+  animation: settings-blob-breathe 7s var(--ease) infinite;
+}
+
+@keyframes settings-blob-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.85;
+  }
 }
 
 .panel-form:has(.settings-form-header)::after {
@@ -2038,7 +2101,16 @@ thead .col-employee {
 
 /* :has() ist reine Verfeinerung (markiert die Karte bei angehaktem
    Zustand) -- ohne Unterstützung bleibt die Karte schlicht unmarkiert,
-   Checkbox/Funktion sind davon unabhängig. */
+   Checkbox/Funktion sind davon unabhängig.
+   "spiel mit Hover-Effekten": Karte hebt sich beim Hover leicht ab (Rand
+   Richtung --primary, minimaler Lift + wachsender Schatten) -- dieselbe
+   Sprache wie der :checked-Zustand darunter, nur dezenter, damit "diese
+   Karte reagiert" schon VOR dem Klick spürbar ist. animation-fill-mode
+   backwards + gestaffelte Verzögerung (siehe :nth-child) lässt beide
+   Karten kurz nacheinander von unten einfahren, statt gleichzeitig
+   aufzupoppen -- fällt bei nur 2 Karten sofort als bewusste Geste auf,
+   ohne bei einer längeren Liste (siehe .entry-list-item, keine Staffelung)
+   unangenehm lang zu wirken. */
 .option-card {
   display: flex;
   align-items: flex-start;
@@ -2047,8 +2119,24 @@ thead .col-employee {
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.2s var(--ease), background-color 0.2s var(--ease),
+    box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  animation: settings-panel-in 0.4s var(--ease) backwards;
+}
+
+.option-card:nth-child(1) {
+  animation-delay: 0.16s;
+}
+
+.option-card:nth-child(2) {
+  animation-delay: 0.24s;
+}
+
+.option-card:hover {
+  border-color: var(--primary);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.1);
+  transform: translateY(-2px);
 }
 
 .option-card:has(input:checked) {
@@ -2086,8 +2174,71 @@ thead .col-employee {
   font-weight: 600;
 }
 
-.option-card-title input {
-  width: auto;
+/* Animierte Checkbox (2026-08, "spiel mit Transitions/Hover-Effekten")
+   statt der nackten Browser-Checkbox: das echte <input> bleibt für
+   Semantik/Tastatur/Screenreader vollständig funktional, liegt aber
+   unsichtbar (opacity 0) über der optischen Box daneben (Standard-Technik
+   -- funktioniert unabhängig von Browser-spezifischem ::-webkit-Styling
+   nativer Checkboxen). Das Häkchen ist eine gedrehte Rand-"L"-Form
+   (::after), die per scale von 0 auf 1 "reinwächst" statt nur zu
+   erscheinen. */
+.pretty-checkbox {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.pretty-checkbox input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.pretty-checkbox-box {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  transition: background-color 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+
+.pretty-checkbox-box::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 9px;
+  border: solid var(--surface);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform 0.2s var(--ease);
+}
+
+.pretty-checkbox:hover .pretty-checkbox-box {
+  border-color: var(--primary);
+}
+
+.pretty-checkbox input:checked ~ .pretty-checkbox-box {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.pretty-checkbox input:checked ~ .pretty-checkbox-box::after {
+  transform: rotate(45deg) scale(1);
+}
+
+.pretty-checkbox input:focus-visible ~ .pretty-checkbox-box {
+  box-shadow: 0 0 0 3px var(--primary-soft);
 }
 
 .option-card-desc {
@@ -2114,10 +2265,26 @@ thead .col-employee {
   background: var(--surface);
   cursor: pointer;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
 }
 
 .color-picker-trigger:hover {
   border-color: var(--primary);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.1);
+  transform: translateY(-1px);
+}
+
+/* Der Chevron dreht sich beim Hover -- ein winziges, aber sofort
+   erkennbares "hier lässt sich etwas öffnen"-Signal, wie man es von
+   modernen Dropdown-Triggern kennt. */
+.color-picker-trigger svg {
+  color: var(--ink-muted);
+  transition: transform 0.2s var(--ease), color 0.2s var(--ease);
+}
+
+.color-picker-trigger:hover svg {
+  transform: rotate(180deg);
+  color: var(--primary);
 }
 
 .color-picker-input {
@@ -2143,9 +2310,6 @@ thead .col-employee {
   color: var(--ink);
 }
 
-.color-picker-trigger svg {
-  color: var(--ink-muted);
-}
 
 .panel-list-header-row {
   display: flex;
@@ -2207,11 +2371,33 @@ thead .col-employee {
   font-size: 12.5px;
   font-weight: 500;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.2s var(--ease), color 0.2s var(--ease), box-shadow 0.2s var(--ease),
+    transform 0.2s var(--ease);
 }
 
 .icon-btn:hover {
   border-color: var(--primary);
   color: var(--primary);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.1);
+  transform: translateY(-1px);
+}
+
+.icon-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+/* Kleine Detail-Note: das Icon wächst minimal mit statt nur die Farbe zu
+   wechseln -- bewusst ein neutrales "scale" statt einer Geste, die nur zum
+   Stift (Bearbeiten), nicht aber zum Papierkorb (Löschen) passen würde.
+   transition auf dem Grundzustand (nicht nur :hover), damit das Icon beim
+   Verlassen genauso weich zurückschrumpft wie es gewachsen ist. */
+.icon-btn svg:first-child {
+  transition: transform 0.2s var(--ease);
+}
+
+.icon-btn:hover svg:first-child {
+  transform: scale(1.12);
 }
 
 .icon-btn.icon-btn-danger {
@@ -2506,6 +2692,16 @@ thead .col-employee {
   font-size: 13px;
   flex-wrap: wrap;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
+}
+
+/* Nur ein Hover-Lift, kein Farbwechsel wie bei .option-card: eine
+   Listenzeile ist nicht als Ganzes klickbar (nur ihre Buttons), ein
+   Primärfarben-Rahmen würde hier "klickbar" suggerieren, wo nur einzelne
+   Aktionen innerhalb es tatsächlich sind. */
+.entry-list-item:hover {
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.09);
+  transform: translateY(-1px);
 }
 
 .entry-list-item--trade {

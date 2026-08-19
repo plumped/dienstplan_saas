@@ -255,7 +255,7 @@ entstanden sind, nicht neu sortiert nach Status):
 | Block | Thema | Status | Aktuell offen |
 |---|---|---|---|
 | 1 | Schweizer Arbeitsgesetz (ArG) | ✅ vollständig umgesetzt (17 von 17 Punkten) | — |
-| 2 | Kernfunktionen Praxisalltag | 31 von 32 Punkten erledigt | Automatisierte Planung (19) |
+| 2 | Kernfunktionen Praxisalltag | ✅ vollständig umgesetzt (38 von 38 Punkten) | — |
 | 3 | Onboarding & Self-Signup | ✅ Punkte 1-4 umgesetzt | Punkt 4: Setup-Wizard mit dem Direktanlage-Formular aus Block 2.1 verschmelzen statt separat zu lassen |
 | 4 | Produktionsreife & Sicherheit | nichts umgesetzt | kompletter Block (Postgres, Auth-Härtung, CI, Frontend-Tests) |
 | 5 | Datenschutz (revDSG) & Rechtliches | ✅ Punkte 1, 2, 3, 5 umgesetzt | Punkt 4: Hosting-Standort ist eine offene Infrastruktur-Entscheidung |
@@ -267,9 +267,9 @@ Reihenfolge aktuell: Block 1 ist mit Punkt 16 (Lohnfortzahlung Krankheit) inhalt
 Punkt 30/31 (Lohn-Export) ebenfalls (Nutzerentscheid 2026-08: "näher am Verkaufsargument" als der
 einfachere Plan-Export aus Punkt 5) -- Punkt 5 danach als nächstes nachgezogen, danach Punkt 20
 (Fairness-Punktesystem, bewusst vor Punkt 19 priorisiert, weil Punkt 19 die Fairness-Punkte als
-Eingabe nutzen soll). Offen in Block 2 bleibt nur noch Automatisierte Planung (19) -- ein grosses,
-für sich zu planendes Vorhaben. Block 4/5 (Produktion) bewusst zurückgestellt, bis die Funktionalität
-steht.
+Eingabe nutzen soll), danach Punkt 19 (Automatisierte Planung) selbst umgesetzt. Block 2 ist damit
+vollständig abgeschlossen (38 von 38 Punkten). Block 4/5 (Produktion) bewusst zurückgestellt, bis die
+Funktionalität steht.
 
 ### 1. Schweizer Arbeitsgesetz (ArG) — Regel-Engine vervollständigen
 
@@ -2021,12 +2021,12 @@ steht.
       Topbar für Mitarbeitende selbst -- ein sichtbarer Punkte-Vergleich mit Kolleg:innen könnte
       in manchen Teams unerwünschten Konkurrenzdruck erzeugen, anders als der bestehende Saldo,
       der rein personenbezogen ist und nie verglichen wird. Kann jederzeit später ergänzt werden.
-    - **Verzahnung mit Punkt 19** (unverändert als künftige Erweiterung vorgesehen, noch nicht
-      umgesetzt): der Solver soll beim Verteilen einer unpopulären Schicht neben den harten Regeln
-      den *aktuellen* Punktestand aller in Frage kommenden Mitarbeitenden als weichen
-      Zielfunktions-Term berücksichtigen -- wer zuletzt überdurchschnittlich oft Sonntag/Nacht
-      gemacht hat, wird bei der nächsten automatischen Zuteilung tendenziell übersprungen, ohne
-      dass das je hart erzwungen würde.
+    - **Verzahnung mit Punkt 19** (umgesetzt, siehe dort): der Solver berücksichtigt beim Verteilen
+      einer unpopulären Schicht neben den harten Regeln den *aktuellen* Punktestand aller in Frage
+      kommenden Mitarbeitenden als weichen Zielfunktions-Term (`scheduling/planning.py`:
+      `FAIRNESS_TIE_BREAK_WEIGHT`, gespeist aus `Employee._bulk_fairness_points()`) -- wer zuletzt
+      überdurchschnittlich oft Sonntag/Nacht gemacht hat, wird bei der nächsten automatischen
+      Zuteilung tendenziell übersprungen, ohne dass das je hart erzwungen würde.
     - **Performance-Fix**: die ursprüngliche Team-Durchschnitt-Berechnung hat pro Kolleg:in zwei
       eigene Datenbankabfragen ausgelöst (O(Teamgrösse) Queries bei JEDEM `fairness_summary()`-
       Aufruf) -- bei z. B. 20 Mitarbeitenden auf derselben Station also ~40 zusätzliche Abfragen

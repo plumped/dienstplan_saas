@@ -473,8 +473,9 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   }, [activeDraftAssignments]);
 
   // Stempel-Leiste zeigt die Vereinigung aus stationsweiten Schichttypen
-  // (t.node === stationId, geteilter Katalog für alle Teams) und den
-  // Schichttypen JEDES aktuell sichtbaren Teams (teamNodes) -- unabhängig
+  // (t.node === stationId, geteilter Katalog für alle Teams), den
+  // Schichttypen JEDES aktuell sichtbaren Teams (teamNodes) UND den
+  // Schichttypen des direkt gewählten Knotens selbst (nodeId) -- unabhängig
   // davon, ob/welche Zeile gerade markiert ist.
   //
   // README (2026-08, Bugfix): ursprünglich lieferte dieser useMemo bei
@@ -484,15 +485,24 @@ export default function PlanGrid({ nodeId, nodes, year, month, employees, me, on
   // spezifische aber weiterhin erst nach dem Markieren der jeweiligen Zeile
   // erscheinen -- für eine Station mit mehreren team-spezifischen
   // Schichttypen wirkte das wie ein Rätsel ("warum sehe ich erst alle
-  // Dienste, wenn ich einen Tag auswähle?", Nutzer-Feedback 2026-08). Jetzt
-  // immer die volle Vereinigung aller sichtbaren Zeilen zeigen: kein
-  // Überraschungseffekt mehr, und da teamNodes (anders als markedCells)
-  // unabhängig von der Markierung feststeht, bleibt die Leiste von Anfang
-  // an stabil -- kein erneutes Springen.
+  // Dienste, wenn ich einen Tag auswähle?", Nutzer-Feedback 2026-08). Ein
+  // zweiter Fix wechselte von markedCells auf teamNodes -- das übersah
+  // aber, dass teamNodes NUR die Kinder von nodeId sind (siehe dort): wählt
+  // ein Team direkt (z. B. "Pflege Tag" statt der übergeordneten Station),
+  // hat das Team selbst keine Kinder, teamNodes ist leer, und dessen EIGENE
+  // Schichttypen (die -- korrekt -- direkt auf diesem Team liegen, nicht
+  // auf der Station) verschwanden komplett, auch nach dem Markieren
+  // (Nutzer-Feedback: "meine Dienste S1/F1 sind klar für 'Pflege Tag',
+  // gehe ich auf das Planblatt 'Pflege Tag' sehe ich die Dienste nicht").
+  // nodeId explizit mit aufzunehmen deckt genau diesen Fall ab, ohne
+  // teamNodes selbst (und damit die rows-Gruppierung weiter oben) für den
+  // Direktwahl-Fall auf die ganze Station auszuweiten -- wer gezielt EIN
+  // Team anwählt, soll weiterhin nur dessen eigene Zeile(n) sehen, nur die
+  // Stempelleiste kennt zusätzlich dessen eigene Schichttypen.
   const stampTemplates = useMemo(() => {
-    const visibleTeamNodeIds = new Set(teamNodes.map((n) => n.id));
-    return templates.filter((t) => t.node === stationId || visibleTeamNodeIds.has(t.node));
-  }, [templates, teamNodes, stationId]);
+    const visibleNodeIds = new Set([stationId, nodeId, ...teamNodes.map((n) => n.id)]);
+    return templates.filter((t) => visibleNodeIds.has(t.node));
+  }, [templates, teamNodes, stationId, nodeId]);
 
   // Nutzer-Feedback (2026-08): Stempelleiste soll mehrzeilig sein -- eine
   // Zeile für reguläre Dienste, eine für Spezialitäten (z. B. Pikettdienst,

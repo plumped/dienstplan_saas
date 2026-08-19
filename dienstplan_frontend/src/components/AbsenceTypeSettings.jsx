@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { chipGlyph } from "../chipGlyph.js";
+import ColorPickerField from "./ColorPickerField.jsx";
+import { IconCalendar, IconHeartPulse, IconList, IconPencil, IconPlus, IconSearch, IconTrash } from "../icons.jsx";
 
 function emptyForm() {
   return {
@@ -25,12 +27,22 @@ function toFormValues(absenceType) {
 // Nutzer-Feedback (2026-08): Absenzarten (Ferien/Krankheit/Sonstiges) waren
 // bisher hartcodiert -- jetzt ein tenant-eigener Katalog, analog zu den
 // Schichttypen (TimeTemplateSettings.jsx).
+//
+// Settings-Panel-Polish (2026-08, Nutzer-Feedback: "Einstellungs-Tabs
+// wirken amateurhaft, nicht wie Business-Software", mit Vorbild-
+// Screenshot): Kopfzeile mit Icon+Titel+Untertitel, Options-Karten statt
+// nackter Checkbox+Text-Zeilen, gestylter Farbwähler-Trigger statt des
+// rohen <input type="color">, umrandete Icon-Buttons statt Textlinks,
+// durchsuchbare Liste mit Eintrags-Zähler. Erste Umsetzung dieses Musters
+// -- als Vorlage für die übrigen Einstellungs-Tabs gedacht (siehe neue,
+// generische Klassen in styles.css).
 export default function AbsenceTypeSettings({ onError }) {
   const [absenceTypes, setAbsenceTypes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -94,14 +106,33 @@ export default function AbsenceTypeSettings({ onError }) {
     }
   }
 
+  const visibleAbsenceTypes = useMemo(() => {
+    const term = search.trim().toLowerCase();
+    if (!term) return absenceTypes;
+    return absenceTypes.filter((t) => t.name.toLowerCase().includes(term));
+  }, [absenceTypes, search]);
+
   return (
     <div className="side-panel">
       <form className="panel-form" onSubmit={handleSubmit}>
-        <h2>{editingId ? "Absenzart bearbeiten" : "Absenzart anlegen"}</h2>
+        <div className="settings-form-header">
+          <span className="settings-form-icon">
+            {editingId ? <IconPencil /> : <IconPlus />}
+          </span>
+          <div>
+            <h2>{editingId ? "Absenzart bearbeiten" : "Absenzart anlegen"}</h2>
+            <p className="settings-form-subtitle">
+              {editingId
+                ? "Passe die Eigenschaften dieser Absenzart an."
+                : "Definiere eine neue Absenzart für dein Unternehmen."}
+            </p>
+          </div>
+        </div>
         <label>
           Name
           <input
             type="text"
+            placeholder="z. B. Ferien, Krankheit, Homeoffice"
             value={form.name}
             onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
             required
@@ -110,12 +141,11 @@ export default function AbsenceTypeSettings({ onError }) {
         <div className="panel-form-row">
           <label>
             Farbe
-            <input
-              type="color"
+            <ColorPickerField
               value={form.color}
               onChange={(e) => setForm((prev) => ({ ...prev, color: e.target.value }))}
             />
-            <span className="panel-hint">Chip-Hintergrundfarbe im Planblatt/Jahresplan.</span>
+            <span className="panel-hint">Diese Farbe wird als Chip-Hintergrund im Plan und Jahresplan angezeigt.</span>
           </label>
           <label>
             Kürzel (optional)
@@ -132,35 +162,53 @@ export default function AbsenceTypeSettings({ onError }) {
             </span>
           </label>
         </div>
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            checked={form.deducts_vacation_days}
-            onChange={(e) => setForm((prev) => ({ ...prev, deducts_vacation_days: e.target.checked }))}
-          />
-          Zieht Ferientage vom Ferienanspruch ab
-        </label>
-        <p className="panel-hint">
-          Genehmigte Absenzen dieser Art zählen als Ferienbezug (Employee.vacation_balance()) --
-          typischerweise nur für eine einzige Absenzart wie "Ferien" aktiv.
-        </p>
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            checked={form.counts_as_sick_leave}
-            onChange={(e) => setForm((prev) => ({ ...prev, counts_as_sick_leave: e.target.checked }))}
-          />
-          Zählt gegen den Lohnfortzahlungs-Anspruch bei Krankheit
-        </label>
-        <p className="panel-hint">
-          Genehmigte Absenzen dieser Art zählen gegen den Anspruch nach Art. 324a OR
-          (Employee.sick_pay_summary()) -- typischerweise nur für eine Absenzart wie "Krankheit"
-          aktiv.
-        </p>
+
+        <div className="option-card-list">
+          <label className="option-card">
+            <span className="option-card-icon">
+              <IconCalendar />
+            </span>
+            <span className="option-card-body">
+              <span className="option-card-title">
+                <input
+                  type="checkbox"
+                  checked={form.deducts_vacation_days}
+                  onChange={(e) => setForm((prev) => ({ ...prev, deducts_vacation_days: e.target.checked }))}
+                />
+                Zieht Ferientage vom Ferienanspruch ab
+              </span>
+              <p className="option-card-desc">
+                Genehmigte Absenzen dieser Art zählen als Ferienbezug (Employee.vacation_balance()) --
+                typischerweise nur für eine einzige Absenzart wie "Ferien" aktiv.
+              </p>
+            </span>
+          </label>
+          <label className="option-card">
+            <span className="option-card-icon option-card-icon--warn">
+              <IconHeartPulse />
+            </span>
+            <span className="option-card-body">
+              <span className="option-card-title">
+                <input
+                  type="checkbox"
+                  checked={form.counts_as_sick_leave}
+                  onChange={(e) => setForm((prev) => ({ ...prev, counts_as_sick_leave: e.target.checked }))}
+                />
+                Zählt gegen den Lohnfortzahlungs-Anspruch bei Krankheit
+              </span>
+              <p className="option-card-desc">
+                Genehmigte Absenzen dieser Art zählen gegen den Anspruch nach Art. 324a OR
+                (Employee.sick_pay_summary()) -- typischerweise nur für eine Absenzart wie "Krankheit"
+                aktiv.
+              </p>
+            </span>
+          </label>
+        </div>
 
         <div className="entry-actions">
-          <button type="submit" disabled={saving}>
-            {saving ? "Speichert …" : editingId ? "Speichern" : "Anlegen"}
+          <button type="submit" className="btn-primary" disabled={saving}>
+            {!editingId && <IconPlus width={15} height={15} />}
+            {saving ? "Speichert …" : editingId ? "Speichern" : "Absenzart anlegen"}
           </button>
           {editingId && (
             <button type="button" className="btn-ghost" onClick={startCreating}>
@@ -171,14 +219,33 @@ export default function AbsenceTypeSettings({ onError }) {
       </form>
 
       <div className="panel-list">
-        <h2>Absenzarten</h2>
+        <div className="panel-list-header-row">
+          <div>
+            <h2>Absenzarten</h2>
+            <p className="settings-form-subtitle">Verwalte und bearbeite bestehende Absenzarten.</p>
+          </div>
+          {absenceTypes.length > 1 && (
+            <span className="panel-list-search">
+              <IconSearch width={15} height={15} />
+              <input
+                type="search"
+                className="panel-list-filter"
+                placeholder="Suchen …"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </span>
+          )}
+        </div>
         {loading ? (
           <p className="loading-state">Wird geladen …</p>
         ) : !absenceTypes.length ? (
           <p className="empty-state">Noch keine Absenzarten angelegt.</p>
+        ) : !visibleAbsenceTypes.length ? (
+          <p className="empty-state">Keine Absenzarten gefunden.</p>
         ) : (
           <ul className="entry-list">
-            {absenceTypes.map((t) => (
+            {visibleAbsenceTypes.map((t) => (
               <li key={t.id} className="entry-list-item">
                 <span className="shift-chip" style={{ "--chip-color": t.color }}>
                   {chipGlyph(t)}
@@ -191,16 +258,26 @@ export default function AbsenceTypeSettings({ onError }) {
                   )}
                 </span>
                 <span className="entry-actions">
-                  <button type="button" className="btn-ghost" onClick={() => startEditing(t)}>
+                  <button type="button" className="icon-btn" onClick={() => startEditing(t)}>
+                    <IconPencil width={14} height={14} />
                     Bearbeiten
                   </button>
-                  <button type="button" className="btn-ghost" onClick={() => handleDelete(t)}>
+                  <button type="button" className="icon-btn icon-btn-danger" onClick={() => handleDelete(t)}>
+                    <IconTrash width={14} height={14} />
                     Löschen
                   </button>
                 </span>
               </li>
             ))}
           </ul>
+        )}
+        {!loading && absenceTypes.length > 0 && (
+          <p className="panel-list-footer">
+            <IconList width={14} height={14} />
+            {visibleAbsenceTypes.length === absenceTypes.length
+              ? `${absenceTypes.length} ${absenceTypes.length === 1 ? "Absenzart" : "Absenzarten"}`
+              : `${visibleAbsenceTypes.length} von ${absenceTypes.length} Absenzarten`}
+          </p>
         )}
       </div>
     </div>

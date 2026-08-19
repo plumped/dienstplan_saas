@@ -1889,6 +1889,237 @@ thead .col-employee {
   color: var(--ink);
 }
 
+/* Settings-Panel-Polish (2026-08, Nutzer-Feedback: "Einstellungs-Tabs
+   wirken amateurhaft, nicht wie Business-Software", mit Vorbild-Screenshot)
+   -- Kopfzeile mit Icon+Titel+Untertitel, Options-Karten statt nackter
+   Checkbox+Text-Zeilen, ein gestylter Farbwähler-Trigger statt des rohen
+   <input type="color">, umrandete Icon-Buttons statt reiner Textlinks.
+   Erste Umsetzung in AbsenceTypeSettings.jsx, als Vorlage für die übrigen
+   Einstellungs-Tabs gedacht -- deshalb eigene, generische Klassen statt
+   .panel-form/.entry-list selbst zu verändern: die vielen ANDEREN
+   Verwender dieser Basisklassen (Dashboard, TimeRecordPanel,
+   TradeRequestPanel, MembershipAccessSettings, ...) bleiben dadurch
+   unverändert. */
+.settings-form-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.settings-form-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.settings-form-header h2 {
+  margin-bottom: 0;
+}
+
+.settings-form-subtitle {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.option-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* :has() ist reine Verfeinerung (markiert die Karte bei angehaktem
+   Zustand) -- ohne Unterstützung bleibt die Karte schlicht unmarkiert,
+   Checkbox/Funktion sind davon unabhängig. */
+.option-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.option-card:has(input:checked) {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.option-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.option-card-icon--warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.option-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.option-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.option-card-title input {
+  width: auto;
+}
+
+.option-card-desc {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+/* Farbwähler-Trigger: sieht aus wie ein eigenständiges Steuerelement
+   (Swatch + Hex-Code + Chevron), ist funktional aber weiterhin der native
+   <input type="color"> -- der liegt unsichtbar (opacity 0) über der
+   gesamten Trigger-Fläche, ein Klick irgendwo darauf öffnet also den
+   normalen Browser-Farbwähler. Kein eigenes Popup/Palette-UI nötig, damit
+   kein Fokus-/Tastatur-Verhalten neu nachgebaut werden muss. */
+.color-picker-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.color-picker-trigger:hover {
+  border-color: var(--primary);
+}
+
+.color-picker-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.color-picker-swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+}
+
+.color-picker-hex {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.color-picker-trigger svg {
+  color: var(--ink-muted);
+}
+
+.panel-list-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.panel-list-header-row .panel-list-filter {
+  width: 220px;
+  margin-bottom: 0;
+}
+
+.panel-list-search {
+  position: relative;
+  flex: none;
+}
+
+.panel-list-search svg {
+  position: absolute;
+  top: 50%;
+  left: 9px;
+  transform: translateY(-50%);
+  color: var(--ink-muted);
+  pointer-events: none;
+}
+
+.panel-list-search input {
+  padding-left: 30px;
+}
+
+.panel-list-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+/* Umrandete Icon-Buttons für Zeilenaktionen (Bearbeiten/Löschen) -- anders
+   als .btn-ghost (randlos, für unauffällige Nebenaktionen) bewusst mit
+   sichtbarem Rahmen, damit eine Listenzeile wie in Business-Software auf
+   den ersten Blick als "hier gibt es Aktionen" erkennbar ist, nicht erst
+   beim Hover. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.icon-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.icon-btn.icon-btn-danger {
+  color: var(--warn);
+  border-color: var(--warn-soft);
+}
+
+.icon-btn.icon-btn-danger:hover {
+  background: var(--warn-soft);
+  border-color: var(--warn);
+}
+
 /* Nutzer-Feedback (2026-08): Stammdatenpflege bei vielen Mitarbeitenden --
    Tabelle (Suche/Sortierung/Filter serverseitig, siehe EmployeeSettings.jsx)
    nimmt die volle Breite ein, das Bearbeiten-Formular öffnet als Modal
@@ -2487,7 +2718,12 @@ thead .col-employee {
   flex-wrap: wrap;
 }
 
-.entry-actions button[type="button"]:not(.btn-ghost) {
+/* Settings-Panel-Polish (2026-08): .icon-btn (umrandete Zeilenaktionen,
+   siehe dort) ist eine bewusst andere, hellere Variante als dieser gefüllte
+   Default -- ausgenommen wie schon .btn-ghost, sonst würde diese höher
+   spezifische Regel (Attribut- + :not-Selektor) .icon-btn immer
+   überschreiben, unabhängig von der Reihenfolge im Stylesheet. */
+.entry-actions button[type="button"]:not(.btn-ghost):not(.icon-btn) {
   border: none;
   background: var(--primary);
   color: white;

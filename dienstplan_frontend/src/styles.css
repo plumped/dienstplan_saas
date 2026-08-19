@@ -2656,7 +2656,8 @@ thead .col-employee {
    margin-bottom (würde die vertikale Zentrierung neben dem Schliessen-
    Button stören) und mit etwas kleinerem Icon (Modal-Header ist knapper
    bemessen als ein volles Formular-Panel). */
-.modal-header .settings-form-header {
+.modal-header .settings-form-header,
+.billing-header .settings-form-header {
   margin-bottom: 0;
 }
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { IconCreditCard } from "../icons.jsx";
 
 const STATUS_LABELS = {
   active: "Aktiv",
@@ -108,7 +109,15 @@ export default function BillingSettings({ onError }) {
   return (
     <div className="panel-form">
       <div className="billing-header">
-        <h2>Abrechnung</h2>
+        <div className="settings-form-header">
+          <span className="settings-form-icon">
+            <IconCreditCard />
+          </span>
+          <div>
+            <h2>Abrechnung</h2>
+            <p className="settings-form-subtitle">Abo-Status, Testphase und Zahlungsmittel.</p>
+          </div>
+        </div>
         <span className={`status-badge status-badge--${status.subscription_status}`}>
           {STATUS_LABELS[status.subscription_status] ?? status.subscription_status}
         </span>

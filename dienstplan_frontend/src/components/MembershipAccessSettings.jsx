@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import NodeScopeEditor, { toggleNodeSelection } from "./NodeScopeEditor.jsx";
 import { ROLE_LABELS, ROLE_OPTIONS } from "../roles.js";
+import { IconBuilding, IconKey, IconList, IconPlus, IconRefreshCw, IconTrash } from "../icons.jsx";
 
 function emptyCreateForm() {
   return { username: "", first_name: "", last_name: "", role: "admin" };
@@ -166,7 +167,15 @@ export default function MembershipAccessSettings({ nodes, onError }) {
   return (
     <div className="side-panel">
       <div className="panel-list panel-list--full">
-        <h2>Konten ohne Mitarbeiterprofil</h2>
+        <div className="settings-form-header">
+          <span className="settings-form-icon">
+            <IconKey />
+          </span>
+          <div>
+            <h2>Konten ohne Mitarbeiterprofil</h2>
+            <p className="settings-form-subtitle">Login-Konten ohne zugehöriges Mitarbeiterprofil verwalten.</p>
+          </div>
+        </div>
         <p className="panel-hint">
           Seltener Sonderfall: ein Login-Konto, das zu KEINER Person unter "Mitarbeitende" gehört (z. B.
           externe IT-Administration). Für Mitarbeitende mit eigenem Profil wird der Login-Zugang direkt in
@@ -174,7 +183,8 @@ export default function MembershipAccessSettings({ nodes, onError }) {
         </p>
         <div className="panel-list-actions">
           <button type="button" className="btn-primary" onClick={() => setCreateFormOpen(true)}>
-            + Konto hinzufügen
+            <IconPlus width={15} height={15} />
+            Konto hinzufügen
           </button>
         </div>
         {!orphanMemberships.length ? (
@@ -211,29 +221,37 @@ export default function MembershipAccessSettings({ nodes, onError }) {
                     ))}
                   </select>
                   {(m.role === "planner" || m.role === "hr") && (
-                    <button type="button" className="btn-ghost" onClick={() => startEditing(m)}>
+                    <button type="button" className="icon-btn" onClick={() => startEditing(m)}>
                       Stationen
                     </button>
                   )}
                   <button
                     type="button"
-                    className="btn-ghost"
+                    className="icon-btn"
                     disabled={resettingId === m.id}
                     onClick={() => handleResetPassword(m)}
                   >
+                    <IconRefreshCw width={14} height={14} />
                     {resettingId === m.id ? "Wird zurückgesetzt …" : "Passwort zurücksetzen"}
                   </button>
                   <button
                     type="button"
-                    className="btn-ghost btn-danger-ghost"
+                    className="icon-btn icon-btn-danger"
                     onClick={() => handleDelete(m)}
                   >
+                    <IconTrash width={14} height={14} />
                     Löschen
                   </button>
                 </span>
               </li>
             ))}
           </ul>
+        )}
+        {!!orphanMemberships.length && (
+          <p className="panel-list-footer">
+            <IconList width={14} height={14} />
+            {orphanMemberships.length === 1 ? "1 Konto" : `${orphanMemberships.length} Konten`}
+          </p>
         )}
       </div>
 
@@ -245,7 +263,15 @@ export default function MembershipAccessSettings({ nodes, onError }) {
             onSubmit={handleCreateSubmit}
           >
             <div className="modal-header">
-              <h2>Konto ohne Mitarbeiterprofil hinzufügen</h2>
+              <div className="settings-form-header">
+                <span className="settings-form-icon">
+                  <IconKey />
+                </span>
+                <div>
+                  <h2>Konto ohne Mitarbeiterprofil hinzufügen</h2>
+                  <p className="settings-form-subtitle">Login-Konto ohne zugehöriges Mitarbeiterprofil anlegen.</p>
+                </div>
+              </div>
               <button
                 type="button"
                 className="modal-close"
@@ -339,7 +365,15 @@ export default function MembershipAccessSettings({ nodes, onError }) {
         <div className="modal-overlay" onClick={closeEditing}>
           <div className="panel-form modal-dialog node-scope-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>Stationen für {editingMembership.username}</h2>
+              <div className="settings-form-header">
+                <span className="settings-form-icon">
+                  <IconBuilding />
+                </span>
+                <div>
+                  <h2>Stationen für {editingMembership.username}</h2>
+                  <p className="settings-form-subtitle">Sichtbare Stationen für dieses Konto einschränken.</p>
+                </div>
+              </div>
               <button type="button" className="modal-close" onClick={closeEditing} aria-label="Schliessen">
                 ×
               </button>

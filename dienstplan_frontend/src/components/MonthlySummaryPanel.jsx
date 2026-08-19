@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { IconBarChart } from "../icons.jsx";
 
 const MONTH_NAMES = [
   "Januar", "Februar", "März", "April", "Mai", "Juni",
@@ -93,7 +94,15 @@ export default function MonthlySummaryPanel({ onError }) {
 
   return (
     <div className="panel-form">
-      <h2>Monatsauswertung</h2>
+      <div className="settings-form-header">
+        <span className="settings-form-icon">
+          <IconBarChart />
+        </span>
+        <div>
+          <h2>Monatsauswertung</h2>
+          <p className="settings-form-subtitle">Soll/Ist-Stunden und Zuschläge pro Mitarbeiter und Monat.</p>
+        </div>
+      </div>
       <p className="panel-hint">
         Soll/Ist-Stunden, Überzeit sowie Nacht-/Sonntagszuschlag für einen Kalendermonat -- Basis für
         den Lohnlauf. Ist-Stunden kommen pro Schicht bevorzugt aus der geprüften Zeiterfassung,
@@ -156,7 +165,7 @@ export default function MonthlySummaryPanel({ onError }) {
                 "bei uns gilt Gleitzeit, nur angeordnete Überstunden werden effektiv abgerechnet" -- erst
                 nach Bestätigung fliesst dieser Betrag in den Lohnlauf ein.
               </p>
-              <button type="button" onClick={handleSettle} disabled={settling}>
+              <button type="button" className="btn-primary" onClick={handleSettle} disabled={settling}>
                 {settling ? "Bestätigt …" : "Überschuss bestätigen"}
               </button>
             </div>

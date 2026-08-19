@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { SWISS_CANTONS } from "../cantons.js";
+import { IconPlus, IconScale, IconTrash } from "../icons.jsx";
 
 const FIELD_GROUPS = [
   {
@@ -240,7 +241,15 @@ export default function TenantSettings({ onError }) {
 
   return (
     <form className="panel-form" onSubmit={handleSubmit}>
-      <h2>Regel-Engine & Zuschläge -- {tenant.name}</h2>
+      <div className="settings-form-header">
+        <span className="settings-form-icon">
+          <IconScale />
+        </span>
+        <div>
+          <h2>Regel-Engine & Zuschläge</h2>
+          <p className="settings-form-subtitle">{tenant.name} -- Ruhezeit, Höchstarbeitszeit, Zuschläge, Ferienanspruch.</p>
+        </div>
+      </div>
       <p className="panel-hint">
         Diese Werte gelten für den gesamten Tenant und steuern die Regel-Engine sowie Saldo-/
         Zuschlagsberechnungen. Standardwerte, kein Rechtsrat -- im Zweifel arbeitsrechtlich prüfen
@@ -254,11 +263,14 @@ export default function TenantSettings({ onError }) {
             field.type === "checkbox" ? (
               <div key={field.key}>
                 <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={Boolean(form[field.key])}
-                    onChange={handleChange(field.key, "checkbox")}
-                  />
+                  <span className="pretty-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(form[field.key])}
+                      onChange={handleChange(field.key, "checkbox")}
+                    />
+                    <span className="pretty-checkbox-box" aria-hidden="true" />
+                  </span>
                   {field.label}
                 </label>
                 <span className="panel-hint">{field.hint}</span>
@@ -375,7 +387,8 @@ function HolidayOverridesEditor({ onError }) {
                 {o.date} -- {o.kind === "add" ? "zusätzlicher Feiertag" : "kein Feiertag"}
                 {o.name ? ` (${o.name})` : ""}
               </span>
-              <button type="button" className="btn-ghost btn-danger-ghost" onClick={() => handleDelete(o.id)}>
+              <button type="button" className="icon-btn icon-btn-danger" onClick={() => handleDelete(o.id)}>
+                <IconTrash width={14} height={14} />
                 Entfernen
               </button>
             </li>
@@ -411,6 +424,7 @@ function HolidayOverridesEditor({ onError }) {
         </label>
       </div>
       <button type="button" className="btn-primary" onClick={handleAdd} disabled={adding}>
+        <IconPlus width={15} height={15} />
         {adding ? "Speichert …" : "Hinzufügen"}
       </button>
     </fieldset>

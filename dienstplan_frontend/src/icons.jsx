@@ -143,3 +143,50 @@ export function IconDownload(props) {
     </svg>
   );
 }
+
+export function IconScale(props) {
+  return (
+    <svg {...common} {...props}>
+      <path d="M12 3v18M8 21h8" />
+      <path d="M5 6h14M5 6L2.5 11.5a2.5 2.5 0 0 0 5 0L5 6ZM19 6l-2.5 5.5a2.5 2.5 0 0 0 5 0L19 6Z" />
+    </svg>
+  );
+}
+
+export function IconKey(props) {
+  return (
+    <svg {...common} {...props}>
+      <circle cx="8" cy="15" r="4.2" />
+      <path d="M11 12l8.5-8.5M16.5 6.5l2.5 2.5M19.5 3.5L22 6" />
+    </svg>
+  );
+}
+
+export function IconBarChart(props) {
+  return (
+    <svg {...common} {...props}>
+      <path d="M4 20V10M11 20V4M18 20v-7" />
+      <path d="M2.5 20h19" />
+    </svg>
+  );
+}
+
+export function IconRefreshCw(props) {
+  return (
+    <svg {...common} {...props}>
+      <path d="M4 12a8 8 0 0 1 13.66-5.66L20 8.5" />
+      <path d="M20 3.5V8.5H15" />
+      <path d="M20 12a8 8 0 0 1-13.66 5.66L4 15.5" />
+      <path d="M4 20.5V15.5H9" />
+    </svg>
+  );
+}
+
+export function IconCreditCard(props) {
+  return (
+    <svg {...common} {...props}>
+      <rect x="2.5" y="5.5" width="19" height="13" rx="2.2" />
+      <path d="M2.5 10h19M6 14.5h4" />
+    </svg>
+  );
+}

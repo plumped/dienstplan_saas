@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { api } from "../api.js";
 import { chipGlyph } from "../chipGlyph.js";
 import TimeTemplateSegmentEditor from "./TimeTemplateSegmentEditor.jsx";
+import ColorPickerField from "./ColorPickerField.jsx";
+import { IconClock, IconPencil, IconPlus, IconSearch, IconTrash, IconUsers } from "../icons.jsx";
 
 // Nutzer-Feedback (2026-08): gleiches Muster wie EmployeeSettings.jsx --
 // bei vielen Stationen (z. B. 15 Stationen x 10 Schichttypen) wurde die
@@ -205,13 +207,16 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
     <div className="settings-table-layout">
       <div className="panel-list panel-list--full settings-table-panel">
         <div className="settings-table-toolbar">
-          <input
-            type="search"
-            className="panel-list-filter"
-            placeholder="Name suchen …"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-          />
+          <span className="panel-list-search">
+            <IconSearch width={15} height={15} />
+            <input
+              type="search"
+              className="panel-list-filter"
+              placeholder="Name suchen …"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+            />
+          </span>
           <select value={nodeFilter} onChange={(e) => setNodeFilter(e.target.value)}>
             <option value="">Alle Stationen</option>
             {nodes.map((n) => (
@@ -225,8 +230,9 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
             <option value="shift">Dienst</option>
             <option value="special">Spezialität</option>
           </select>
-          <button type="button" className="btn-ghost" onClick={startCreating}>
-            + Neuer Schichttyp
+          <button type="button" className="btn-primary" onClick={startCreating}>
+            <IconPlus width={15} height={15} />
+            Neuer Schichttyp
           </button>
         </div>
 
@@ -278,10 +284,12 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                       </td>
                       <td onClick={(e) => e.stopPropagation()}>
                         <span className="settings-table-actions">
-                          <button type="button" className="btn-ghost" onClick={() => startEditing(t)}>
+                          <button type="button" className="icon-btn" onClick={() => startEditing(t)}>
+                            <IconPencil width={14} height={14} />
                             Bearbeiten
                           </button>
-                          <button type="button" className="btn-ghost" onClick={() => handleDelete(t)}>
+                          <button type="button" className="icon-btn icon-btn-danger" onClick={() => handleDelete(t)}>
+                            <IconTrash width={14} height={14} />
                             Löschen
                           </button>
                         </span>
@@ -312,7 +320,19 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
         <div className="modal-overlay" onClick={closeForm}>
           <form className="panel-form modal-dialog" onSubmit={handleSubmit} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h2>{editingId ? "Schichttyp bearbeiten" : "Schichttyp anlegen"}</h2>
+              <div className="settings-form-header">
+                <span className="settings-form-icon">
+                  <IconClock />
+                </span>
+                <div>
+                  <h2>{editingId ? "Schichttyp bearbeiten" : "Schichttyp anlegen"}</h2>
+                  <p className="settings-form-subtitle">
+                    {editingId
+                      ? "Passe die Eigenschaften dieses Schichttyps an."
+                      : "Definiere einen neuen Schichttyp für eine Station."}
+                  </p>
+                </div>
+              </div>
               <button type="button" className="modal-close" onClick={closeForm} aria-label="Schliessen">
                 ×
               </button>
@@ -320,9 +340,15 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
             <div className="modal-body">
               <div className="panel-form-row">
                 <label>
-                  Name
+                  <span>
+                    Name
+                    <span className="field-tooltip" title="Wird im Planblatt und Jahresplan angezeigt.">
+                      ?
+                    </span>
+                  </span>
                   <input
                     type="text"
+                    placeholder="z. B. Frühdienst, Spätdienst"
                     value={form.name}
                     onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
                     required
@@ -381,8 +407,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
               <div className="panel-form-row">
                 <label>
                   Farbe
-                  <input
-                    type="color"
+                  <ColorPickerField
                     value={form.color}
                     onChange={(e) => setForm((prev) => ({ ...prev, color: e.target.value }))}
                   />
@@ -462,32 +487,42 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
                   </label>
                 )}
               </div>
-              <div className="panel-form-row">
-                <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={form.fills_remaining_capacity}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setForm((prev) => ({
-                        ...prev,
-                        fills_remaining_capacity: checked,
-                        // Backend lehnt beides gleichzeitig ab (TimeTemplate.clean()) --
-                        // beim Aktivieren gleich mit zurücksetzen statt den Nutzer über
-                        // einen Validierungsfehler stolpern zu lassen.
-                        minimum_staffing: checked ? 0 : prev.minimum_staffing,
-                        required_skill: checked ? "" : prev.required_skill,
-                      }));
-                    }}
-                  />
-                  Auffülldienst (z. B. "Gleitzeit")
+              <div className="option-card-list">
+                <label className="option-card">
+                  <span className="option-card-icon">
+                    <IconUsers />
+                  </span>
+                  <span className="option-card-body">
+                    <span className="option-card-title">
+                      <span className="pretty-checkbox">
+                        <input
+                          type="checkbox"
+                          checked={form.fills_remaining_capacity}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setForm((prev) => ({
+                              ...prev,
+                              fills_remaining_capacity: checked,
+                              // Backend lehnt beides gleichzeitig ab (TimeTemplate.clean()) --
+                              // beim Aktivieren gleich mit zurücksetzen statt den Nutzer über
+                              // einen Validierungsfehler stolpern zu lassen.
+                              minimum_staffing: checked ? 0 : prev.minimum_staffing,
+                              required_skill: checked ? "" : prev.required_skill,
+                            }));
+                          }}
+                        />
+                        <span className="pretty-checkbox-box" aria-hidden="true" />
+                      </span>
+                      Auffülldienst (z. B. "Gleitzeit")
+                    </span>
+                    <p className="option-card-desc">
+                      Statt einer festen Mindestbesetzung erhalten alle an diesem Tag arbeitspflichtigen
+                      Mitarbeitenden dieses Teams, die keinen anderen Dienst haben, automatisch diesen
+                      Schichttyp -- die Anzahl ergibt sich täglich neu, statt fest vorgegeben zu sein.
+                      Höchstens ein Auffülldienst pro Team; setzt Mindestbesetzung auf 0 voraus.
+                    </p>
+                  </span>
                 </label>
-                <span className="panel-hint">
-                  Statt einer festen Mindestbesetzung erhalten alle an diesem Tag arbeitspflichtigen
-                  Mitarbeitenden dieses Teams, die keinen anderen Dienst haben, automatisch diesen
-                  Schichttyp -- die Anzahl ergibt sich täglich neu, statt fest vorgegeben zu sein.
-                  Höchstens ein Auffülldienst pro Team; setzt Mindestbesetzung auf 0 voraus.
-                </span>
               </div>
 
               <h3>Blockstruktur (optional, Block 1.9)</h3>
@@ -505,7 +540,7 @@ export default function TimeTemplateSettings({ nodes, skills, onError }) {
               <button type="button" className="btn-ghost" onClick={closeForm}>
                 Abbrechen
               </button>
-              <button type="submit" disabled={saving}>
+              <button type="submit" className="btn-primary" disabled={saving}>
                 {saving ? "Speichert …" : editingId ? "Speichern" : "Anlegen"}
               </button>
             </div>

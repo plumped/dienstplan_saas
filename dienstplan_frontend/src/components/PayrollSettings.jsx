@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
+import { IconCoins, IconDownload } from "../icons.jsx";
 
 // Dieselben Kategorien wie scheduling.models.PayrollCategoryMapping.Category
 // (Backend) -- hier dupliziert, analog SWISS_CANTONS in TenantSettings.jsx.
@@ -137,7 +138,15 @@ export default function PayrollSettings({ onError }) {
   return (
     <div className="panel-form">
       <div className="panel-form-group">
-        <h2>Lohnarten</h2>
+        <div className="settings-form-header">
+          <span className="settings-form-icon">
+            <IconCoins />
+          </span>
+          <div>
+            <h2>Lohnarten</h2>
+            <p className="settings-form-subtitle">Ordne Zuschlagskategorien den Lohnart-Codes deines Lohnsystems zu.</p>
+          </div>
+        </div>
         <p className="panel-hint">
           Ordnet die intern berechneten Zuschlagskategorien den Lohnart-Codes deines Lohnsystems zu --
           kein einziger verpflichtender CH-Standard dafür, jedes Lohnsystem vergibt eigene Codes. Ohne
@@ -263,7 +272,15 @@ export default function PayrollSettings({ onError }) {
       </div>
 
       <div className="panel-form-group">
-        <h2>Export</h2>
+        <div className="settings-form-header">
+          <span className="settings-form-icon">
+            <IconDownload />
+          </span>
+          <div>
+            <h2>Export</h2>
+            <p className="settings-form-subtitle">Lohn-Rohdaten eines Monats als CSV exportieren.</p>
+          </div>
+        </div>
         <p className="panel-hint">
           Lohn-Rohdaten eines Kalendermonats als CSV, pro Mitarbeiter eine Zeile je Kategorie
           (Personalnummer, Name, Kostenstelle, Lohnart-Code, Bezeichnung, Menge, Einheit, Periode).
@@ -281,6 +298,7 @@ export default function PayrollSettings({ onError }) {
             <input type="month" value={month} onChange={(e) => setMonth(e.target.value)} />
           </label>
           <button type="button" className="btn-primary" onClick={handleExport} disabled={exporting}>
+            <IconDownload width={15} height={15} />
             {exporting ? "Wird erstellt …" : "CSV herunterladen"}
           </button>
         </div>

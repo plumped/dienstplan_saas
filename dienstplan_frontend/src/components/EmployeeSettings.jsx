@@ -6,6 +6,7 @@ import EmploymentEditor from "./EmploymentEditor.jsx";
 import FairnessBadge from "./FairnessBadge.jsx";
 import NodeScopeEditor, { toggleNodeSelection } from "./NodeScopeEditor.jsx";
 import PregnancyEditor from "./PregnancyEditor.jsx";
+import { IconPencil, IconPlus, IconSearch, IconUsers } from "../icons.jsx";
 
 // Nutzer-Feedback (2026-08): "warum soll ich Freitext-Benutzernamen
 // vergeben?" -- statt der Admin muss sich einen ausdenken, wird er aus den
@@ -510,13 +511,16 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
     <div className="settings-table-layout">
       <div className="panel-list panel-list--full settings-table-panel">
         <div className="settings-table-toolbar">
-          <input
-            type="search"
-            className="panel-list-filter"
-            placeholder="Name suchen …"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-          />
+          <span className="panel-list-search">
+            <IconSearch width={15} height={15} />
+            <input
+              type="search"
+              className="panel-list-filter"
+              placeholder="Name suchen …"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+            />
+          </span>
           <select value={nodeFilter} onChange={(e) => setNodeFilter(e.target.value)}>
             <option value="">Alle Stationen</option>
             {nodes.map((n) => (
@@ -530,8 +534,9 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
             <option value="true">Nur aktive</option>
             <option value="false">Nur inaktive</option>
           </select>
-          <button type="button" className="btn-ghost" onClick={startCreating}>
-            + Neuer Mitarbeiter
+          <button type="button" className="btn-primary" onClick={startCreating}>
+            <IconPlus width={15} height={15} />
+            Neuer Mitarbeiter
           </button>
         </div>
 
@@ -592,13 +597,14 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                         <span className="settings-table-actions">
                           <BalanceBadge employeeId={emp.id} data={balanceFairnessById[emp.id]?.balance ?? null} />
                           <FairnessBadge employeeId={emp.id} data={balanceFairnessById[emp.id]?.fairness ?? null} />
-                          <button type="button" className="btn-ghost" onClick={() => startEditing(emp)}>
+                          <button type="button" className="icon-btn" onClick={() => startEditing(emp)}>
+                            <IconPencil width={14} height={14} />
                             Bearbeiten
                           </button>
                           {emp.is_active ? (
                             <button
                               type="button"
-                              className="btn-ghost btn-danger-ghost"
+                              className="icon-btn icon-btn-danger"
                               disabled={deactivatingId === emp.id}
                               onClick={() => handleDeactivate(emp)}
                             >
@@ -607,7 +613,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
                           ) : (
                             <button
                               type="button"
-                              className="btn-ghost"
+                              className="icon-btn"
                               disabled={deactivatingId === emp.id}
                               onClick={() => handleReactivate(emp)}
                             >
@@ -656,7 +662,19 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="modal-header">
-              <h2>{editingId ? "Mitarbeiter bearbeiten" : "Mitarbeiter anlegen"}</h2>
+              <div className="settings-form-header">
+                <span className="settings-form-icon">
+                  <IconUsers />
+                </span>
+                <div>
+                  <h2>{editingId ? "Mitarbeiter bearbeiten" : "Mitarbeiter anlegen"}</h2>
+                  <p className="settings-form-subtitle">
+                    {editingId
+                      ? "Passe Stammdaten, Zugang und Anstellungen an."
+                      : "Erfasse Stammdaten, Zugang und Anstellungen für eine neue Person."}
+                  </p>
+                </div>
+              </div>
               <button type="button" className="modal-close" onClick={closeForm} aria-label="Schliessen">
                 ×
               </button>
@@ -708,18 +726,21 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
             <div className="weekday-checkbox-row">
               {WEEKDAY_LABELS.map((label, weekday) => (
                 <label key={weekday} className="checkbox-row weekday-checkbox">
-                  <input
-                    type="checkbox"
-                    checked={form.fixed_weekdays_off.includes(weekday)}
-                    onChange={(e) =>
-                      setForm((prev) => ({
-                        ...prev,
-                        fixed_weekdays_off: e.target.checked
-                          ? [...prev.fixed_weekdays_off, weekday]
-                          : prev.fixed_weekdays_off.filter((d) => d !== weekday),
-                      }))
-                    }
-                  />
+                  <span className="pretty-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={form.fixed_weekdays_off.includes(weekday)}
+                      onChange={(e) =>
+                        setForm((prev) => ({
+                          ...prev,
+                          fixed_weekdays_off: e.target.checked
+                            ? [...prev.fixed_weekdays_off, weekday]
+                            : prev.fixed_weekdays_off.filter((d) => d !== weekday),
+                        }))
+                      }
+                    />
+                    <span className="pretty-checkbox-box" aria-hidden="true" />
+                  </span>
                   {label}
                 </label>
               ))}
@@ -806,11 +827,14 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
             ) : (
               <>
                 <label className="checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={form.hasLogin}
-                    onChange={(e) => setForm((prev) => ({ ...prev, hasLogin: e.target.checked }))}
-                  />
+                  <span className="pretty-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={form.hasLogin}
+                      onChange={(e) => setForm((prev) => ({ ...prev, hasLogin: e.target.checked }))}
+                    />
+                    <span className="pretty-checkbox-box" aria-hidden="true" />
+                  </span>
                   Zugang aktiv (Person kann sich einloggen)
                 </label>
                 {form.hasLogin && (
@@ -985,7 +1009,10 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
         )}
 
               <label className="checkbox-row">
-                <input type="checkbox" checked={form.is_active} onChange={updateField("is_active")} />
+                <span className="pretty-checkbox">
+                  <input type="checkbox" checked={form.is_active} onChange={updateField("is_active")} />
+                  <span className="pretty-checkbox-box" aria-hidden="true" />
+                </span>
                 Aktiv (deaktivierte Mitarbeitende erscheinen nicht mehr im Planblatt)
               </label>
             </div>
@@ -993,7 +1020,7 @@ export default function EmployeeSettings({ nodes, skills, me, onError }) {
               <button type="button" className="btn-ghost" onClick={closeForm}>
                 Abbrechen
               </button>
-              <button type="submit" disabled={saving}>
+              <button type="submit" className="btn-primary" disabled={saving}>
                 {saving ? "Speichert …" : editingId ? "Speichern" : "Anlegen"}
               </button>
             </div>

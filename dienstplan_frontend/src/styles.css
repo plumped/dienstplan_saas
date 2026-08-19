@@ -2493,6 +2493,20 @@ thead .col-employee {
   margin-bottom: 0;
 }
 
+/* .panel-list-search ist standardmässig flex: none (passend für die kompakte
+   Suche neben "Absenzarten"/"Skills") -- in der Tabellen-Toolbar soll das
+   Suchfeld dagegen den verfügbaren Platz neben den Filtern/dem
+   "+ Neu"-Button ausfüllen, genau wie das nackte .panel-list-filter das
+   bisher direkt tat. */
+.settings-table-toolbar .panel-list-search {
+  flex: 1;
+  min-width: 160px;
+}
+
+.settings-table-toolbar .panel-list-search input {
+  width: 100%;
+}
+
 .settings-table-toolbar select {
   font-family: var(--font-body);
   font-size: 13px;
@@ -2635,6 +2649,23 @@ thead .col-employee {
   font-size: 16px;
 }
 
+/* Settings-Panel-Muster (2026-08, Rollout auf Tabellen-/Modal-Tabs wie
+   Schichttypen/Mitarbeitende): dieselbe Kopfzeile (Icon + Titel +
+   Untertitel) wie .settings-form-header, hier aber als Kind von
+   .modal-header statt eines .panel-form -- daher ohne eigenen
+   margin-bottom (würde die vertikale Zentrierung neben dem Schliessen-
+   Button stören) und mit etwas kleinerem Icon (Modal-Header ist knapper
+   bemessen als ein volles Formular-Panel). */
+.modal-header .settings-form-header {
+  margin-bottom: 0;
+}
+
+.modal-header .settings-form-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+}
+
 .modal-close {
   border: none;
   background: none;
@@ -2737,6 +2768,7 @@ thead .col-employee {
 }
 
 .drag-handle {
+  margin-right: 6px;
   color: var(--ink-muted);
   cursor: grab;
   user-select: none;

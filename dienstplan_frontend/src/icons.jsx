@@ -86,3 +86,60 @@ export function IconList(props) {
     </svg>
   );
 }
+
+export function IconBadge(props) {
+  return (
+    <svg {...common} {...props}>
+      <circle cx="12" cy="9" r="6" />
+      <path d="M8.5 14.2L7 21l5-2.5 5 2.5-1.5-6.8" />
+    </svg>
+  );
+}
+
+export function IconBuilding(props) {
+  return (
+    <svg {...common} {...props}>
+      <rect x="4" y="3" width="12" height="18" rx="1.5" />
+      <path d="M16 9h4v12h-4M7.5 7h1M11.5 7h1M7.5 11h1M11.5 11h1M7.5 15h1M11.5 15h1" />
+    </svg>
+  );
+}
+
+export function IconUsers(props) {
+  return (
+    <svg {...common} {...props}>
+      <circle cx="9" cy="8" r="3.3" />
+      <path d="M2.8 20c.6-3.3 3.2-5.5 6.2-5.5s5.6 2.2 6.2 5.5" />
+      <path d="M15.5 5.2c1.6.4 2.8 1.9 2.8 3.6 0 1.7-1.2 3.2-2.8 3.6M18.7 14.8c2.2.6 3.8 2.5 4.3 4.9" />
+    </svg>
+  );
+}
+
+export function IconClock(props) {
+  return (
+    <svg {...common} {...props}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3.2 2" />
+    </svg>
+  );
+}
+
+export function IconCoins(props) {
+  return (
+    <svg {...common} {...props}>
+      <ellipse cx="9" cy="7.5" rx="6" ry="3.2" />
+      <path d="M3 7.5V13c0 1.8 2.7 3.2 6 3.2s6-1.4 6-3.2V7.5" />
+      <path d="M3 10.3c0 1.8 2.7 3.2 6 3.2s6-1.4 6-3.2" />
+      <path d="M13.2 12.8c.9 1.6 3 2.7 5.3 2.7 3.3 0 6-2.1 6-3.9s-2.7-3.9-6-3.9c-.8 0-1.6.1-2.3.4" />
+    </svg>
+  );
+}
+
+export function IconDownload(props) {
+  return (
+    <svg {...common} {...props}>
+      <path d="M12 3.5v12M7.5 11.5l4.5 4.5 4.5-4.5" />
+      <path d="M4.5 17.5v2a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2" />
+    </svg>
+  );
+}

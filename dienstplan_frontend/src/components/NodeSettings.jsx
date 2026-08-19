@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api.js";
+import { IconBuilding, IconList, IconPencil, IconPlus, IconSearch, IconTrash } from "../icons.jsx";
 
 function emptyForm() {
   return { name: "", parent: "", cost_center: "" };
@@ -227,12 +228,26 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
   return (
     <div className="side-panel">
       <form className="panel-form" onSubmit={handleSubmit}>
-        <h2>Station anlegen</h2>
+        <div className="settings-form-header">
+          <span className="settings-form-icon">
+            <IconBuilding />
+          </span>
+          <div>
+            <h2>Station anlegen</h2>
+            <p className="settings-form-subtitle">Erweitere die Organisationsstruktur deines Unternehmens.</p>
+          </div>
+        </div>
         <div className="panel-form-row">
           <label>
-            Name
+            <span>
+              Name
+              <span className="field-tooltip" title="Standort, Abteilung oder Team.">
+                ?
+              </span>
+            </span>
             <input
               type="text"
+              placeholder="z. B. Pflege Tag, Küche, Empfang"
               value={form.name}
               onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
               required
@@ -266,28 +281,39 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
           Für den Lohn-Export (Einstellungen → Lohnarten). Leer lassen vererbt die Kostenstelle der
           übergeordneten Station.
         </p>
-        <button type="submit" disabled={saving || !form.name.trim()}>
-          {saving ? "Speichert …" : "Anlegen"}
-        </button>
+        <div className="entry-actions">
+          <button type="submit" className="btn-primary" disabled={saving || !form.name.trim()}>
+            <IconPlus width={15} height={15} />
+            {saving ? "Speichert …" : "Station anlegen"}
+          </button>
+        </div>
       </form>
 
       <div className="panel-list">
-        <h2>Stationen</h2>
+        <div className="panel-list-header-row">
+          <div>
+            <h2>Stationen</h2>
+            <p className="settings-form-subtitle">Verwalte die Organisationsstruktur und ihre Reihenfolge.</p>
+          </div>
+          {nodes.length > 0 && (
+            <span className="panel-list-search">
+              <IconSearch width={15} height={15} />
+              <input
+                type="search"
+                className="panel-list-filter"
+                placeholder="Station suchen …"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </span>
+          )}
+        </div>
         {nodes.length > 0 && (
-          <>
-            <input
-              type="search"
-              className="panel-list-filter"
-              placeholder="Station suchen …"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <p className="panel-hint">
-              Station mit gedrückter Maustaste auf eine andere ziehen, um sie dort unterzuordnen --
-              innerhalb derselben Ebene wird immer alphabetisch sortiert, eine manuelle Reihenfolge
-              ist nicht möglich.
-            </p>
-          </>
+          <p className="panel-hint">
+            Station mit gedrückter Maustaste auf eine andere ziehen, um sie dort unterzuordnen --
+            innerhalb derselben Ebene wird immer alphabetisch sortiert, eine manuelle Reihenfolge
+            ist nicht möglich.
+          </p>
         )}
         {dragSourceId != null && (
           <div
@@ -352,23 +378,33 @@ export default function NodeSettings({ nodes, onCreated, onUpdated, onDeleted, o
                   {editingId !== n.id && (
                     <button
                       type="button"
-                      className="btn-ghost"
+                      className="icon-btn"
                       onClick={() => {
                         setEditingId(n.id);
                         setEditName(n.name);
                         setEditCostCenter(n.cost_center || "");
                       }}
                     >
+                      <IconPencil width={14} height={14} />
                       Bearbeiten
                     </button>
                   )}
-                  <button type="button" className="btn-ghost" onClick={() => handleDelete(n)}>
+                  <button type="button" className="icon-btn icon-btn-danger" onClick={() => handleDelete(n)}>
+                    <IconTrash width={14} height={14} />
                     Löschen
                   </button>
                 </span>
               </li>
             ))}
           </ul>
+        )}
+        {!!nodes.length && (
+          <p className="panel-list-footer">
+            <IconList width={14} height={14} />
+            {visibleNodes.length === nodes.length
+              ? `${nodes.length} ${nodes.length === 1 ? "Station" : "Stationen"}`
+              : `${visibleNodes.length} von ${nodes.length} Stationen`}
+          </p>
         )}
       </div>
     </div>

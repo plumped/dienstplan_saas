@@ -1477,7 +1477,7 @@ thead .col-employee {
 .side-panel {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 28px;
   max-width: 760px;
 }
 
@@ -1486,15 +1486,20 @@ thead .col-employee {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 20px;
-  /* Settings-Panel-Polish (2026-08): minimale Tiefe statt reiner
-     1px-Kontur -- fällt auf --bg (leicht grau) deutlicher als Fläche auf,
-     ohne wie ein schwerer Material-Schatten zu wirken. Betrifft ALLE
-     Verwender dieser Basisklasse (bewusst, da eine dezente Karten-Tiefe
-     überall im Frontend passt, anders als die settings-form-*-Klassen
-     unten, die gezielt nur bei Verwendung des neuen Kopfzeilen-Musters
-     greifen). */
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
+  padding: 26px;
+  /* Nutzer-Feedback (2026-08, Nachtrag zum Settings-Panel-Polish):
+     "Schattierungen fehlen bei den Containern" -- die erste, sehr
+     dezente Fassung (0 1px 3px, Alpha 0.05) war auf --bg (leicht grau)
+     kaum wahrnehmbar. Jetzt ein zweistufiger, weicherer Schatten (enger
+     Kontaktschatten + weiter, sanfter Ambient-Schatten) -- sichtbare
+     Tiefe, ohne wie ein hartes Material-Design-Käst­chen zu wirken.
+     Betrifft ALLE Verwender dieser Basisklasse (bewusst, dezente
+     Kartentiefe passt überall im Frontend), anders als die
+     settings-form-*-Klassen unten, die gezielt nur bei Verwendung des
+     neuen Kopfzeilen-Musters greifen. */
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.05),
+    0 8px 24px rgba(15, 23, 42, 0.07);
 }
 
 .panel-list--full {
@@ -1504,7 +1509,7 @@ thead .col-employee {
 .panel-form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 18px;
 }
 
 .panel-form h2,
@@ -1656,7 +1661,7 @@ thead .col-employee {
 .panel-form select {
   font-family: var(--font-body);
   font-size: 14px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--ink);
@@ -1970,8 +1975,8 @@ thead .col-employee {
 .settings-form-header {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  margin-bottom: 4px;
+  gap: 14px;
+  margin-bottom: 8px;
 }
 
 .settings-form-icon {
@@ -2018,10 +2023,17 @@ thead .col-employee {
   color: var(--ink-muted);
 }
 
+/* Nutzer-Feedback: "Hairlines fehlen" -- eine dünne Trennlinie vor den
+   Options-Karten markiert den Übergang von den Eingabefeldern zu den
+   Ja/Nein-Optionen als eigenen Formular-Abschnitt (analog zum
+   Vorbild-Screenshot), statt dass beide Bereiche nur durch Abstand
+   getrennt ineinander laufen. */
 .option-card-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
 }
 
 /* :has() ist reine Verfeinerung (markiert die Karte bei angehaktem
@@ -2030,12 +2042,13 @@ thead .col-employee {
 .option-card {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 12px;
+  gap: 14px;
+  padding: 16px;
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
+  transition: border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .option-card:has(input:checked) {
@@ -2093,13 +2106,14 @@ thead .col-employee {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: fit-content;
-  padding: 7px 10px;
+  padding: 9px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .color-picker-trigger:hover {
@@ -2138,7 +2152,7 @@ thead .col-employee {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 14px;
+  margin-bottom: 20px;
 }
 
 .panel-list-header-row .panel-list-filter {
@@ -2185,13 +2199,14 @@ thead .col-employee {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
+  padding: 7px 14px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
   color: var(--ink);
   font-size: 12.5px;
   font-weight: 500;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .icon-btn:hover {
@@ -2472,18 +2487,25 @@ thead .col-employee {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
+/* Nutzer-Feedback (2026-08, Settings-Panel-Polish-Nachtrag): "Schattierungen
+   fehlen, mehr Luft" -- betrifft bewusst .entry-list-item als Basisklasse
+   direkt (nicht nur die Absenzarten-Liste), weil dieselbe Zeilenoptik
+   überall dort wiederverwendet wird (Dashboard, TimeRecordPanel,
+   TradeRequestPanel, NodeSettings, SkillSettings, ...) -- mehr Weissraum
+   und eine dezente Kontaktschattierung passen dort genauso. */
 .entry-list-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px;
+  gap: 12px;
+  padding: 13px 14px;
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 13px;
   flex-wrap: wrap;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
 .entry-list-item--trade {

@@ -10,10 +10,18 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# .env liegt bewusst nur lokal (siehe .gitignore) -- load_dotenv() ist ein
+# No-Op, wenn die Datei fehlt (z. B. in einer Produktivumgebung, die Secrets
+# stattdessen über echte Env-Variablen bekommt).
+load_dotenv(BASE_DIR / ".env")
 
 
 # Quick-start development settings - unsuitable for production
@@ -58,20 +66,33 @@ MIDDLEWARE = [
     'simple_history.middleware.HistoryRequestMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    # Nur für /admin/ (siehe core/middleware.py) -- muss vor der Cleanup-
+    # Middleware stehen, damit die ContextVar beim View-Aufruf gesetzt ist.
+    'core.middleware.AdminActiveTenantMiddleware',
+    'core.middleware.TenantContextCleanupMiddleware',
 ]
+
+AUTH_USER_MODEL = 'core.User'
 
 ROOT_URLCONF = 'config.urls'
 
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        # Projektweite Template-Overrides (aktuell nur admin/base_site.html
+        # + admin/tenant_switch.html, siehe core/admin_views.py). Bewusst
+        # hier statt in core/templates/: DIRS wird VOR APP_DIRS geprüft,
+        # sonst würde Django zuerst django.contrib.admin's eigenes
+        # admin/base_site.html finden (steht in INSTALLED_APPS vor 'core')
+        # und unsere Override-Datei nie erreichen.
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'core.context_processors.active_admin_tenant',
             ],
         },
     },
@@ -122,6 +143,14 @@ USE_I18N = True
 USE_TZ = True
 
 
+# E-Mail-Benachrichtigungen (MVP-Fahrplan Block 2.4, siehe core/notifications.py):
+# Console-Backend fürs lokale Dev/Testing -- gibt Mails auf stdout statt sie zu
+# versenden, kein SMTP-Server nötig. Für einen echten Betrieb muss das durch
+# einen SMTP-Backend (Postfach, SendGrid, ...) über Umgebungsvariablen ersetzt
+# werden -- siehe MVP-Fahrplan Block 4 (Produktionsreife).
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+DEFAULT_FROM_EMAIL = 'Dienstplan <noreply@dienstplan.example>'
+
 # Django REST Framework
 REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': [
@@ -146,3 +175,30 @@ CORS_ALLOWED_ORIGINS = [
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
+
+# Abrechnung (README Block 6, 2026-08): Stripe-Zahlungsanbindung für ein Abo
+# pro aktivem Mitarbeitenden -- siehe core/billing.py für die eigentliche
+# Integration. Alle vier Werte fehlen standardmässig (leerer String) statt
+# einen Fehler zu werfen, damit die App (inkl. Tests) auch ohne Stripe-
+# Konfiguration startet -- core/billing.py prüft das selbst vor jedem
+# API-Call und liefert dann eine klare Fehlermeldung statt eines rohen
+# Stripe-Fehlers. STRIPE_PRICE_ID wird von
+# `python manage.py setup_stripe_billing` einmalig erzeugt (siehe dortigen
+# Docstring) -- diese Umgebung hat keinen Netzwerkzugriff auf
+# api.stripe.com, der Befehl muss auf einer Maschine mit Internetzugriff
+# laufen.
+STRIPE_SECRET_KEY = os.environ.get('STRIPE_SECRET_KEY', '')
+STRIPE_PUBLISHABLE_KEY = os.environ.get('STRIPE_PUBLISHABLE_KEY', '')
+STRIPE_WEBHOOK_SECRET = os.environ.get('STRIPE_WEBHOOK_SECRET', '')
+STRIPE_PRICE_ID = os.environ.get('STRIPE_PRICE_ID', '')
+
+# Trial-Phase für per Self-Signup angelegte Tenants (README Block 6,
+# Nutzer-Entscheidung 2026-08: 14 Tage). Über Settings statt hartkodiert im
+# Model, damit ein Test/eine Sonderumgebung sie ohne Migration überschreiben
+# kann.
+TRIAL_PERIOD_DAYS = 14
+# Cap für aktive Mitarbeitende WÄHREND der Trial-Phase (verhindert
+# Missbrauch der kostenlosen Phase mit einem grossen Team) -- nach
+# Abschluss eines Abos gibt es kein hartes Limit mehr, es wird pro aktivem
+# Mitarbeitenden abgerechnet (STRIPE_PRICE_ID).
+TRIAL_EMPLOYEE_LIMIT = 15

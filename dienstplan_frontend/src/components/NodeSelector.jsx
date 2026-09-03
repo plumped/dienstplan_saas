@@ -5,7 +5,7 @@ export default function NodeSelector({ nodes, value, onChange }) {
       <select value={value ?? ""} onChange={(e) => onChange(Number(e.target.value))}>
         {nodes.map((n) => (
           <option key={n.id} value={n.id}>
-            {"\u00A0\u00A0".repeat(Math.max(n.depth - 1, 0))}
+            {"\u00A0\u00A0".repeat(Math.max(n.depth - 2, 0))}
             {n.name}
           </option>
         ))}

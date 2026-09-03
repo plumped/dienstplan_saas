@@ -1,3 +1,8754 @@
-from django.test import TestCase
+from datetime import date, time, timedelta
+from unittest import mock
 
-# Create your tests here.
+from django.contrib.auth import get_user_model
+from django.core import mail
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
+from django.core.exceptions import ValidationError
+from django.db import connection, transaction
+from django.db.migrations.executor import MigrationExecutor
+from django.db.utils import IntegrityError
+from django.test import TestCase, TransactionTestCase
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.authtoken.models import Token
+from rest_framework.test import APITestCase
+
+from core.context import get_current_tenant
+from core.models import Membership, Tenant
+
+from .models import (
+    Absence,
+    AbsenceType,
+    Employee,
+    Employment,
+    Node,
+    OvertimeSettlement,
+    PayrollCategoryMapping,
+    Pregnancy,
+    ShiftAssignment,
+    ShiftPreference,
+    ShiftTradeRequest,
+    Skill,
+    TimeRecord,
+    TimeRecordSegment,
+    TimeTemplate,
+    TimeTemplateSegment,
+    _basel_scale_weeks,
+    _bern_scale_weeks,
+    _zurich_scale_weeks,
+)
+from .views import _employee_scoped_node_ids
+
+User = get_user_model()
+
+
+def make_tenant_with_planner(slug, username):
+    tenant = Tenant.objects.create(name=slug, slug=slug)
+    user = User.objects.create_user(username=username, password="s3cret-not-real!")
+    Membership.objects.create(user=user, tenant=tenant, role=Membership.Role.PLANNER)
+    return tenant, user
+
+
+def make_station(tenant, name, **kwargs):
+    """
+    Ersetzt das frühere direkte Node.add_root(...) in Tests -- seit der
+    Mandanten-Isolation für den Node-Baum (scheduling/migrations/0031-0032,
+    Node.get_or_create_forest_root()) muss jede Station ein Kind der
+    unsichtbaren Tenant-Wurzel sein, nie mehr ein treebeard-Wurzelknoten
+    direkt.
+    """
+    return Node.get_or_create_forest_root(tenant).add_child(name=name, tenant=tenant, **kwargs)
+
+
+class TwoTenantFixtureMixin:
+    """
+    Baut zwei komplett unabhängige Tenants mit je einem Standort, einer
+    Qualifikation, einem Mitarbeiter und einem Schichttyp auf -- die
+    Grundlage für alle Cross-Tenant-Sicherheitstests unten.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tenant_a, self.user_a = make_tenant_with_planner("klinik-a", "planner_a")
+        self.tenant_b, self.user_b = make_tenant_with_planner("klinik-b", "planner_b")
+
+        self.node_a = make_station(self.tenant_a, "Station A")
+        self.node_b = make_station(self.tenant_b, "Station B")
+
+        self.skill_a = Skill.objects.create(tenant=self.tenant_a, name="Nachtdienst")
+        self.skill_b = Skill.objects.create(tenant=self.tenant_b, name="Nachtdienst")
+
+        self.employee_a = Employee.objects.create(
+            tenant=self.tenant_a, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee_a.nodes.add(self.node_a)
+        self.employee_b = Employee.objects.create(
+            tenant=self.tenant_b, first_name="Bea", last_name="B", employment_pct=100
+        )
+        self.employee_b.nodes.add(self.node_b)
+
+        self.template_a = TimeTemplate.objects.create(
+            tenant=self.tenant_a,
+            node=self.node_a,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+        )
+        self.template_b = TimeTemplate.objects.create(
+            tenant=self.tenant_b,
+            node=self.node_b,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+        )
+
+        self.absence_type_a = AbsenceType.objects.create(
+            tenant=self.tenant_a, name="Ferien", deducts_vacation_days=True
+        )
+        self.absence_type_b = AbsenceType.objects.create(
+            tenant=self.tenant_b, name="Ferien", deducts_vacation_days=True
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+
+class AuthenticationTests(APITestCase):
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+
+    def test_anonymous_request_is_rejected(self):
+        # SessionAuthentication steht in DEFAULT_AUTHENTICATION_CLASSES an
+        # erster Stelle und bietet keinen WWW-Authenticate-Header an -> DRF
+        # liefert dafür bewusst 403 statt 401 (siehe DRF APIView.handle_exception).
+        response = self.client.get("/api/nodes/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_token_obtain_with_valid_credentials(self):
+        response = self.client.post(
+            "/api/auth/token/", {"username": "planner_a", "password": "s3cret-not-real!"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("token", response.data)
+
+    def test_token_obtain_with_invalid_credentials(self):
+        response = self.client.post(
+            "/api/auth/token/", {"username": "planner_a", "password": "wrong"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_authenticated_user_without_membership_sees_empty_lists(self):
+        user = User.objects.create_user(username="orphan", password="irrelevant-123")
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        response = self.client.get("/api/nodes/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["results"], [])
+
+
+class CrossTenantIsolationTests(TwoTenantFixtureMixin, APITestCase):
+    """
+    Kern-Sicherheitsgarantie der Multi-Tenancy: ein eingeloggter Planer einer
+    Klinik darf unter keinen Umständen Daten einer anderen Klinik sehen,
+    lesen oder referenzieren können.
+    """
+
+    def test_node_list_is_scoped_to_own_tenant(self):
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/nodes/")
+        ids = [n["id"] for n in response.data["results"]]
+        self.assertEqual(ids, [self.node_a.id])
+
+    def test_node_retrieve_of_other_tenant_is_not_found(self):
+        self.auth_as(self.user_a)
+        response = self.client.get(f"/api/nodes/{self.node_b.id}/")
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_node_create_with_foreign_parent_is_rejected(self):
+        self.auth_as(self.user_a)
+        response = self.client.post("/api/nodes/", {"name": "Unterstation", "parent": self.node_b.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_employee_list_is_scoped_to_own_tenant(self):
+        self.auth_as(self.user_b)
+        response = self.client.get("/api/employees/")
+        ids = [e["id"] for e in response.data["results"]]
+        self.assertEqual(ids, [self.employee_b.id])
+
+    def test_skill_list_is_scoped_to_own_tenant(self):
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/skills/")
+        ids = [s["id"] for s in response.data["results"]]
+        self.assertEqual(ids, [self.skill_a.id])
+
+    def test_time_template_list_is_scoped_to_own_tenant(self):
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/time-templates/")
+        ids = [t["id"] for t in response.data["results"]]
+        self.assertEqual(ids, [self.template_a.id])
+
+    def test_shift_assignment_create_with_foreign_employee_is_rejected(self):
+        # employee gehört zu Tenant B, angemeldet ist Planer von Tenant A --
+        # die (automatisch generierte) tenant-gefilterte Queryset des
+        # PrimaryKeyRelatedField muss das PK schon vor jeder eigenen Logik
+        # als "existiert nicht" ablehnen.
+        self.auth_as(self.user_a)
+        response = self.client.post(
+            "/api/shift-assignments/",
+            {
+                "employee": self.employee_b.id,
+                "node": self.node_a.id,
+                "date": "2026-08-03",
+                "template": self.template_a.id,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_shift_assignment_list_is_scoped_to_own_tenant(self):
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant_a,
+            employee=self.employee_a,
+            node=self.node_a,
+            date=date(2026, 8, 3),
+            template=self.template_a,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant_b,
+            employee=self.employee_b,
+            node=self.node_b,
+            date=date(2026, 8, 3),
+            template=self.template_b,
+        )
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/shift-assignments/")
+        ids = [a["id"] for a in response.data["results"]]
+        self.assertEqual(ids, [a1.id])
+
+    def test_absence_list_is_scoped_to_own_tenant(self):
+        absence_a = Absence.objects.create(
+            tenant=self.tenant_a,
+            employee=self.employee_a,
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 5),
+            type=self.absence_type_a,
+        )
+        Absence.objects.create(
+            tenant=self.tenant_b,
+            employee=self.employee_b,
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 5),
+            type=self.absence_type_b,
+        )
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/absences/")
+        ids = [a["id"] for a in response.data["results"]]
+        self.assertEqual(ids, [absence_a.id])
+
+    def test_shift_trade_request_create_with_foreign_target_is_rejected(self):
+        assignment_a = ShiftAssignment.objects.create(
+            tenant=self.tenant_a,
+            employee=self.employee_a,
+            node=self.node_a,
+            date=date(2026, 8, 3),
+            template=self.template_a,
+        )
+        self.auth_as(self.user_a)
+        response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": assignment_a.id, "target_employee": self.employee_b.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class TenantScopedAPIMixinCrossTenantTests(TwoTenantFixtureMixin, APITestCase):
+    """
+    Regressionstest für README Block 10 Punkt #1 (initial()-Dedup): die drei
+    scheduling-Views, die core.views.TenantScopedAPIMixin statt
+    scheduling.views.TenantScopedViewSet nutzen (UnderstaffedShiftsView,
+    PayrollExportView, PlanExportView), hatten bisher keinen eigenen
+    Cross-Tenant-Isolationstest -- anders als die TenantScopedViewSet-
+    Endpunkte oben (CrossTenantIsolationTests). Vor dem initial()-Dedup
+    ergänzt, damit die Suite den Refactor tatsächlich absichert.
+    """
+
+    def test_understaffed_shifts_only_reports_own_tenant(self):
+        template_a = TimeTemplate.objects.create(
+            tenant=self.tenant_a,
+            node=self.node_a,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=2,
+        )
+        TimeTemplate.objects.create(
+            tenant=self.tenant_b,
+            node=self.node_b,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=2,
+        )
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        node_ids = {entry["node_id"] for entry in response.data["shortfalls"]}
+        self.assertNotIn(self.node_b.id, node_ids)
+
+    def test_payroll_export_only_reports_own_tenant_employees(self):
+        Membership.objects.filter(user=self.user_a).update(role=Membership.Role.ADMIN)
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/payroll-export/?month=2026-08")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = {e["employee_name"] for e in response.data["employees"]}
+        self.assertNotIn(f"{self.employee_b.first_name} {self.employee_b.last_name}", names)
+
+    def test_plan_export_rejects_foreign_tenant_node(self):
+        self.auth_as(self.user_a)
+        response = self.client.get(f"/api/plan-export/?node={self.node_b.id}&month=2026-08")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class TenantScopedAPIMixinContextVarTests(TwoTenantFixtureMixin, APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "fix das bitte das alles doppelt gesichert
+    ist" -- core.tenancy.apply_tenant_scoped_initial() ruft set_current_tenant()
+    inzwischen für ALLE drei Basisklassen auf, nicht mehr nur für
+    TenantScopedViewSet (siehe TenantScopedViewSetContextVarTests unten für
+    dasselbe Testmuster). PayrollExportView (nutzt TenantScopedAPIMixin) ruft
+    Employee.effective_cost_center() auf, das intern über Node.objects
+    (ContextVar-gefiltert) läuft -- ideal, um zu prüfen, dass die ContextVar
+    jetzt auch für diese Endpunkt-Familie während eines echten Requests
+    korrekt gesetzt ist.
+    """
+
+    def test_context_var_reflects_request_tenant_during_payroll_export(self):
+        # effective_cost_center() wird nur für Mitarbeitende mit tatsächlichen
+        # Lohn-Rohdaten-Zeilen aufgerufen (siehe PayrollExportView._build_employee_lines,
+        # "if lines:") -- deshalb hier eine Zuweisung + eine aktive
+        # PayrollCategoryMapping anlegen, damit employee_a im Export erscheint.
+        ShiftAssignment.objects.create(
+            tenant=self.tenant_a,
+            employee=self.employee_a,
+            node=self.node_a,
+            date=date(2026, 8, 3),
+            template=self.template_a,
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant_a,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        Membership.objects.filter(user=self.user_a).update(role=Membership.Role.ADMIN)
+        self.auth_as(self.user_a)
+        seen_tenants = []
+        original = Node.effective_cost_center
+
+        def spy(self_node):
+            seen_tenants.append(get_current_tenant())
+            return original(self_node)
+
+        with mock.patch.object(Node, "effective_cost_center", spy):
+            response = self.client.get("/api/payroll-export/?month=2026-08")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["employees"]), 1)
+        self.assertTrue(seen_tenants)
+        self.assertTrue(all(t == self.tenant_a for t in seen_tenants))
+
+
+class TenantScopedViewSetContextVarTests(TwoTenantFixtureMixin, APITestCase):
+    """
+    Regressionstest für README Block 10 Punkt #1: TenantScopedViewSet.initial()
+    ruft set_current_tenant() auf (zweite Verteidigungslinie für
+    TenantScopedManager, core.models) -- bisher nur auf Manager-/Middleware-
+    Ebene getestet (core.tests.TenantScopedManagerTests), nie über einen
+    echten API-Request. Node.effective_cost_center() nutzt intern
+    get_ancestors() (treebeard, fragt über Node.objects -- den ContextVar-
+    gefilterten Manager -- ab, nicht über die explizite request.tenant-
+    Filterung von get_queryset()) und wird für jeden Node in der
+    /api/nodes/-Response aufgerufen (siehe NodeSerializer.
+    get_effective_cost_center) -- ideal, um zu prüfen, dass get_current_tenant()
+    während eines echten Requests bereits den korrekten Wert liefert. Ein
+    versehentlich entferntes set_current_tenant() in initial() würde diesen
+    Test zum Scheitern bringen, obwohl get_queryset() selbst (die erste,
+    explizite Verteidigungslinie) davon unberührt bliebe.
+    """
+
+    def test_context_var_reflects_request_tenant_during_live_request(self):
+        self.auth_as(self.user_a)
+        seen_tenants = []
+        original = Node.effective_cost_center
+
+        def spy(self_node):
+            seen_tenants.append(get_current_tenant())
+            return original(self_node)
+
+        with mock.patch.object(Node, "effective_cost_center", spy):
+            response = self.client.get("/api/nodes/")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(seen_tenants)
+        self.assertTrue(all(t == self.tenant_a for t in seen_tenants))
+
+
+class RuleEngineTests(TestCase):
+    """Modell-Ebene: ShiftAssignment.clean() -- Ruhezeit, Höchstarbeitszeit, Qualifikation, Absenzen."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.day_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,  # 8h Spanne -> 7.5h netto -> Art. 15 ArG verlangt 30 Min.
+        )
+        self.night_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Nachtdienst",
+            start_time=time(20, 0),
+            end_time=time(8, 0),
+            break_minutes=60,  # 12h Spanne -> 11h netto -> Art. 15 ArG verlangt 60 Min.
+        )
+
+    def test_valid_assignment_passes_clean(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.day_template,
+        )
+        assignment.clean()  # keine Exception
+
+    def test_rest_period_violation_is_rejected(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.night_template,  # 20:00-08:00
+        )
+        # Direkt anschliessender Frühdienst am nächsten Tag -> nur 0h Ruhezeit
+        next_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 4),
+            template=self.day_template,  # 08:00-16:00
+        )
+        with self.assertRaises(ValidationError):
+            next_shift.clean()
+
+    def test_sufficient_rest_period_passes(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.day_template,  # endet 16:00
+        )
+        next_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 4),
+            template=self.day_template,  # beginnt 08:00 -> 16h Pause
+        )
+        next_shift.clean()  # keine Exception
+
+    def test_required_skill_missing_is_rejected(self):
+        skill = Skill.objects.create(tenant=self.tenant, name="Nachtdienst-berechtigt")
+        self.night_template.required_skill = skill
+        self.night_template.save()
+
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.night_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_required_skill_present_passes(self):
+        skill = Skill.objects.create(tenant=self.tenant, name="Nachtdienst-berechtigt")
+        self.night_template.required_skill = skill
+        self.night_template.save()
+        self.employee.skills.add(skill)
+
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.night_template,
+        )
+        assignment.clean()  # keine Exception
+
+    def test_maximum_weekly_hours_violation_is_rejected(self):
+        monday = date(2026, 8, 3)
+        for offset in range(6):  # Mo-Sa, je 7.5h netto = 45h
+            ShiftAssignment.objects.create(
+                tenant=self.tenant,
+                employee=self.employee,
+                node=self.node,
+                date=monday + timedelta(days=offset),
+                template=self.day_template,
+            )
+        sunday_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=monday + timedelta(days=6),
+            template=self.day_template,  # weitere 7.5h -> 52.5h, über dem 45h-Limit des Tenants
+        )
+        with self.assertRaises(ValidationError):
+            sunday_shift.clean()
+
+    def test_employee_override_raises_maximum_weekly_hours(self):
+        # Block 1.14: z. B. Ärzteschaft mit vertraglich 60h statt der
+        # 45h-Tenant-Vorgabe -- Employee.maximum_weekly_hours überschreibt
+        # den Tenant-Wert nur für diesen Mitarbeiter. 6 Schichten a 9h netto
+        # (Sonntag bleibt frei, damit nur der Wochenstunden-Check greift,
+        # nicht der wöchentliche Ruhetag).
+        doctor = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Doktor",
+            last_name="D",
+            employment_pct=100,
+            maximum_weekly_hours=60,
+        )
+        long_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Langer Dienst",
+            start_time=time(8, 0),
+            end_time=time(18, 0),
+            break_minutes=60,  # 10h Spanne - 1h Pause = 9h netto
+        )
+        monday = date(2026, 8, 3)
+        for offset in range(5):  # Mo-Fr, je 9h netto = 45h
+            ShiftAssignment.objects.create(
+                tenant=self.tenant,
+                employee=doctor,
+                node=self.node,
+                date=monday + timedelta(days=offset),
+                template=long_template,
+            )
+        saturday_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=doctor,
+            node=self.node,
+            date=monday + timedelta(days=5),
+            template=long_template,  # 54h gesamt -- über Tenant-45h, aber unter Override-60h
+        )
+        saturday_shift.clean()  # keine Exception
+
+    def test_absence_conflict_is_rejected(self):
+        vacation = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 10),
+            type=vacation,
+            status=Absence.Status.APPROVED,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 5),
+            template=self.day_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_api_validate_runs_rule_engine(self):
+        # Bestätigt, dass die Regel-Engine auch über den ShiftAssignmentSerializer
+        # greift (validate() ruft clean() auf), nicht nur im Admin.
+        vacation = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 1),
+            end_date=date(2026, 8, 10),
+            type=vacation,
+            status=Absence.Status.APPROVED,
+        )
+        from unittest.mock import MagicMock
+
+        from .serializers import ShiftAssignmentSerializer
+
+        request = MagicMock()
+        request.tenant = self.tenant
+        serializer = ShiftAssignmentSerializer(
+            data={
+                "employee": self.employee.id,
+                "node": self.node.id,
+                "date": "2026-08-05",
+                "template": self.day_template.id,
+            },
+            context={"request": request},
+        )
+        self.assertFalse(serializer.is_valid())
+
+    def test_break_minutes_violation_is_rejected(self):
+        # 8h Spanne (>7h netto), aber keine Pause hinterlegt -> Art. 15 ArG verlangt 30 Min.
+        template_without_break = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Ohne Pause", start_time=time(8, 0), end_time=time(16, 0)
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=template_without_break,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_break_minutes_sufficient_passes(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.day_template,  # hat bereits 30 Min. Pause (siehe setUp)
+        )
+        assignment.clean()  # keine Exception
+
+    def test_daily_span_violation_is_rejected(self):
+        # 15h Spanne -> über der Tenant-Grenze von 14h (Art. 10 ArG), Pause ausreichend
+        # hoch angesetzt, damit gezielt nur die Tagesspanne greift.
+        long_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Marathon-Schicht",
+            start_time=time(6, 0),
+            end_time=time(21, 0),
+            break_minutes=60,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=long_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_weekly_rest_day_violation_is_rejected(self):
+        # Kurze Schichten (2h/Tag), damit nicht schon die Wochenhöchstarbeitszeit greift --
+        # gezielter Test für Art. 21 ArG (mind. 1 freier Tag pro Woche).
+        short_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Kurzeinsatz", start_time=time(9, 0), end_time=time(11, 0)
+        )
+        monday = date(2026, 8, 3)
+        for offset in range(6):  # Mo-Sa belegt
+            ShiftAssignment.objects.create(
+                tenant=self.tenant,
+                employee=self.employee,
+                node=self.node,
+                date=monday + timedelta(days=offset),
+                template=short_template,
+            )
+        sunday_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=monday + timedelta(days=6),
+            template=short_template,  # 7. Tag derselben Woche -> kein freier Tag mehr übrig
+        )
+        with self.assertRaises(ValidationError):
+            sunday_shift.clean()
+
+    def test_weekly_rest_day_with_one_free_day_passes(self):
+        short_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Kurzeinsatz", start_time=time(9, 0), end_time=time(11, 0)
+        )
+        monday = date(2026, 8, 3)
+        for offset in range(5):  # Mo-Fr belegt, Sa+So frei
+            ShiftAssignment.objects.create(
+                tenant=self.tenant,
+                employee=self.employee,
+                node=self.node,
+                date=monday + timedelta(days=offset),
+                template=short_template,
+            )
+        saturday_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=monday + timedelta(days=5),
+            template=short_template,  # Sonntag bleibt frei
+        )
+        saturday_shift.clean()  # keine Exception
+
+    def test_maximum_weekly_hours_is_tenant_configurable(self):
+        strict_tenant = Tenant.objects.create(
+            name="Klinik streng", slug="klinik-streng", maximum_weekly_hours=10
+        )
+        node = make_station(strict_tenant, "Station")
+        employee = Employee.objects.create(
+            tenant=strict_tenant, first_name="Chris", last_name="C", employment_pct=100
+        )
+        template = TimeTemplate.objects.create(
+            tenant=strict_tenant,
+            node=node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,  # 7.5h netto
+        )
+        ShiftAssignment.objects.create(
+            tenant=strict_tenant, employee=employee, node=node, date=date(2026, 8, 3), template=template
+        )
+        second_assignment = ShiftAssignment(
+            tenant=strict_tenant,
+            employee=employee,
+            node=node,
+            date=date(2026, 8, 4),
+            template=template,
+        )
+        with self.assertRaises(ValidationError):
+            second_assignment.clean()  # 2x7.5h = 15h > 10h-Limit dieses Tenants
+
+        # Zum Vergleich: derselbe Fall wäre unter dem Standard-Tenant-Limit (45h) unproblematisch.
+        default_assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 4),
+            template=self.day_template,
+        )
+        default_assignment.clean()  # keine Exception
+
+    def test_night_hours_covers_full_night_window(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.night_template,  # 20:00-08:00, deckt 23:00-06:00 vollständig ab
+        )
+        self.assertEqual(assignment.night_hours, 7.0)
+
+    def test_night_hours_zero_for_day_shift(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.day_template,
+        )
+        self.assertEqual(assignment.night_hours, 0.0)
+
+    def test_is_sunday_property(self):
+        sunday = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 2),  # ein Sonntag
+            template=self.day_template,
+        )
+        monday = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.day_template,
+        )
+        self.assertTrue(sunday.is_sunday)
+        self.assertFalse(monday.is_sunday)
+
+    def test_adult_may_work_nights_and_sundays(self):
+        # Gegenprobe zu den Jugendschutz-Tests unten: für Erwachsene (kein
+        # birth_date) sind Nacht-/Sonntagsarbeit nur informativ, nicht blockiert.
+        night_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.night_template,
+        )
+        night_shift.clean()  # keine Exception
+
+        sunday_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 2),  # ein Sonntag
+            template=self.day_template,
+        )
+        sunday_shift.clean()  # keine Exception
+
+    def test_youth_minimum_rest_hours_is_stricter(self):
+        minor = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Nina",
+            last_name="Jung",
+            birth_date=date(2009, 1, 1),  # 17 Jahre alt am 2026-08-04
+            employment_pct=100,
+        )
+        early_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst kurz", start_time=time(3, 0), end_time=time(7, 0)
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=minor,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.day_template,  # endet 16:00
+        )
+        next_shift = ShiftAssignment(
+            tenant=self.tenant,
+            employee=minor,
+            node=self.node,
+            date=date(2026, 8, 4),
+            template=early_template,  # beginnt 03:00 -> 11h Pause
+        )
+        # 11h Ruhezeit reicht für Erwachsene (Tenant-Default), aber nicht für
+        # Jugendliche (ArGV 5 verlangt 12h).
+        with self.assertRaises(ValidationError):
+            next_shift.clean()
+
+    def test_youth_no_night_work_is_rejected(self):
+        minor = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Nina",
+            last_name="Jung",
+            birth_date=date(2009, 1, 1),
+            employment_pct=100,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=minor,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.night_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_youth_no_sunday_work_is_rejected(self):
+        minor = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Nina",
+            last_name="Jung",
+            birth_date=date(2009, 1, 1),
+            employment_pct=100,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=minor,
+            node=self.node,
+            date=date(2026, 8, 2),  # ein Sonntag
+            template=self.day_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_is_minor_on_boundary(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Bea",
+            last_name="B",
+            birth_date=date(2008, 8, 4),  # wird am 2026-08-04 genau 18
+            employment_pct=100,
+        )
+        self.assertTrue(employee.is_minor_on(date(2026, 8, 3)))
+        self.assertFalse(employee.is_minor_on(date(2026, 8, 4)))
+
+    def test_employee_without_birth_date_is_not_minor(self):
+        self.assertFalse(self.employee.is_minor_on(date(2026, 8, 3)))
+
+
+class AbsenceModelTests(TestCase):
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(17, 0),
+            break_minutes=60,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+
+    def test_end_date_before_start_date_is_rejected(self):
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 10),
+            end_date=date(2026, 8, 1),
+        )
+        with self.assertRaises(ValidationError):
+            absence.clean()
+
+    # --- Bugfix 2026-08: Absenz darf nicht mit bestehenden Zuweisungen überlappen
+    # (umgekehrte Richtung zu ShiftAssignment._check_no_absence_conflict) ---
+
+    def test_approved_absence_overlapping_assignment_is_rejected(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 5), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 7),
+            status=Absence.Status.APPROVED,
+        )
+        with self.assertRaises(ValidationError):
+            absence.clean()
+
+    def test_pending_absence_overlapping_assignment_is_allowed(self):
+        # Nur genehmigte Absenzen blockieren -- ein offener Antrag soll die
+        # Planung nicht vorab einschränken (analog zu ShiftAssignment, das
+        # ebenfalls nur gegen APPROVED-Absenzen prüft).
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 5), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 7),
+            status=Absence.Status.PENDING,
+        )
+        absence.clean()  # darf nicht werfen
+
+    def test_approved_absence_without_conflict_passes(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 10), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 7),
+            status=Absence.Status.APPROVED,
+        )
+        absence.clean()  # kein überlappender Tag -- darf nicht werfen
+
+    # --- Halbtags-Absenzen (2026-08, Nutzer-Feedback: "ich kann auch einen
+    # Nachmittag frei nehmen") ---
+
+    def test_half_day_portion_requires_single_day(self):
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 4),
+            day_portion=Absence.DayPortion.AFTERNOON,
+        )
+        with self.assertRaises(ValidationError):
+            absence.clean()
+
+    def test_half_day_portion_allowed_for_single_day(self):
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+        )
+        absence.clean()  # darf nicht werfen
+
+    def test_afternoon_absence_does_not_conflict_with_morning_shift(self):
+        # Vormittagsdienst 08:00-12:00 bleibt an einem "nur nachmittags
+        # frei"-Tag planbar.
+        morning = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Vormittag", start_time=time(8, 0), end_time=time(12, 0)
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=morning
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+            status=Absence.Status.APPROVED,
+        )
+        absence.clean()  # kein Konflikt -- darf nicht werfen
+
+    def test_afternoon_absence_conflicts_with_afternoon_shift(self):
+        afternoon = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachmittag", start_time=time(13, 0), end_time=time(17, 0)
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=afternoon
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+            status=Absence.Status.APPROVED,
+        )
+        with self.assertRaises(ValidationError):
+            absence.clean()
+
+    def test_shift_assignment_blocked_by_matching_half_day_absence(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.MORNING,
+            type=self._make_type(),
+            status=Absence.Status.APPROVED,
+        )
+        morning = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Vormittag2", start_time=time(8, 0), end_time=time(12, 0)
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=morning
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_shift_assignment_not_blocked_by_non_overlapping_half_day_absence(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.MORNING,
+            type=self._make_type(),
+            status=Absence.Status.APPROVED,
+        )
+        afternoon = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachmittag2", start_time=time(13, 0), end_time=time(17, 0)
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=afternoon
+        )
+        assignment.clean()  # kein Konflikt -- darf nicht werfen
+
+    # --- Nutzer-Feedback (2026-08): "Alles/Oben/Unten" -- ein durchgehender
+    # Dienst über Mittag hinweg bleibt bei einer Halbtags-Absenz unverändert
+    # stehen (Krankheit/Ferien sind weiterhin Arbeitszeit im Sinne der
+    # Lohnfortzahlungspflicht, ArG). self.template ("Tagdienst", 08:00-17:00)
+    # deckt beide Tageshälften ab. ---
+
+    def test_afternoon_absence_does_not_conflict_with_whole_day_shift(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+            status=Absence.Status.APPROVED,
+        )
+        absence.clean()  # durchgehender Dienst blockiert nicht -- darf nicht werfen
+
+    def test_morning_absence_does_not_conflict_with_whole_day_shift(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.MORNING,
+            status=Absence.Status.APPROVED,
+        )
+        absence.clean()  # durchgehender Dienst blockiert nicht -- darf nicht werfen
+
+    def test_full_day_absence_still_conflicts_with_whole_day_shift(self):
+        # Ganztägige Absenzen behalten das strikte Verhalten -- die Ausnahme
+        # gilt nur für Halbtags-Absenzen.
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        absence = Absence(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            status=Absence.Status.APPROVED,
+        )
+        with self.assertRaises(ValidationError):
+            absence.clean()
+
+    def test_whole_day_shift_not_blocked_by_existing_half_day_absence(self):
+        # Umgekehrte Richtung: ShiftAssignment._check_no_absence_conflict()
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.MORNING,
+            type=self._make_type(),
+            status=Absence.Status.APPROVED,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        assignment.clean()  # durchgehender Dienst wird nicht blockiert -- darf nicht werfen
+
+    def _make_type(self):
+        return AbsenceType.objects.create(tenant=self.tenant, name="Ferien")
+
+
+class AbsenceTypeTests(TestCase):
+    """
+    Nutzer-Feedback (2026-08): Absenzarten sollen frei definierbar sein statt
+    hartcodiert (Ferien/Krankheit/Sonstiges) -- analog zu TimeTemplate als
+    tenant-eigener Katalog. deducts_vacation_days ersetzt den alten
+    `type=Absence.Type.VACATION`-Vergleich in Employee.vacation_balance().
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+
+    def test_defaults(self):
+        absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Sonstiges")
+        self.assertEqual(absence_type.color, "#64748b")
+        self.assertFalse(absence_type.deducts_vacation_days)
+
+    def test_str_returns_name(self):
+        absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+        self.assertEqual(str(absence_type), "Militärdienst")
+
+    def test_ordering_is_alphabetical_by_name(self):
+        AbsenceType.objects.create(tenant=self.tenant, name="Sonstiges")
+        AbsenceType.objects.create(tenant=self.tenant, name="Ferien")
+        AbsenceType.objects.create(tenant=self.tenant, name="Krankheit")
+        names = list(AbsenceType.objects.filter(tenant=self.tenant).values_list("name", flat=True))
+        self.assertEqual(names, ["Ferien", "Krankheit", "Sonstiges"])
+
+
+class AbsenceTypeAPITests(APITestCase):
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_create_and_round_trip_through_serializer(self):
+        create_response = self.client.post(
+            "/api/absence-types/",
+            {"name": "Militärdienst", "color": "#336699", "deducts_vacation_days": False},
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data["name"], "Militärdienst")
+        self.assertEqual(create_response.data["color"], "#336699")
+
+        type_id = create_response.data["id"]
+        patch_response = self.client.patch(f"/api/absence-types/{type_id}/", {"deducts_vacation_days": True})
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertTrue(patch_response.data["deducts_vacation_days"])
+
+    def test_list_is_scoped_to_own_tenant(self):
+        AbsenceType.objects.create(tenant=self.tenant, name="Ferien")
+        other_tenant, _ = make_tenant_with_planner("klinik-b", "planner_b")
+        AbsenceType.objects.create(tenant=other_tenant, name="Ferien B")
+
+        response = self.client.get("/api/absence-types/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [item["name"] for item in response.data["results"]]
+        self.assertEqual(names, ["Ferien"])
+
+    def test_employee_can_read_but_not_write(self):
+        employee_user = User.objects.create_user(username="employee_a", password="pw-not-real-123!")
+        Membership.objects.create(user=employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        token, _ = Token.objects.get_or_create(user=employee_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        self.assertEqual(self.client.get("/api/absence-types/").status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            self.client.post("/api/absence-types/", {"name": "Sonstiges"}).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+
+class TimeRecordTests(TestCase):
+    """Ist-Arbeitszeiterfassung (Art. 73 ArGV 1, MVP-Fahrplan Block 1.9)."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Fruehdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            break_minutes=30,
+        )
+        self.yesterday = timezone.localdate() - timedelta(days=1)
+        self.assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=self.yesterday, template=self.template
+        )
+
+    def test_valid_time_record_within_tolerance_passes_clean(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 5),
+            actual_end=time(15, 5),
+            actual_break_minutes=30,
+        )
+        record.clean()  # 5 Min. Abweichung, unter der Default-Toleranz von 15 Min.
+
+    def test_future_assignment_is_rejected(self):
+        tomorrow = timezone.localdate() + timedelta(days=1)
+        future_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=tomorrow, template=self.template
+        )
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=future_assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        with self.assertRaises(ValidationError):
+            record.clean()
+
+    def test_large_deviation_without_note_is_rejected(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 30),  # 30 Min. Abweichung > Default-Toleranz von 15 Min.
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        with self.assertRaises(ValidationError):
+            record.clean()
+
+    def test_large_deviation_with_note_passes(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 30),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+            note="Verspätung wegen Stau",
+        )
+        record.clean()  # keine Exception, Begründung vorhanden
+
+    def test_deviation_minutes_property(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 12),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        self.assertEqual(record.deviation_minutes, 12)
+
+    def test_actual_hours_property(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        self.assertEqual(record.actual_hours, 7.5)
+
+    def test_hours_deviation_matches_plan_is_zero(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        self.assertEqual(record.hours_deviation, 0)
+
+    def test_hours_deviation_positive_when_worked_more_than_planned(self):
+        # Plan: 07:00-15:00 minus 30 Min. Pause = 7.5h. Ist: 15:30 statt
+        # 15:00 Ende, gleiche Pause -> 8.0h, also +0.5h.
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 30),
+            actual_break_minutes=30,
+            note="Übergabe verzögert",
+        )
+        self.assertEqual(record.hours_deviation, 0.5)
+
+    def test_hours_deviation_negative_when_worked_less_than_planned(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(14, 30),
+            actual_break_minutes=30,
+            note="Früher gegangen",
+        )
+        self.assertEqual(record.hours_deviation, -0.5)
+
+    def test_break_below_minimum_is_flagged(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=10,  # 8h brutto -> netto >7h verlangt 30 Min. Pause (Art. 15 ArG)
+            note="Pause verkürzt",
+        )
+        self.assertTrue(record.break_below_minimum)
+
+    def test_sufficient_break_is_not_flagged(self):
+        record = TimeRecord(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        self.assertFalse(record.break_below_minimum)
+
+    def test_confirm_transitions_status(self):
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        record.confirm()
+        record.refresh_from_db()
+        self.assertEqual(record.status, TimeRecord.Status.CONFIRMED)
+
+    def test_confirm_twice_is_rejected(self):
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.assignment,
+            actual_start=time(7, 0),
+            actual_end=time(15, 0),
+            actual_break_minutes=30,
+        )
+        record.confirm()
+        with self.assertRaises(ValidationError):
+            record.confirm()
+
+
+class SegmentedTimeTemplateTests(TestCase):
+    """
+    Block 1.12: TimeTemplate mit expliziter Blockstruktur (z. B. Vormittag/
+    Nachmittag mit fixer Mittagspause dazwischen) statt eines einzelnen
+    Zeitfensters + pauschaler break_minutes. Die Pause ergibt sich aus der
+    Lücke zwischen zwei Segmenten.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        # Frühdienst mit Segmenten: 07:00-12:00 / 12:45-16:00 -> Pause 45 Min.
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Fruehdienst", start_time=time(7, 0), end_time=time(16, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=self.template, order=0, start_time=time(7, 0), end_time=time(12, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=self.template, order=1, start_time=time(12, 45), end_time=time(16, 0)
+        )
+
+    def test_effective_segments_returns_defined_segments(self):
+        self.assertEqual(
+            self.template.effective_segments(), [(time(7, 0), time(12, 0)), (time(12, 45), time(16, 0))]
+        )
+
+    def test_effective_segments_falls_back_without_segments(self):
+        plain = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Spaetdienst", start_time=time(15, 0), end_time=time(23, 0)
+        )
+        self.assertEqual(plain.effective_segments(), [(time(15, 0), time(23, 0))])
+
+    def test_shift_hours_sums_segment_durations(self):
+        # 5h (07:00-12:00) + 3.25h (12:45-16:00) = 8.25h, Pause zählt nicht mit.
+        self.assertEqual(ShiftAssignment._shift_hours(date(2026, 8, 3), self.template), 8.25)
+
+    def test_break_check_passes_with_sufficient_gap(self):
+        # Netto 8.25h -> Art. 15 verlangt 30 Min., Lücke zwischen den Segmenten ist 45 Min.
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        assignment.clean()  # keine Exception
+
+    def test_break_check_rejects_insufficient_gap(self):
+        short_gap_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Knappe Pause", start_time=time(7, 0), end_time=time(16, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=short_gap_template, order=0, start_time=time(7, 0), end_time=time(12, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            # Nur 10 Min. Lücke -> unter den 30 Min., die Art. 15 ArG bei >7h Nettoarbeitszeit verlangt.
+            tenant=self.tenant,
+            template=short_gap_template,
+            order=1,
+            start_time=time(12, 10),
+            end_time=time(16, 0),
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=short_gap_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+
+class SegmentedTimeRecordTests(TestCase):
+    """
+    Block 1.12: Ist-Zeiterfassung für ein Template mit vorgegebener
+    Blockstruktur -- der Mitarbeiter verschiebt nur die Uhrzeiten je Block
+    (z. B. "07:03 statt 07:00", "Mittagspause wegen Notfallpatient erst um
+    12:23 statt 12:00"), nicht die Anzahl der Blöcke.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Fruehdienst", start_time=time(7, 0), end_time=time(16, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=self.template, order=0, start_time=time(7, 0), end_time=time(12, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=self.template, order=1, start_time=time(12, 45), end_time=time(16, 0)
+        )
+        self.yesterday = timezone.localdate() - timedelta(days=1)
+        self.assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=self.yesterday, template=self.template
+        )
+
+    def _record_with_pending_segments(self, segments, note=""):
+        record = TimeRecord(tenant=self.tenant, assignment=self.assignment, note=note)
+        record._pending_segments = segments
+        return record
+
+    def test_matching_segments_within_tolerance_pass_clean(self):
+        record = self._record_with_pending_segments(
+            [
+                {"order": 0, "actual_start": time(7, 3), "actual_end": time(12, 23)},
+                {"order": 1, "actual_start": time(13, 8), "actual_end": time(16, 5)},
+            ]
+        )
+        record.clean()  # 3/5 Min. Abweichung, unter der Default-Toleranz von 15 Min.
+
+    def test_segment_count_mismatch_is_rejected(self):
+        record = self._record_with_pending_segments(
+            [{"order": 0, "actual_start": time(7, 0), "actual_end": time(16, 0)}]
+        )
+        with self.assertRaises(ValidationError):
+            record.clean()
+
+    def test_overlapping_segments_are_rejected(self):
+        record = self._record_with_pending_segments(
+            [
+                {"order": 0, "actual_start": time(7, 0), "actual_end": time(13, 0)},
+                {"order": 1, "actual_start": time(12, 30), "actual_end": time(16, 0)},
+            ]
+        )
+        with self.assertRaises(ValidationError):
+            record.clean()
+
+    def test_deviation_and_hours_properties_from_segments(self):
+        record = self._record_with_pending_segments(
+            [
+                {"order": 0, "actual_start": time(7, 3), "actual_end": time(12, 23)},
+                {"order": 1, "actual_start": time(13, 8), "actual_end": time(16, 5)},
+            ]
+        )
+        self.assertEqual(record.deviation_minutes, 3)
+        self.assertEqual(record.end_deviation_minutes, 5)
+        self.assertEqual(record.actual_hours, 8.28)  # (5h20 + 2h57) = 8.2833h, gerundet
+        self.assertEqual(record.break_minutes_total, 45)  # 13:08 - 12:23
+        self.assertFalse(record.break_below_minimum)  # 45 Min. >= die geforderten 30 Min.
+
+
+class SegmentedTimeTemplateAndRecordAPITests(APITestCase):
+    """API-Ebene: verschachteltes Schreiben von Segmenten über die Serializer."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_planner_can_create_time_template_with_segments(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Fruehdienst",
+                "start_time": "07:00",
+                "end_time": "16:00",
+                "segments": [
+                    {"order": 0, "start_time": "07:00", "end_time": "12:00"},
+                    {"order": 1, "start_time": "12:45", "end_time": "16:00"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(response.data["segments"]), 2)
+        template = TimeTemplate.all_objects.get(pk=response.data["id"])
+        self.assertEqual(template.effective_segments(), [(time(7, 0), time(12, 0)), (time(12, 45), time(16, 0))])
+
+    def test_overlapping_segments_rejected_by_api(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Ungueltig",
+                "start_time": "07:00",
+                "end_time": "16:00",
+                "segments": [
+                    {"order": 0, "start_time": "07:00", "end_time": "13:00"},
+                    {"order": 1, "start_time": "12:00", "end_time": "16:00"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_updating_segments_replaces_previous_set(self):
+        self.auth_as(self.planner_user)
+        create_response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Fruehdienst",
+                "start_time": "07:00",
+                "end_time": "16:00",
+                "segments": [
+                    {"order": 0, "start_time": "07:00", "end_time": "12:00"},
+                    {"order": 1, "start_time": "12:45", "end_time": "16:00"},
+                ],
+            },
+            format="json",
+        )
+        template_id = create_response.data["id"]
+        update_response = self.client.patch(
+            f"/api/time-templates/{template_id}/",
+            {"segments": [{"order": 0, "start_time": "07:00", "end_time": "16:00"}]},
+            format="json",
+        )
+        self.assertEqual(update_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(update_response.data["segments"]), 1)
+        template = TimeTemplate.all_objects.get(pk=template_id)
+        self.assertEqual(template.segments.count(), 1)
+
+    def test_employee_can_record_own_segmented_time(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Fruehdienst", start_time=time(7, 0), end_time=time(16, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=template, order=0, start_time=time(7, 0), end_time=time(12, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=template, order=1, start_time=time(12, 45), end_time=time(16, 0)
+        )
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node,
+            date=timezone.localdate() - timedelta(days=1),
+            template=template,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/time-records/",
+            {
+                "assignment": assignment.id,
+                "segments": [
+                    {"order": 0, "actual_start": "07:03", "actual_end": "12:23"},
+                    {"order": 1, "actual_start": "13:08", "actual_end": "16:05"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["deviation_minutes"], 3)
+        self.assertEqual(response.data["end_deviation_minutes"], 5)
+        self.assertEqual(response.data["break_minutes_total"], 45)
+        record = TimeRecord.all_objects.get(pk=response.data["id"])
+        self.assertEqual(record.segments.count(), 2)
+
+    def test_employee_segment_overlap_rejected_by_api(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Fruehdienst", start_time=time(7, 0), end_time=time(16, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=template, order=0, start_time=time(7, 0), end_time=time(12, 0)
+        )
+        TimeTemplateSegment.objects.create(
+            tenant=self.tenant, template=template, order=1, start_time=time(12, 45), end_time=time(16, 0)
+        )
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node,
+            date=timezone.localdate() - timedelta(days=1),
+            template=template,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/time-records/",
+            {
+                "assignment": assignment.id,
+                "segments": [
+                    {"order": 0, "actual_start": "07:00", "actual_end": "13:00"},
+                    {"order": 1, "actual_start": "12:30", "actual_end": "16:00"},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class WeeklyOvertimeTests(APITestCase):
+    """
+    Überzeitarbeit (Art. 13 ArG, MVP-Fahrplan Block 1.11): Soll/Ist-Vergleich pro
+    Woche + Zuschlag. Bewusst getrennt von der Regel-Engine (ShiftAssignment.clean)
+    -- reine Auswertung, keine Ablehnung von Zuweisungen.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(17, 0),
+            break_minutes=60,  # 9h Spanne - 1h Pause = 8h netto pro Schicht
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+        today = timezone.localdate()
+        self.monday = today - timedelta(days=today.weekday())
+
+    def _assign(self, employee, day_offset, template=None):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            node=self.node,
+            date=self.monday + timedelta(days=day_offset),
+            template=template or self.template,
+        )
+
+    def test_no_shifts_means_no_overtime(self):
+        summary = self.employee.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["soll_hours"], 42.0)  # Tenant-Default standard_weekly_hours
+        self.assertEqual(summary["ist_hours"], 0)
+        self.assertEqual(summary["overtime_hours"], 0)
+        self.assertEqual(summary["surcharge_hours"], 0)
+
+    def test_hours_under_soll_yield_no_overtime(self):
+        for day in range(5):  # Mo-Fr, 5 * 8h = 40h < 42h Soll
+            self._assign(self.employee, day)
+        summary = self.employee.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["ist_hours"], 40.0)
+        self.assertEqual(summary["overtime_hours"], 0)
+
+    def test_hours_over_soll_yield_overtime_and_surcharge(self):
+        for day in range(6):  # Mo-Sa, 6 * 8h = 48h > 42h Soll -> 6h Überzeit
+            self._assign(self.employee, day)
+        summary = self.employee.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["ist_hours"], 48.0)
+        self.assertEqual(summary["overtime_hours"], 6.0)
+        self.assertEqual(summary["surcharge_hours"], 1.5)  # 25% Zuschlag (Tenant-Default)
+
+    def test_part_time_soll_is_scaled_by_employment_pct(self):
+        part_time = Employee.objects.create(
+            tenant=self.tenant, first_name="Bob", last_name="B", employment_pct=50
+        )
+        summary = part_time.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["soll_hours"], 21.0)  # 50% von 42h
+
+    def test_employee_override_replaces_tenant_standard_weekly_hours(self):
+        # Block 1.14: z. B. Ärzteschaft mit 50h statt der 42h-Tenant-Vorgabe.
+        doctor = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Doktor",
+            last_name="D",
+            employment_pct=100,
+            standard_weekly_hours=50,
+        )
+        summary = doctor.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["soll_hours"], 50.0)
+
+    def test_time_record_overrides_planned_hours(self):
+        assignment = self._assign(self.employee, 0)
+        for day in range(1, 5):
+            self._assign(self.employee, day)  # weitere 4 Tage a 8h geplant = 32h
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=assignment,
+            actual_start=time(8, 0),
+            actual_end=time(19, 0),  # 11h brutto
+            actual_break_minutes=60,  # 10h netto statt geplanter 8h
+        )
+        summary = self.employee.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["ist_hours"], 42.0)  # 10h (Ist) + 4*8h (Planung) = 42h
+
+    def test_shifts_outside_week_are_excluded(self):
+        self._assign(self.employee, 0)  # Montag dieser Woche
+        self._assign(self.employee, 7)  # Montag nächster Woche
+        summary = self.employee.weekly_hours_summary(self.monday)
+        self.assertEqual(summary["ist_hours"], 8.0)
+
+    def test_week_normalizes_to_monday_regardless_of_reference_weekday(self):
+        for day in range(6):
+            self._assign(self.employee, day)
+        summary_from_saturday = self.employee.weekly_hours_summary(self.monday + timedelta(days=5))
+        self.assertEqual(summary_from_saturday["week_start"], self.monday)
+        self.assertEqual(summary_from_saturday["ist_hours"], 48.0)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_api_returns_weekly_overtime_for_given_week(self):
+        for day in range(6):
+            self._assign(self.employee, day)
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/weekly-overtime/?week={self.monday}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["overtime_hours"], 6.0)
+        self.assertEqual(response.data["surcharge_hours"], 1.5)
+        self.assertEqual(response.data["week_start"], str(self.monday))
+
+    def test_api_rejects_invalid_week_param(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/weekly-overtime/?week=not-a-date")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class NightAndSundayWorkTests(APITestCase):
+    """
+    Nacht-/Sonntagsarbeit (MVP-Fahrplan Block 1.5/1.6, Art. 17b/17c/19/20 ArG):
+    Zeitgutschrift bei regelmässiger Nachtarbeit, Bewilligungs-Warnhinweis,
+    arbeitsmedizinische Untersuchungspflicht, Sonntagszuschlag und die
+    (vereinfachte) Ersatzruhetag-Kontrolle. Alles informativ, wie
+    night_hours/is_sunday selbst -- nichts davon blockiert eine Zuweisung.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        # 23:00-06:00 deckt sich exakt mit dem Nachtarbeitszeitraum (Art. 16
+        # ArG) -> 7h Nachtstunden pro Schicht, einfache Erwartungswerte.
+        self.night_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtdienst", start_time=time(23, 0), end_time=time(6, 0)
+        )
+        self.day_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _assign_nights(self, employee, count, start=date(2026, 1, 5)):
+        for i in range(count):
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=employee, node=self.node, date=start + timedelta(days=i),
+                template=self.night_template,
+            )
+
+    # -- Nachtarbeit (Block 1.5) --
+
+    def test_few_night_shifts_are_not_regular(self):
+        self._assign_nights(self.employee, 5)
+        summary = self.employee.night_work_summary(2026)
+        self.assertEqual(summary["nights_count"], 5)
+        self.assertFalse(summary["is_regular"])
+        self.assertEqual(summary["surcharge_hours"], 0)
+        self.assertFalse(summary["permit_warning"])  # nicht regelmässig -> keine Bewilligungspflicht
+        self.assertFalse(summary["medical_exam_due"])
+
+    def test_25_night_shifts_are_regular_with_surcharge(self):
+        self._assign_nights(self.employee, 25)  # Schwellenwert (Tenant-Default)
+        summary = self.employee.night_work_summary(2026)
+        self.assertEqual(summary["nights_count"], 25)
+        self.assertTrue(summary["is_regular"])
+        self.assertEqual(summary["night_hours"], 175.0)  # 25 * 7h
+        self.assertEqual(summary["surcharge_hours"], 17.5)  # 10% Zeitgutschrift (Tenant-Default)
+
+    # -- Gelegentliche Nachtarbeit, 25% Lohnzuschlag (Block 1.17, Art. 17b Abs. 2 ArG) --
+
+    def test_occasional_night_work_reports_hours_and_surcharge_pct(self):
+        # Unterhalb der Regelmässigkeits-Schwelle: keine Zeitgutschrift, aber
+        # die vollen Nachtstunden + der Tenant-Prozentsatz als Rohinput für
+        # den (künftigen) Lohn-Export -- die App selbst rechnet kein CHF aus.
+        self._assign_nights(self.employee, 5)
+        summary = self.employee.night_work_summary(2026)
+        self.assertEqual(summary["occasional_night_hours"], 35.0)  # 5 * 7h
+        self.assertEqual(summary["occasional_night_surcharge_pct"], 25)  # Tenant-Default
+
+    def test_occasional_night_surcharge_pct_is_configurable(self):
+        self.tenant.occasional_night_work_surcharge_pct = 30
+        self.tenant.save()
+        self._assign_nights(self.employee, 5)
+        summary = self.employee.night_work_summary(2026)
+        self.assertEqual(summary["occasional_night_surcharge_pct"], 30)
+
+    def test_regular_and_occasional_night_work_are_mutually_exclusive(self):
+        # Bei regelmässiger Nachtarbeit greift die Zeitgutschrift oben --
+        # occasional_night_hours bleibt dann 0, nie beide gleichzeitig >0.
+        self._assign_nights(self.employee, 25)
+        summary = self.employee.night_work_summary(2026)
+        self.assertTrue(summary["is_regular"])
+        self.assertGreater(summary["surcharge_hours"], 0)
+        self.assertEqual(summary["occasional_night_hours"], 0)
+
+    def test_permit_warning_when_regular_and_not_confirmed(self):
+        self._assign_nights(self.employee, 25)
+        summary = self.employee.night_work_summary(2026)
+        self.assertTrue(summary["permit_warning"])
+        self.tenant.night_work_permit_confirmed = True
+        self.tenant.save()
+        summary = self.employee.night_work_summary(2026)
+        self.assertFalse(summary["permit_warning"])
+
+    def test_medical_exam_due_without_prior_exam(self):
+        self._assign_nights(self.employee, 25)
+        self.assertIsNone(self.employee.last_night_work_medical_exam_date)
+        self.assertTrue(self.employee.night_work_medical_exam_due(date(2026, 6, 1)))
+
+    def test_medical_exam_not_due_within_two_year_interval(self):
+        self._assign_nights(self.employee, 25)
+        self.employee.last_night_work_medical_exam_date = date(2025, 1, 1)
+        self.employee.save()
+        self.assertFalse(self.employee.night_work_medical_exam_due(date(2026, 6, 1)))  # < 2 Jahre her
+
+    def test_medical_exam_due_after_two_year_interval(self):
+        self._assign_nights(self.employee, 25)
+        self.employee.last_night_work_medical_exam_date = date(2023, 1, 1)
+        self.employee.save()
+        self.assertTrue(self.employee.night_work_medical_exam_due(date(2026, 6, 1)))  # > 2 Jahre her
+
+    def test_medical_exam_interval_is_yearly_from_45(self):
+        self.employee.birth_date = date(1980, 1, 1)  # wird 2026 bereits 45+
+        self._assign_nights(self.employee, 25)
+        self.employee.last_night_work_medical_exam_date = date(2025, 1, 1)
+        self.employee.save()
+        self.assertTrue(self.employee.night_work_medical_exam_due(date(2026, 6, 1)))  # > 1 Jahr her, ab 45 Pflicht
+
+    def test_medical_exam_not_due_when_not_regular(self):
+        self._assign_nights(self.employee, 5)
+        self.assertFalse(self.employee.night_work_medical_exam_due(date(2026, 6, 1)))
+
+    def test_api_night_work_endpoint(self):
+        self._assign_nights(self.employee, 25)
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/night-work/?year=2026")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["nights_count"], 25)
+        self.assertTrue(response.data["is_regular"])
+        self.assertEqual(response.data["surcharge_hours"], 17.5)
+        self.assertEqual(response.data["occasional_night_hours"], 0)
+
+    def test_api_night_work_endpoint_reports_occasional_surcharge(self):
+        self._assign_nights(self.employee, 5)
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/night-work/?year=2026")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["is_regular"])
+        self.assertEqual(response.data["occasional_night_hours"], 35.0)
+        self.assertEqual(response.data["occasional_night_surcharge_pct"], 25)
+
+    def test_api_night_work_rejects_invalid_year(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/night-work/?year=not-a-year")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # -- Sonntagsarbeit (Block 1.6) --
+
+    def test_sunday_shift_adds_surcharge_to_weekly_summary(self):
+        sunday = date(2026, 8, 9)  # Sonntag
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=sunday, template=self.day_template
+        )
+        summary = self.employee.weekly_hours_summary(sunday)
+        self.assertEqual(summary["sunday_hours"], 7.5)  # 8h Spanne - 30min Pause
+        self.assertEqual(summary["sunday_surcharge_hours"], 3.75)  # 50% Zuschlag (Tenant-Default)
+
+    def test_non_sunday_shift_has_no_sunday_surcharge(self):
+        monday = date(2026, 8, 3)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=monday, template=self.day_template
+        )
+        summary = self.employee.weekly_hours_summary(monday)
+        self.assertEqual(summary["sunday_hours"], 0)
+        self.assertEqual(summary["sunday_surcharge_hours"], 0)
+
+    def test_replacement_rest_missing_when_no_free_days_in_window(self):
+        sunday = date(2026, 8, 9)
+        for i in range(14):  # gesamtes 14-Tage-Fenster durchgehend belegt
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node, date=sunday + timedelta(days=i),
+                template=self.day_template,
+            )
+        self.assertTrue(self.employee.sunday_replacement_rest_missing(sunday))
+
+    def test_replacement_rest_ok_with_two_free_days_in_window(self):
+        sunday = date(2026, 8, 9)
+        for i in range(14):
+            if i in (3, 10):  # zwei freie Tage im Fenster
+                continue
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node, date=sunday + timedelta(days=i),
+                template=self.day_template,
+            )
+        self.assertFalse(self.employee.sunday_replacement_rest_missing(sunday))
+
+    def test_shift_assignment_property_only_relevant_for_sundays(self):
+        monday = date(2026, 8, 3)
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=monday, template=self.day_template
+        )
+        self.assertFalse(assignment.sunday_replacement_rest_missing)
+
+    def test_api_shift_assignment_exposes_replacement_rest_flag(self):
+        sunday = date(2026, 8, 9)
+        for i in range(14):  # keine freien Tage -> Ersatzruhetag fehlt
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node, date=sunday + timedelta(days=i),
+                template=self.day_template,
+            )
+        self.auth_as(self.planner_user)
+        response = self.client.get(
+            f"/api/shift-assignments/?node={self.node.id}&date_from={sunday}&date_to={sunday}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["results"][0]["sunday_replacement_rest_missing"])
+
+
+class EmployeeBalanceTests(APITestCase):
+    """
+    Arbeitszeitmodell (README Block 2.7 Punkt 7): Jahressoll
+    (annual_target_hours), laufender Saldo + Jahresrestsoll
+    (time_account_summary) + Feriensaldo (vacation_balance, unverändert).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(17, 0),
+            break_minutes=60,  # 9h Spanne - 1h Pause = 8h netto pro Schicht
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="A",
+            employment_pct=100,
+            employment_start_date=date(2026, 1, 1),
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        self.vacation_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Ferien", deducts_vacation_days=True
+        )
+        self.sick_type = AbsenceType.objects.create(tenant=self.tenant, name="Krankheit")
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _assign(self, employee, day, template=None):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=employee, node=self.node, date=day, template=template or self.template
+        )
+
+    # --- Jahressoll (annual_target_hours) ---
+
+    def test_annual_target_hours_without_canton(self):
+        # 261 Mo-Fr-Arbeitstage 2026 * 8.4h Tagessoll (42h/5) - 20 Ferientage
+        # * 8.4h = 2024.4h. Kein Kanton -> kein Feiertagsabzug.
+        self.assertEqual(self.employee.annual_target_hours(2026), 2024.4)
+
+    def test_annual_target_hours_deducts_canton_holidays(self):
+        self.tenant.canton = "ZH"
+        self.tenant.save(update_fields=["canton"])
+        # Wie oben, aber 7 der 9 ZH-Feiertage 2026 fallen auf Mo-Fr -> 254
+        # Arbeitstage * 8.4h - 20*8.4h Ferien = 1965.6h.
+        self.assertEqual(self.employee.annual_target_hours(2026), 1965.6)
+
+    def test_annual_target_hours_prorated_for_midyear_employment_start(self):
+        self.employee.employment_start_date = date(2026, 6, 1)  # Montag
+        self.employee.save(update_fields=["employment_start_date"])
+        # 154 Mo-Fr-Arbeitstage Jun-Dez 2026 * 8.4h - voller Ferienanspruch
+        # (bewusst NICHT anteilig gekürzt, siehe Docstring) = 1125.6h.
+        self.assertEqual(self.employee.annual_target_hours(2026), 1125.6)
+
+    def test_annual_target_hours_zero_before_employment_start(self):
+        self.employee.employment_start_date = date(2027, 1, 1)
+        self.employee.save(update_fields=["employment_start_date"])
+        self.assertEqual(self.employee.annual_target_hours(2026), 0.0)
+
+    # --- Laufender Saldo + Jahresrestsoll (time_account_summary) ---
+
+    def test_saldo_after_full_workweek(self):
+        for offset in range(5):  # Mo-Fr 2026-01-05..09, je 8h
+            self._assign(self.employee, date(2026, 1, 5) + timedelta(days=offset))
+        summary = self.employee.time_account_summary(date(2026, 1, 9))
+        # Soll bis 9.1. (Fr): 7 Mo-Fr-Tage seit 1.1. (Do) * 8.4h = 58.8h.
+        # Ist: 5*8h = 40h. Saldo = 40 - 58.8 = -18.8h.
+        self.assertEqual(summary["saldo_hours"], -18.8)
+        self.assertEqual(summary["annual_target_hours"], 2024.4)
+        self.assertEqual(summary["annual_remaining_hours"], 1984.4)  # 2024.4 - 40
+
+    def test_saldo_strictly_ignores_assignments_after_as_of_date(self):
+        # saldo_hours (Stand heute, streng) zaehlt weiterhin NUR bis (inkl.)
+        # as_of_date -- eine kuenftig eingeplante Schicht wirkt sich hier
+        # erst aus, sobald ihr Datum erreicht ist (klassisches Gleitzeitkonto).
+        # plan_saldo_hours/annual_remaining_hours SOLLEN sich dagegen bereits
+        # aendern, siehe test_plan_saldo_includes_already_planned_future_assignments
+        # unten (README, Redesign 2026-08 nach Nutzer-Feedback).
+        self._assign(self.employee, date(2026, 1, 2))  # Fr, vor as_of
+        without_future = self.employee.time_account_summary(date(2026, 1, 2))
+        self._assign(self.employee, date(2026, 6, 15))  # weit in der Zukunft, selbes Jahr
+        with_future = self.employee.time_account_summary(date(2026, 1, 2))
+        self.assertEqual(without_future["saldo_hours"], with_future["saldo_hours"])
+
+    def test_plan_saldo_includes_already_planned_future_assignments(self):
+        # README (2026-08, Redesign): bei festem Pensum entscheidet der
+        # Planer, WANN die Stunden anfallen -- plan_saldo_hours/
+        # annual_remaining_hours sollen deshalb bereits eingeplante
+        # kuenftige Zuweisungen desselben Jahres beruecksichtigen, damit ein
+        # vollstaendig durchgeplantes Jahr nahe 0 zeigt statt eines
+        # irrefuehrenden grossen Minus-Werts.
+        self._assign(self.employee, date(2026, 1, 2))  # Fr, vergangen, 8h
+        without_future = self.employee.time_account_summary(date(2026, 1, 2))
+        self._assign(self.employee, date(2026, 6, 15))  # Mo, kuenftig, selbes Jahr, 8h
+        with_future = self.employee.time_account_summary(date(2026, 1, 2))
+        self.assertEqual(with_future["plan_saldo_hours"], round(without_future["plan_saldo_hours"] + 8, 2))
+        self.assertEqual(
+            with_future["annual_remaining_hours"], round(without_future["annual_remaining_hours"] - 8, 2)
+        )
+        self.assertTrue(with_future["is_provisional"])  # kuenftige Schicht kann nie CONFIRMED sein
+
+    def test_plan_saldo_ignores_assignments_beyond_current_year(self):
+        # Eine Zuweisung in einem anderen Kalenderjahr gehoert nicht zum
+        # Jahresplan des betrachteten Jahres.
+        before = self.employee.time_account_summary(date(2026, 1, 2))
+        self._assign(self.employee, date(2030, 1, 7))
+        after = self.employee.time_account_summary(date(2026, 1, 2))
+        self.assertEqual(before["plan_saldo_hours"], after["plan_saldo_hours"])
+        self.assertEqual(before["annual_remaining_hours"], after["annual_remaining_hours"])
+
+    def test_plan_saldo_excludes_future_assignment_on_approved_absence_day(self):
+        # Spiegelt test_saldo_ignores_ist_from_assignment_conflicting_with_approved_absence
+        # fuer den kuenftigen Zweig: eine Zuweisung an einem genehmigten
+        # Absenztag zaehlt auch in der Zukunft nicht als geplante Ist-Zeit.
+        baseline = self.employee.time_account_summary(date(2026, 1, 2))
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 15),
+            end_date=date(2026, 6, 15),
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        ShiftAssignment.objects.create(  # .create() bewusst am Absence.clean()-Schutz vorbei
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 6, 15), template=self.template,
+        )
+        summary = self.employee.time_account_summary(date(2026, 1, 2))
+        self.assertEqual(summary["plan_saldo_hours"], baseline["plan_saldo_hours"])
+
+    def test_saldo_approved_absence_is_soll_neutral(self):
+        # Krankheit Di+Mi (6./7.1.) -- diese 2 Tage duerfen NICHT als
+        # verpasste Sollzeit zaehlen, nur Mo/Do/Fr (5./8./9.1.) sind
+        # tatsaechlich Arbeitstage im Soll.
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 1, 6),
+            end_date=date(2026, 1, 7),
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        for d in (date(2026, 1, 5), date(2026, 1, 8), date(2026, 1, 9)):
+            self._assign(self.employee, d)
+        summary = self.employee.time_account_summary(date(2026, 1, 9))
+        # Soll: (7 Mo-Fr-Tage - 2 Krankheitstage) * 8.4h = 42h. Ist: 3*8h=24h.
+        self.assertEqual(summary["saldo_hours"], -18.0)
+
+    def test_saldo_ignores_ist_from_assignment_conflicting_with_approved_absence(self):
+        # Bugfix 2026-08: Absence.clean() verhindert seit diesem Fix NEUE
+        # Überschneidungen, aber bereits bestehende (z. B. per Fixture/vor dem
+        # Fix angelegte) Daten dürfen den Saldo nicht verfälschen -- eine
+        # Zuweisung an einem genehmigten Absenztag darf NICHT als Ist-Zeit
+        # zählen (sonst "gratis" Überstunden ohne Gegen-Soll).
+        for d in (date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7), date(2026, 1, 8), date(2026, 1, 9)):
+            self._assign(self.employee, d)
+        # .create() statt full_clean() -- bewusst am neuen Validierungs-Schutz
+        # vorbei, um den "alten"/fehlerhaften Datenzustand nachzustellen.
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 1, 6),
+            end_date=date(2026, 1, 7),
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.time_account_summary(date(2026, 1, 9))
+        # Soll: (7 Mo-Fr-Tage - 2 Ferientage) * 8.4h = 42h. Ist zählt nur die
+        # 3 NICHT durch die Absenz abgedeckten Tage -- 3*8h=24h, nicht 5*8h=40h.
+        self.assertEqual(summary["saldo_hours"], -18.0)
+
+    def test_saldo_half_day_absence_excuses_only_half_the_day(self):
+        # Nutzer-Feedback (2026-08): "wenn ich einen halben Tag Ferien
+        # eingebe, stimmt die Stundenrechnung dann noch?" -- vorher wurde
+        # eine Halbtags-Absenz wie ein GANZER freier Tag behandelt: der
+        # komplette Tagessoll (8.4h) UND die komplette (weiterhin
+        # bestehende, siehe Absence._shift_extends_into_other_half())
+        # Dienst-Zuweisung dieses Tages fielen aus der Rechnung, statt nur
+        # die Hälfte. Baseline: 5 volle Arbeitstage (Mo-Fr), je 8h Ist
+        # (Tagdienst, 9h Spanne - 1h Pause) gegen 7*8.4h=58.8h Soll ->
+        # saldo=-18.8h (siehe test_saldo_after_full_workweek).
+        for d in (date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7), date(2026, 1, 8), date(2026, 1, 9)):
+            self._assign(self.employee, d)
+        baseline = self.employee.time_account_summary(date(2026, 1, 9))
+        self.assertEqual(baseline["saldo_hours"], -18.8)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 1, 5),
+            end_date=date(2026, 1, 5),
+            type=self.vacation_type,
+            day_portion=Absence.DayPortion.AFTERNOON,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.time_account_summary(date(2026, 1, 9))
+        # Soll steigt um die halbe (statt volle) Tagessoll-Excusierung:
+        # (7 - 0.5 Ferientag) * 8.4h = 54.6h statt 58.8h -> +4.2h. Ist sinkt
+        # um die halbe (statt volle) Schichtdauer des 5.1.: 8h * 0.5 = 4h
+        # weniger (40h -> 36h). Saldo: 36 - 54.6 = -18.6h (nicht -18.0h, wie
+        # es bei einem fälschlich als GANZ behandelten Tag wäre).
+        self.assertEqual(summary["saldo_hours"], -18.6)
+        # Die Zuweisung des 5.1. bleibt bestehen (Dienst wird bei einer
+        # Halbtags-Absenz nicht entfernt) -- nur ihre Stunden werden
+        # anteilig gewichtet, nicht die Zuweisung selbst ausgeschlossen.
+        self.assertTrue(ShiftAssignment.objects.filter(employee=self.employee, date=date(2026, 1, 5)).exists())
+
+    def test_plan_saldo_halves_future_assignment_hours_on_half_day_absence_day(self):
+        # Spiegelt test_saldo_half_day_absence_excuses_only_half_the_day für
+        # den künftigen Zweig (plan_saldo_hours): eine Halbtags-Absenz
+        # halbiert die geplanten Stunden der Zuweisung, statt sie ganz
+        # auszuschliessen (siehe test_plan_saldo_excludes_future_assignment_
+        # on_approved_absence_day für den GANZTAGS-Fall, der weiterhin voll
+        # ausschliesst).
+        self._assign(self.employee, date(2026, 6, 15))  # Mo, künftig, 8h netto
+        with_assignment_only = self.employee.time_account_summary(date(2026, 1, 2))
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 15),
+            end_date=date(2026, 6, 15),
+            type=self.vacation_type,
+            day_portion=Absence.DayPortion.MORNING,
+            status=Absence.Status.APPROVED,
+        )
+        with_half_day_absence = self.employee.time_account_summary(date(2026, 1, 2))
+        # Nur die Hälfte der 8h-Schicht (4h) fällt aus dem geplanten Ist weg,
+        # nicht die vollen 8h.
+        self.assertEqual(
+            with_half_day_absence["plan_saldo_hours"], round(with_assignment_only["plan_saldo_hours"] - 4, 2)
+        )
+
+    def test_saldo_pending_absence_does_not_reduce_soll(self):
+        # Nur GENEHMIGTE Absenzen sind Soll-neutral -- eine offene Anfrage
+        # darf den Saldo nicht schon beeinflussen.
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 1, 6),
+            end_date=date(2026, 1, 7),
+            type=self.sick_type,
+            status=Absence.Status.PENDING,
+        )
+        self._assign(self.employee, date(2026, 1, 5))
+        summary = self.employee.time_account_summary(date(2026, 1, 9))
+        # Soll: 7 Mo-Fr-Tage * 8.4h = 58.8h (keine Absenz-Kuerzung). Ist: 8h.
+        self.assertEqual(summary["saldo_hours"], -50.8)
+
+    def test_saldo_canton_holiday_is_soll_neutral(self):
+        self.tenant.canton = "ZH"
+        self.tenant.save(update_fields=["canton"])
+        self._assign(self.employee, date(2026, 1, 2))  # Fr, einziger Arbeitstag
+        summary = self.employee.time_account_summary(date(2026, 1, 2))
+        # Soll: (2 Mo-Fr-Tage [1./2.1.] - 1 Feiertag [Neujahr]) * 8.4h = 8.4h.
+        # Ist: 8h. Saldo = 8 - 8.4 = -0.4h.
+        self.assertEqual(summary["saldo_hours"], -0.4)
+
+    def test_saldo_zero_before_employment_start_in_year(self):
+        self.employee.employment_start_date = date(2026, 6, 1)
+        self.employee.save(update_fields=["employment_start_date"])
+        summary = self.employee.time_account_summary(date(2026, 3, 1))
+        self.assertEqual(summary["saldo_hours"], 0.0)
+        self.assertEqual(summary["annual_remaining_hours"], summary["annual_target_hours"])
+
+    def test_saldo_includes_carryover_as_starting_offset(self):
+        self.employee.overtime_balance_carryover_hours = 15.5
+        self.employee.save(update_fields=["overtime_balance_carryover_hours"])
+        summary = self.employee.time_account_summary(date(2026, 1, 1))
+        # Kein Arbeitstag verplant -> Soll = 0 (1.1. ist selbst der einzige
+        # Tag und ohne Kanton kein Feiertag) - Soll (1 Tag * 8.4h) + Ist (0h)
+        # + Carryover.
+        self.assertEqual(summary["saldo_hours"], round(15.5 - 8.4, 2))
+
+    # --- is_provisional (Saldo ist rechnerisch sofort aktuell, auch vor der Prüfung --
+    # das Flag macht das im Frontend nur transparent) ---
+
+    def test_saldo_is_provisional_when_based_on_planned_hours_only(self):
+        self._assign(self.employee, date(2026, 1, 5))  # keine Zeiterfassung -> Schätzung aus Planung
+        summary = self.employee.time_account_summary(date(2026, 1, 5))
+        self.assertTrue(summary["is_provisional"])
+
+    def test_saldo_is_provisional_when_time_record_not_confirmed(self):
+        assignment = self._assign(self.employee, date(2026, 1, 5))
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=assignment,
+            actual_start=time(8, 0),
+            actual_end=time(17, 0),
+            actual_break_minutes=60,
+        )  # Status bleibt SUBMITTED
+        summary = self.employee.time_account_summary(date(2026, 1, 5))
+        self.assertTrue(summary["is_provisional"])
+
+    def test_saldo_not_provisional_once_all_shifts_confirmed(self):
+        assignment = self._assign(self.employee, date(2026, 1, 5))
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=assignment,
+            actual_start=time(8, 0),
+            actual_end=time(17, 0),
+            actual_break_minutes=60,
+        )
+        record.confirm()
+        summary = self.employee.time_account_summary(date(2026, 1, 5))
+        self.assertFalse(summary["is_provisional"])
+
+    def test_saldo_without_any_assignment_is_not_provisional(self):
+        summary = self.employee.time_account_summary(date(2026, 1, 5))
+        self.assertFalse(summary["is_provisional"])
+
+    # --- Feriensaldo ---
+
+    def test_vacation_balance_defaults_to_tenant_entitlement_without_absences(self):
+        summary = self.employee.vacation_balance(2026)
+        self.assertEqual(summary["entitlement_days"], 20)  # Tenant-Default
+        self.assertEqual(summary["used_days"], 0)
+        self.assertEqual(summary["remaining_days"], 20)
+
+    def test_vacation_balance_employee_override_replaces_tenant_default(self):
+        self.employee.vacation_days_per_year = 25
+        self.employee.save(update_fields=["vacation_days_per_year"])
+        summary = self.employee.vacation_balance(2026)
+        self.assertEqual(summary["entitlement_days"], 25)
+
+    def test_vacation_balance_counts_only_workdays(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),  # Montag
+            end_date=date(2026, 8, 9),  # Sonntag -- volle Woche, aber nur 5 Werktage
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.vacation_balance(2026)
+        self.assertEqual(summary["used_days"], 5)
+        self.assertEqual(summary["remaining_days"], 15)
+
+    def test_vacation_balance_half_day_deducts_half_a_day(self):
+        # Nutzer-Feedback (2026-08): "Ich arbeite 100%, habe 25 Ferientage.
+        # Nehme ich einen Nachmittag frei, habe ich noch 24.5 Tage."
+        self.employee.vacation_days_per_year = 25
+        self.employee.save(update_fields=["vacation_days_per_year"])
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),  # Montag
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.vacation_balance(2026)
+        self.assertEqual(summary["used_days"], 0.5)
+        self.assertEqual(summary["remaining_days"], 24.5)
+
+    def test_vacation_balance_ignores_pending_and_non_vacation_absences(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 7),
+            type=self.vacation_type,
+            status=Absence.Status.PENDING,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 10),
+            end_date=date(2026, 8, 14),
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.vacation_balance(2026)
+        self.assertEqual(summary["used_days"], 0)
+
+    def test_vacation_balance_clips_absence_spanning_year_boundary(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 12, 28),  # Montag
+            end_date=date(2027, 1, 2),  # Samstag -- 4 Werktage 2026, 1 Werktag 2027
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        self.assertEqual(self.employee.vacation_balance(2026)["used_days"], 4)
+        self.assertEqual(self.employee.vacation_balance(2027)["used_days"], 1)
+
+    # --- API ---
+
+    def test_api_returns_combined_balance(self):
+        for offset in range(5):  # Mo-Fr 2026-01-05..09
+            self._assign(self.employee, date(2026, 1, 5) + timedelta(days=offset))
+        Absence.objects.create(  # nicht überlappend mit den Diensten oben
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 1, 12),
+            end_date=date(2026, 1, 16),
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=2026-01-09")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["saldo_hours"], -18.8)
+        self.assertEqual(response.data["plan_saldo_hours"], -1984.4)
+        self.assertEqual(response.data["annual_target_hours"], 2024.4)
+        self.assertEqual(response.data["annual_remaining_hours"], 1984.4)
+        self.assertTrue(response.data["is_provisional"])  # keine Zeiterfassung erfasst
+        self.assertEqual(response.data["vacation_year"], 2026)
+        self.assertEqual(response.data["vacation_entitlement_days"], 20)
+        self.assertEqual(response.data["vacation_used_days"], 5)
+        self.assertEqual(response.data["vacation_remaining_days"], 15)
+
+    def test_api_returns_half_day_vacation_balance_as_float(self):
+        # Bugfix (2026-08, Nutzer-Feedback: "halbtags Ferien zieht einen
+        # ganzen Tag ab"): EmployeeBalanceSerializer deklarierte
+        # vacation_used_days/vacation_remaining_days bisher als
+        # IntegerField -- das schnitt 0.5-Werte beim Serialisieren
+        # stillschweigend zu int() ab (24.5 -> 24), obwohl
+        # Employee.vacation_balance() selbst korrekt rechnete (siehe
+        # test_vacation_balance_half_day_deducts_half_a_day oben, die nur
+        # das Modell direkt prüft und diesen Bug deshalb nicht auffing).
+        self.employee.vacation_days_per_year = 25
+        self.employee.save(update_fields=["vacation_days_per_year"])
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 8, 3),
+            end_date=date(2026, 8, 3),
+            day_portion=Absence.DayPortion.AFTERNOON,
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=2026-08-03&year=2026")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["vacation_used_days"], 0.5)
+        self.assertEqual(response.data["vacation_remaining_days"], 24.5)
+
+    def test_api_rejects_invalid_as_of_param(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/balance/?as_of=not-a-date")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_api_without_as_of_ignores_future_assignments(self):
+        # Kernentscheidung des neuen Modells: ohne ?as_of= nutzt die API
+        # "heute" als Stichtag -- eine weit in der Zukunft eingeplante
+        # Schicht darf den Saldo nicht vorzeitig verändern (Gleitzeitkonto,
+        # siehe Employee.time_account_summary()).
+        self.auth_as(self.planner_user)
+        before = self.client.get(f"/api/employees/{self.employee.id}/balance/").data
+        self._assign(self.employee, date(2030, 1, 7))  # weit in der Zukunft
+        after = self.client.get(f"/api/employees/{self.employee.id}/balance/").data
+        self.assertEqual(before["saldo_hours"], after["saldo_hours"])
+        self.assertEqual(before["plan_saldo_hours"], after["plan_saldo_hours"])
+        self.assertEqual(before["annual_remaining_hours"], after["annual_remaining_hours"])
+
+
+class SickPaySummaryTests(APITestCase):
+    """
+    Lohnfortzahlung bei Krankheit (MVP-Fahrplan Block 1 Punkt 16, Art. 324a
+    OR): Dienstjahr-Berechnung, Gerichtsskalen und Employee.sick_pay_summary().
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-sickpay")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="A",
+            employment_pct=100,
+            employment_start_date=date(2024, 3, 15),
+        )
+        self.planner_user = User.objects.create_user(username="planner-sp", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        self.sick_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True
+        )
+        self.other_type = AbsenceType.objects.create(tenant=self.tenant, name="Sonstiges")
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    # --- Dienstjahr-Berechnung ---
+
+    def test_service_years_before_first_anniversary(self):
+        self.assertEqual(self.employee._service_years_on(date(2025, 3, 14)), 0)
+
+    def test_service_years_on_and_after_anniversary(self):
+        self.assertEqual(self.employee._service_years_on(date(2025, 3, 15)), 1)
+        self.assertEqual(self.employee._service_years_on(date(2026, 6, 1)), 2)
+
+    def test_current_service_year_window_before_anniversary(self):
+        start, end, number = self.employee._current_service_year_window(date(2026, 2, 1))
+        self.assertEqual(start, date(2025, 3, 15))
+        self.assertEqual(end, date(2026, 3, 14))
+        self.assertEqual(number, 2)
+
+    def test_current_service_year_window_on_anniversary(self):
+        start, end, number = self.employee._current_service_year_window(date(2026, 3, 15))
+        self.assertEqual(start, date(2026, 3, 15))
+        self.assertEqual(end, date(2027, 3, 14))
+        self.assertEqual(number, 3)
+
+    # --- Skalen (Näherungswerte, siehe Docstrings der Skala-Funktionen) ---
+
+    def test_basel_scale_first_year_is_three_weeks(self):
+        self.assertEqual(_basel_scale_weeks(1), 3)
+
+    def test_bern_scale_grows_four_weeks_per_service_year_after_first(self):
+        self.assertEqual(_bern_scale_weeks(1), 3)
+        self.assertEqual(_bern_scale_weeks(2), 8)
+        self.assertEqual(_bern_scale_weeks(3), 12)
+
+    def test_zurich_scale_first_year_is_three_weeks(self):
+        self.assertEqual(_zurich_scale_weeks(1), 3)
+
+    # --- sick_pay_summary() ---
+
+    def test_summary_counts_calendar_days_including_weekend(self):
+        # Sa+So zaehlen mit, anders als bei vacation_balance() (_count_workdays).
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 20),  # Freitag
+            end_date=date(2026, 3, 23),  # Montag -- 4 Kalendertage inkl. Wochenende
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.sick_pay_summary(date(2026, 4, 1))
+        self.assertEqual(summary["used_days"], 4)
+
+    def test_summary_half_day_counts_as_half(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 20),
+            end_date=date(2026, 3, 20),
+            day_portion=Absence.DayPortion.MORNING,
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.sick_pay_summary(date(2026, 4, 1))
+        self.assertEqual(summary["used_days"], 0.5)
+
+    def test_summary_ignores_pending_and_non_sick_absence_types(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 20),
+            end_date=date(2026, 3, 21),
+            type=self.sick_type,
+            status=Absence.Status.PENDING,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 22),
+            end_date=date(2026, 3, 22),
+            type=self.other_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.sick_pay_summary(date(2026, 4, 1))
+        self.assertEqual(summary["used_days"], 0)
+
+    def test_summary_clips_absence_to_service_year_window(self):
+        # Anspruch/Verbrauch beziehen sich auf das laufende Dienstjahr
+        # (15.3.2025-14.3.2026), nicht das Kalenderjahr -- eine Absenz, die
+        # über den Jahrestag hinausläuft, wird an der Fenstergrenze gekappt.
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 10),
+            end_date=date(2026, 3, 20),  # 5 Tage vor, 6 Tage nach dem 15.3.2026
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        before_anniversary = self.employee.sick_pay_summary(date(2026, 3, 1))
+        self.assertEqual(before_anniversary["used_days"], 5)
+        after_anniversary = self.employee.sick_pay_summary(date(2026, 3, 16))
+        self.assertEqual(after_anniversary["used_days"], 6)
+
+    def test_summary_scale_model_reports_entitlement_and_remaining(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 20),
+            end_date=date(2026, 3, 21),
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.sick_pay_summary(date(2026, 4, 1))
+        self.assertEqual(summary["model"], Tenant.SickPayModel.SCALE)
+        self.assertEqual(summary["scale"], Tenant.SickPayScale.BASEL)
+        self.assertEqual(summary["service_year_number"], 3)
+        self.assertEqual(summary["entitlement_weeks"], _basel_scale_weeks(3))
+        self.assertEqual(summary["entitlement_days"], _basel_scale_weeks(3) * 7)
+        self.assertEqual(summary["remaining_days"], _basel_scale_weeks(3) * 7 - 2)
+        self.assertIsNone(summary["waiting_days"])
+
+    def test_summary_insurance_model_has_no_scale_entitlement(self):
+        self.tenant.sick_pay_model = Tenant.SickPayModel.DAILY_ALLOWANCE_INSURANCE
+        self.tenant.sick_pay_waiting_days = 3
+        self.tenant.save(update_fields=["sick_pay_model", "sick_pay_waiting_days"])
+        summary = self.employee.sick_pay_summary(date(2026, 4, 1))
+        self.assertEqual(summary["model"], Tenant.SickPayModel.DAILY_ALLOWANCE_INSURANCE)
+        self.assertIsNone(summary["scale"])
+        self.assertIsNone(summary["entitlement_weeks"])
+        self.assertIsNone(summary["entitlement_days"])
+        self.assertIsNone(summary["remaining_days"])
+        self.assertEqual(summary["waiting_days"], 3)
+
+    # --- API ---
+
+    def test_api_returns_sick_pay_summary(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 3, 20),
+            end_date=date(2026, 3, 21),
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/sick-pay/?as_of=2026-04-01")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["used_days"], 2)
+        self.assertEqual(response.data["service_year_number"], 3)
+        self.assertEqual(response.data["model"], "scale")
+        self.assertEqual(response.data["scale"], "basel")
+
+    def test_api_rejects_invalid_as_of_param(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/sick-pay/?as_of=not-a-date")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class MonthlySummaryTests(APITestCase):
+    """
+    Monatsauswertung (README Block 2.6, "Basis für den Lohnlauf"):
+    Soll/Ist-Vergleich, Überzeit- sowie Nacht-/Sonntagszuschlag für einen
+    Kalendermonat. Juni 2026 hat 22 Mo-Fr-Arbeitstage, beginnt an einem
+    Montag und enthält 4 Sonntage (7./14./21./28.6.) -- gewählt, weil kein
+    Kanton gesetzt ist (kein Feiertagsabzug) und die Zahlen dadurch
+    handrechenbar bleiben.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        # 08:00-16:30, 30min Pause -> 8h Spanne netto pro Schicht (klare Zahlen).
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 30),
+            break_minutes=30,
+        )
+        self.night_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtdienst", start_time=time(23, 0), end_time=time(6, 0)
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="A",
+            employment_pct=100,
+            employment_start_date=date(2026, 1, 1),
+            standard_weekly_hours=40,  # Override fuer klare 8h/Tag (40/5), siehe Block 1.14
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        self.employee_user = User.objects.create_user(username="anna-user", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _assign(self, day, template=None):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=day, template=template or self.template
+        )
+
+    def _june_weekdays(self):
+        return [date(2026, 6, d) for d in range(1, 31) if date(2026, 6, d).weekday() < 5]
+
+    def _start_employment_in_june(self):
+        # Gleitzeit-Korridor-Tests brauchen time_account_summary()["saldo_hours"]
+        # (Jahres-Gleitzeitkonto ab Jahresanfang bzw. Eintrittsdatum) --
+        # ohne diesen Reset würde der Saldo faelschlich ab 1. Januar
+        # berechnet und durch die in diesen Tests unbestueckten Monate
+        # Januar-Mai einen riesigen, aber rein testartefaktbedingten
+        # Fehlbetrag zeigen (kein Bezug zur Monatsauswertung selbst, die
+        # ohnehin nur Juni betrachtet).
+        self.employee.employment_start_date = date(2026, 6, 1)
+        self.employee.save(update_fields=["employment_start_date"])
+
+    def test_no_shifts_means_full_soll_and_no_overtime(self):
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["month_start"], date(2026, 6, 1))
+        self.assertEqual(summary["month_end"], date(2026, 6, 30))
+        self.assertEqual(summary["soll_hours"], 176.0)  # 22 Arbeitstage * 8h
+        self.assertEqual(summary["ist_hours"], 0)
+        self.assertEqual(summary["overtime_hours"], 0)
+        self.assertEqual(summary["overtime_surcharge_hours"], 0)
+        self.assertFalse(summary["is_provisional"])
+
+    def test_full_month_worked_exactly_meets_soll(self):
+        for day in self._june_weekdays():
+            self._assign(day)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["ist_hours"], 176.0)
+        self.assertEqual(summary["overtime_hours"], 0)
+        self.assertEqual(summary["overtime_surcharge_hours"], 0)
+        self.assertTrue(summary["is_provisional"])  # keine Zeiterfassung erfasst
+
+    def test_extra_shift_yields_overtime_but_no_automatic_surcharge(self):
+        # Nutzer-Feedback (2026-08): "bei uns gilt Gleitzeit, nur angeordnete
+        # Überstunden werden effektiv abgerechnet" -- Überzeit innerhalb der
+        # Gleitzeit-Bandbreite (Tenant-Default 20h) ist reines Saldo-
+        # Rauschen und wird NICHT mehr automatisch mit Zuschlag abgerechnet.
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        self._assign(date(2026, 6, 6))  # Samstag, zusaetzliche 8h
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["ist_hours"], 184.0)
+        self.assertEqual(summary["overtime_hours"], 8.0)  # informativ, unveraendert
+        self.assertEqual(summary["overtime_surcharge_hours"], 0)  # nichts bestaetigt
+        self.assertEqual(summary["saldo_hours"], 8.0)
+        self.assertEqual(summary["flextime_corridor_hours"], 20)
+        self.assertEqual(summary["flextime_corridor_excess_hours"], 0)  # 8h < 20h Korridor
+        self.assertFalse(summary["is_overtime_settled"])
+
+    # --- Gleitzeit-Korridor + Bestätigung (Nutzer-Feedback 2026-08) ---
+
+    def test_saldo_beyond_corridor_is_flagged_but_not_paid(self):
+        # 3 zusaetzliche Samstage (24h) -> Jahressaldo 24h, ueber dem
+        # 20h-Korridor -> 4h Ueberschuss werden zur Bestaetigung
+        # vorgeschlagen, aber noch nicht automatisch ausbezahlt.
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        for d in (6, 13, 20):
+            self._assign(date(2026, 6, d))
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["saldo_hours"], 24.0)
+        self.assertEqual(summary["flextime_corridor_excess_hours"], 4.0)
+        self.assertEqual(summary["overtime_surcharge_hours"], 0)
+        self.assertFalse(summary["is_overtime_settled"])
+
+    def test_confirm_overtime_settlement_creates_record_and_pays_out(self):
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        for d in (6, 13, 20):
+            self._assign(date(2026, 6, d))
+        settlement = self.employee.confirm_overtime_settlement(2026, 6)
+        self.assertEqual(settlement.hours, 4.0)
+        self.assertEqual(settlement.surcharge_hours, 1.0)  # 4h * 25% Tenant-Default
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["overtime_surcharge_hours"], 1.0)
+        self.assertEqual(summary["flextime_corridor_excess_hours"], 0)
+        self.assertTrue(summary["is_overtime_settled"])
+
+    def test_confirm_overtime_settlement_is_idempotent(self):
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        for d in (6, 13, 20):
+            self._assign(date(2026, 6, d))
+        first = self.employee.confirm_overtime_settlement(2026, 6)
+        second = self.employee.confirm_overtime_settlement(2026, 6)
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(
+            OvertimeSettlement.objects.filter(employee=self.employee, year=2026, month=6).count(), 1
+        )
+
+    def test_confirm_overtime_settlement_raises_when_nothing_to_confirm(self):
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        with self.assertRaises(ValueError):
+            self.employee.confirm_overtime_settlement(2026, 6)
+
+    def test_settled_hours_do_not_get_flagged_again_in_a_later_month(self):
+        # Juni: 4h Ueberschuss bestaetigt. Juli: Mitarbeiter arbeitet exakt
+        # sein Soll (0 neue Differenz) -- der kumulierte Jahressaldo bleibt
+        # bei 24h, davon 4h bereits bestaetigt -> unbestaetigt sind nur noch
+        # 20h, genau am Korridor, kein neuer Ueberschuss im Juli.
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        for d in (6, 13, 20):
+            self._assign(date(2026, 6, d))
+        self.employee.confirm_overtime_settlement(2026, 6)
+
+        july_weekdays = [date(2026, 7, d) for d in range(1, 32) if date(2026, 7, d).weekday() < 5]
+        for day in july_weekdays:
+            self._assign(day)
+
+        july_summary = self.employee.monthly_summary(2026, 7)
+        self.assertEqual(july_summary["saldo_hours"], 24.0)
+        self.assertEqual(july_summary["flextime_corridor_excess_hours"], 0)
+        self.assertFalse(july_summary["is_overtime_settled"])
+
+    def test_shifts_outside_month_are_excluded(self):
+        self._assign(date(2026, 6, 1))
+        self._assign(date(2026, 7, 1))  # ausserhalb Juni
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["ist_hours"], 8.0)
+
+    def test_time_record_overrides_planned_hours_and_clears_provisional(self):
+        assignment = self._assign(date(2026, 6, 1))
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=assignment,
+            actual_start=time(8, 0),
+            actual_end=time(17, 0),  # 9h brutto
+            actual_break_minutes=60,  # 8h netto statt geplanter 8h -- bewusst identisch
+            status=TimeRecord.Status.CONFIRMED,
+        )
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["ist_hours"], 8.0)
+        self.assertFalse(summary["is_provisional"])  # einzige Schicht ist CONFIRMED erfasst
+
+    def test_submitted_time_record_still_counts_as_provisional(self):
+        assignment = self._assign(date(2026, 6, 1))
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=assignment,
+            actual_start=time(8, 0),
+            actual_end=time(17, 0),
+            actual_break_minutes=60,
+            status=TimeRecord.Status.SUBMITTED,
+        )
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertTrue(summary["is_provisional"])
+
+    def test_approved_absence_is_soll_neutral(self):
+        # Ferien Mo-Fr 1.-5.6. -- 5 Arbeitstage weniger Soll, keine Ist-Zeit
+        # dafuer erwartet.
+        vacation_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 5),
+            type=vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["soll_hours"], 136.0)  # (22 - 5) * 8h
+
+    def test_zero_before_employment_start(self):
+        self.employee.employment_start_date = date(2026, 7, 1)
+        self.employee.save(update_fields=["employment_start_date"])
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["soll_hours"], 0)
+        self.assertEqual(summary["ist_hours"], 0)
+        self.assertFalse(summary["is_provisional"])
+
+    def test_sunday_shift_adds_sunday_surcharge(self):
+        self._assign(date(2026, 6, 7))  # Sonntag
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["sunday_hours"], 8.0)
+        self.assertEqual(summary["sunday_surcharge_hours"], 4.0)  # 50% Zuschlag (Tenant-Default)
+
+    def test_few_night_shifts_in_month_have_no_surcharge(self):
+        # 5 Naechte im Jahr -- unter der Jahresschwelle (Tenant-Default 25)
+        # fuer "regelmaessige" Nachtarbeit -> keine Zeitgutschrift trotz
+        # vorhandener Nachtstunden.
+        for offset in range(5):
+            self._assign(date(2026, 6, 1) + timedelta(days=offset), template=self.night_template)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["night_hours"], 35.0)  # 5 * 7h
+        self.assertEqual(summary["night_surcharge_hours"], 0)
+
+    def test_25_night_shifts_in_year_yield_surcharge_for_month(self):
+        # Alle 25 Naechte liegen im Juni selbst (1.-25.6.) -> "regelmaessig"
+        # fuers ganze Jahr 2026, die Zeitgutschrift bezieht sich hier aber
+        # nur auf die Nachtstunden DIESES Monats.
+        for offset in range(25):
+            self._assign(date(2026, 6, 1) + timedelta(days=offset), template=self.night_template)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["night_hours"], 175.0)  # 25 * 7h
+        self.assertEqual(summary["night_surcharge_hours"], 17.5)  # 10% Zeitgutschrift (Tenant-Default)
+
+    # --- Spezialitäten-Zuschlag (Nutzer-Feedback 2026-08: "wenn jemand
+    # Pikett macht, ist dieser zuschlagsberechtigt") ---
+
+    def test_special_assignment_without_surcharge_is_excluded_from_ist_hours(self):
+        # Bugfix-Regression: monthly_summary() schloss Spezialitäten bisher
+        # -- anders als weekly_hours_summary()/time_account_summary() --
+        # nicht von den normalen Ist-/Nacht-/Sonntagsstunden aus.
+        pikett = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett", start_time=time(20, 0), end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        self._assign(date(2026, 6, 1), template=pikett)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["ist_hours"], 0)
+        self.assertEqual(summary["night_hours"], 0)
+        self.assertEqual(summary["sunday_hours"], 0)
+        self.assertEqual(summary["special_surcharge_hours"], 0)
+        self.assertEqual(summary["special_surcharge_breakdown"], [])
+
+    def test_special_assignment_with_surcharge_appears_in_breakdown(self):
+        pikett = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett", start_time=time(20, 0), end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL, surcharge_pct=50,
+        )
+        self._assign(date(2026, 6, 1), template=pikett)
+        self._assign(date(2026, 6, 2), template=pikett)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["special_surcharge_hours"], 2.0)  # 2 * 2h * 50%
+        self.assertEqual(
+            summary["special_surcharge_breakdown"],
+            [{"template_id": pikett.id, "template_name": "Pikett", "surcharge_pct": 50, "hours": 4.0, "surcharge_hours": 2.0}],
+        )
+        # bleibt weiterhin von der normalen Ist-Stundenzahl ausgeschlossen
+        self.assertEqual(summary["ist_hours"], 0)
+
+    def test_multiple_special_templates_yield_separate_breakdown_entries(self):
+        pikett_tag = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett Tag", start_time=time(8, 0), end_time=time(18, 0),
+            category=TimeTemplate.Category.SPECIAL, surcharge_pct=25,
+        )
+        pikett_nacht = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett Nacht", start_time=time(22, 0), end_time=time(6, 0),
+            category=TimeTemplate.Category.SPECIAL, surcharge_pct=50,
+        )
+        self._assign(date(2026, 6, 1), template=pikett_tag)
+        self._assign(date(2026, 6, 2), template=pikett_nacht)
+        summary = self.employee.monthly_summary(2026, 6)
+        names = [entry["template_name"] for entry in summary["special_surcharge_breakdown"]]
+        self.assertEqual(names, ["Pikett Nacht", "Pikett Tag"])  # alphabetisch sortiert
+        self.assertEqual(summary["special_surcharge_hours"], 2.5 + 4.0)  # Pikett Tag 10h*25%=2.5, Pikett Nacht 8h*50%=4.0
+
+    def test_special_assignment_without_surcharge_pct_is_absent_from_breakdown(self):
+        # Spezialität ohne konfigurierten Zuschlag (Default 0) -- z. B. rein
+        # informativer Bereitschaftsdienst ohne Lohnrelevanz.
+        info_only = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Bereitschaft", start_time=time(20, 0), end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        self._assign(date(2026, 6, 1), template=info_only)
+        summary = self.employee.monthly_summary(2026, 6)
+        self.assertEqual(summary["special_surcharge_breakdown"], [])
+        self.assertEqual(summary["special_surcharge_hours"], 0)
+
+    # --- API ---
+
+    def test_api_returns_monthly_summary_for_planner(self):
+        for day in self._june_weekdays():
+            self._assign(day)
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=2026&month=6")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["ist_hours"], 176.0)
+        self.assertEqual(response.data["soll_hours"], 176.0)
+        self.assertEqual(response.data["month"], 6)
+
+    def test_api_returns_special_surcharge_breakdown(self):
+        pikett = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett", start_time=time(20, 0), end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL, surcharge_pct=50,
+        )
+        self._assign(date(2026, 6, 1), template=pikett)
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=2026&month=6")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["special_surcharge_hours"], 1.0)
+        self.assertEqual(len(response.data["special_surcharge_breakdown"]), 1)
+        self.assertEqual(response.data["special_surcharge_breakdown"][0]["template_name"], "Pikett")
+        self.assertEqual(response.data["special_surcharge_breakdown"][0]["surcharge_pct"], 50)
+
+    def test_api_defaults_to_current_year_and_month(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        today = timezone.localdate()
+        self.assertEqual(response.data["year"], today.year)
+        self.assertEqual(response.data["month"], today.month)
+
+    def test_api_rejects_invalid_month_param(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=2026&month=13")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_api_rejects_invalid_year_param(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=not-a-year")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_api_forbidden_for_employee_role(self):
+        # Anders als balance()/weekly-overtime()/night-work() bewusst KEINE
+        # Mitarbeiter-Selbstauskunft -- das hier ist Lohnlauf-Vorbereitung,
+        # nur Admin/Planer duerfen sie einsehen (siehe EmployeeViewSet.
+        # monthly_summary-Docstring).
+        self.auth_as(self.employee_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/monthly-summary/?year=2026&month=6")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    # --- API: Gleitzeit-Korridor-Bestätigung ---
+
+    def _make_corridor_excess(self):
+        self._start_employment_in_june()
+        for day in self._june_weekdays():
+            self._assign(day)
+        for d in (6, 13, 20):
+            self._assign(date(2026, 6, d))
+
+    def test_api_settle_overtime_confirms_excess_for_planner(self):
+        self._make_corridor_excess()
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/settle-overtime/", {"year": 2026, "month": 6}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["overtime_surcharge_hours"], 1.0)
+        self.assertTrue(response.data["is_overtime_settled"])
+        self.assertEqual(
+            OvertimeSettlement.objects.filter(employee=self.employee, year=2026, month=6).count(), 1
+        )
+
+    def test_api_settle_overtime_is_idempotent(self):
+        self._make_corridor_excess()
+        self.auth_as(self.planner_user)
+        self.client.post(f"/api/employees/{self.employee.id}/settle-overtime/", {"year": 2026, "month": 6})
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/settle-overtime/", {"year": 2026, "month": 6}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            OvertimeSettlement.objects.filter(employee=self.employee, year=2026, month=6).count(), 1
+        )
+
+    def test_api_settle_overtime_rejects_when_nothing_to_confirm(self):
+        for day in self._june_weekdays():
+            self._assign(day)
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/settle-overtime/", {"year": 2026, "month": 6}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_api_settle_overtime_forbidden_for_employee_role(self):
+        self._make_corridor_excess()
+        self.auth_as(self.employee_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/settle-overtime/", {"year": 2026, "month": 6}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class ShiftTradeRequestTests(TestCase):
+    """Diensttausch: sowohl einfache Übernahme als auch echter Tausch, jeweils inkl. Regel-Engine."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee_1 = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee_2 = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,  # 8h Spanne -> 7.5h netto -> Art. 15 ArG verlangt 30 Min.
+        )
+        self.assignment_1 = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.employee_1,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.template,
+        )
+
+    def test_clean_rejects_trade_with_self(self):
+        trade = ShiftTradeRequest(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_1,
+        )
+        with self.assertRaises(ValidationError):
+            trade.clean()
+
+    def test_clean_rejects_target_assignment_of_wrong_employee(self):
+        other_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.employee_1,
+            node=self.node,
+            date=date(2026, 8, 10),
+            template=self.template,
+        )
+        trade = ShiftTradeRequest(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+            target_assignment=other_assignment,  # gehört employee_1, nicht employee_2
+        )
+        with self.assertRaises(ValidationError):
+            trade.clean()
+
+    def test_accept_marks_employee_accepted_without_swapping(self):
+        # accept() ist nur die Zustimmung der Zielperson (Block 2.3) -- der
+        # eigentliche Tausch passiert erst in approve() durch Admin/Planer.
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.accept()
+
+        trade.refresh_from_db()
+        self.assignment_1.refresh_from_db()
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED)
+        self.assertIsNone(trade.resolved_at)
+        self.assertEqual(self.assignment_1.employee_id, self.employee_1.id)
+
+    def test_approve_after_accept_reassigns_employee(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.accept()
+        trade.approve()
+
+        trade.refresh_from_db()
+        self.assignment_1.refresh_from_db()
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.ACCEPTED)
+        self.assertIsNotNone(trade.resolved_at)
+        self.assertEqual(self.assignment_1.employee_id, self.employee_2.id)
+
+    def test_approve_directly_from_pending(self):
+        # Admin/Planer können die Zustimmung der Zielperson überspringen
+        # (z. B. telefonisch eingeholt) und direkt aus PENDING freigeben.
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.approve()
+
+        trade.refresh_from_db()
+        self.assignment_1.refresh_from_db()
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.ACCEPTED)
+        self.assertEqual(self.assignment_1.employee_id, self.employee_2.id)
+
+    def test_approve_full_swap_exchanges_employees(self):
+        assignment_2 = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.employee_2,
+            node=self.node,
+            date=date(2026, 8, 20),
+            template=self.template,
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+            target_assignment=assignment_2,
+        )
+        trade.accept()
+        trade.approve()
+
+        self.assignment_1.refresh_from_db()
+        assignment_2.refresh_from_db()
+        self.assertEqual(self.assignment_1.employee_id, self.employee_2.id)
+        self.assertEqual(assignment_2.employee_id, self.employee_1.id)
+
+    def test_approve_blocked_by_rule_engine_leaves_state_unchanged(self):
+        skill = Skill.objects.create(tenant=self.tenant, name="Nachtdienst-berechtigt")
+        self.template.required_skill = skill
+        self.template.save()
+        self.employee_1.skills.add(skill)
+        # employee_2 hat den Skill NICHT -> Übernahme muss an der Qualifikationsprüfung scheitern.
+
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.accept()
+        with self.assertRaises(ValidationError):
+            trade.approve()
+
+        trade.refresh_from_db()
+        self.assignment_1.refresh_from_db()
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED)
+        self.assertEqual(self.assignment_1.employee_id, self.employee_1.id)
+
+    def test_accept_twice_is_rejected(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.accept()
+        with self.assertRaises(ValidationError):
+            trade.accept()
+
+    def test_reject_by_planner(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.reject()
+
+        trade.refresh_from_db()
+        self.assignment_1.refresh_from_db()
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.REJECTED)
+        self.assertIsNotNone(trade.resolved_at)
+        self.assertEqual(self.assignment_1.employee_id, self.employee_1.id)
+
+    def test_reject_after_employee_accepted(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.accept()
+        trade.reject()
+
+        trade.refresh_from_db()
+        self.assertEqual(trade.status, ShiftTradeRequest.Status.REJECTED)
+
+    def test_reject_already_accepted_trade_is_rejected(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=self.assignment_1,
+            target_employee=self.employee_2,
+        )
+        trade.approve()
+        with self.assertRaises(ValidationError):
+            trade.reject()
+
+
+class ShiftTradeRequestAPITests(APITestCase):
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee_1 = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee_2 = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,  # 8h Spanne -> 7.5h netto -> Art. 15 ArG verlangt 30 Min.
+        )
+        self.assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.employee_1,
+            node=self.node,
+            date=date(2026, 8, 3),
+            template=self.template,
+        )
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_accept_endpoint_marks_employee_accepted(self):
+        create_response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": self.assignment.id, "target_employee": self.employee_2.id},
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        trade_id = create_response.data["id"]
+
+        accept_response = self.client.post(f"/api/shift-trade-requests/{trade_id}/accept/")
+        self.assertEqual(accept_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(accept_response.data["status"], "employee_accepted")
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.employee_id, self.employee_1.id)
+
+    def test_approve_endpoint_reassigns_and_returns_updated_status(self):
+        create_response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": self.assignment.id, "target_employee": self.employee_2.id},
+        )
+        trade_id = create_response.data["id"]
+        self.client.post(f"/api/shift-trade-requests/{trade_id}/accept/")
+
+        approve_response = self.client.post(f"/api/shift-trade-requests/{trade_id}/approve/")
+        self.assertEqual(approve_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(approve_response.data["status"], "accepted")
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.employee_id, self.employee_2.id)
+
+    def test_approve_endpoint_works_directly_from_pending(self):
+        create_response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": self.assignment.id, "target_employee": self.employee_2.id},
+        )
+        trade_id = create_response.data["id"]
+
+        approve_response = self.client.post(f"/api/shift-trade-requests/{trade_id}/approve/")
+        self.assertEqual(approve_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(approve_response.data["status"], "accepted")
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.employee_id, self.employee_2.id)
+
+    def test_reject_endpoint(self):
+        create_response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": self.assignment.id, "target_employee": self.employee_2.id},
+        )
+        trade_id = create_response.data["id"]
+
+        reject_response = self.client.post(f"/api/shift-trade-requests/{trade_id}/reject/")
+        self.assertEqual(reject_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(reject_response.data["status"], "rejected")
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.employee_id, self.employee_1.id)
+
+    def test_decline_endpoint_leaves_assignment_untouched(self):
+        create_response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": self.assignment.id, "target_employee": self.employee_2.id},
+        )
+        trade_id = create_response.data["id"]
+
+        decline_response = self.client.post(f"/api/shift-trade-requests/{trade_id}/decline/")
+        self.assertEqual(decline_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(decline_response.data["status"], "declined")
+
+        self.assignment.refresh_from_db()
+        self.assertEqual(self.assignment.employee_id, self.employee_1.id)
+
+
+class RoleBasedPermissionTests(APITestCase):
+    """
+    core.permissions: Admin/Planer dürfen den Dienstplan/Stammdaten
+    bearbeiten, HR nur lesen ("nur Reporting"), Mitarbeitende dürfen lesen
+    sowie eigene Absenzen und eigenen Diensttausch verwalten.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+        self.hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
+        Membership.objects.create(user=self.hr_user, tenant=self.tenant, role=Membership.Role.HR)
+
+        self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+        self.bob_user = User.objects.create_user(username="bob", password="pw-not-real-123!")
+        Membership.objects.create(user=self.bob_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.bob = Employee.objects.create(
+            tenant=self.tenant, user=self.bob_user, first_name="Bob", last_name="B", employment_pct=100
+        )
+
+        self.alice_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        self.bob_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.bob, node=self.node, date=date(2026, 8, 4), template=self.template
+        )
+        self.vacation_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Ferien", deducts_vacation_days=True
+        )
+        # Für TimeRecord-Tests: eine bereits stattgefundene Schicht (TimeRecord.clean()
+        # lehnt Ist-Erfassung für Schichten in der Zukunft ab). Bewusst ein fixes Datum
+        # statt "gestern" (timezone.localdate() - 1 Tag): das kollidierte mit dem
+        # ebenfalls fixen alice_assignment-Datum (2026-08-03) genau an dem Tag, an dem
+        # "heute" real 2026-08-04 war (UNIQUE-constraint employee+date).
+        self.alice_past_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node,
+            date=date(2026, 7, 27),
+            template=self.template,
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_employee_cannot_create_node(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post("/api/nodes/", {"name": "Station B"})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_cannot_move_node(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(f"/api/nodes/{self.node.id}/move/", {"parent": None}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_planner_can_create_node(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post("/api/nodes/", {"name": "Station B"})
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_hr_cannot_write_but_can_read(self):
+        self.auth_as(self.hr_user)
+        write_response = self.client.post("/api/nodes/", {"name": "Station B"})
+        self.assertEqual(write_response.status_code, status.HTTP_403_FORBIDDEN)
+        read_response = self.client.get("/api/nodes/")
+        self.assertEqual(read_response.status_code, status.HTTP_200_OK)
+
+    def test_employee_cannot_create_shift_assignment(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-assignments/",
+            {
+                "employee": self.alice.id,
+                "node": self.node.id,
+                "date": "2026-08-10",
+                "template": self.template.id,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_cannot_write_skill_time_template_or_employee(self):
+        self.auth_as(self.alice_user)
+        self.assertEqual(
+            self.client.post("/api/skills/", {"name": "Neu"}).status_code, status.HTTP_403_FORBIDDEN
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/time-templates/",
+                {"node": self.node.id, "name": "X", "start_time": "08:00", "end_time": "16:00"},
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.post(
+                "/api/employees/", {"first_name": "X", "last_name": "Y", "employment_pct": 100}
+            ).status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_employee_can_create_own_absence(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/absences/",
+            {
+                "employee": self.alice.id,
+                "start_date": "2026-09-01",
+                "end_date": "2026-09-05",
+                "type": self.vacation_type.id,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_employee_cannot_create_absence_for_other_employee(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/absences/",
+            {
+                "employee": self.bob.id,
+                "start_date": "2026-09-01",
+                "end_date": "2026-09-05",
+                "type": self.vacation_type.id,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_can_delete_own_absence_not_others(self):
+        # Alice und Bob teilen sich hier bewusst eine Station: sonst wäre
+        # Bobs Absenz für Alice unter dem neuen Stations-Scoping gar nicht
+        # sichtbar (404 statt 403) -- dieser Test prüft aber die
+        # Ownership-Berechtigung, nicht das Stations-Scoping (siehe
+        # PlannerHRStationScopingTests dafür).
+        self.alice.nodes.add(self.node)
+        self.bob.nodes.add(self.node)
+        own_absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2),
+            type=self.vacation_type,
+        )
+        other_absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.bob, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2),
+            type=self.vacation_type,
+        )
+        self.auth_as(self.alice_user)
+        self.assertEqual(
+            self.client.delete(f"/api/absences/{other_absence.id}/").status_code, status.HTTP_403_FORBIDDEN
+        )
+        self.assertEqual(
+            self.client.delete(f"/api/absences/{own_absence.id}/").status_code, status.HTTP_204_NO_CONTENT
+        )
+
+    def test_employee_can_offer_own_shift_for_trade(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": self.alice_assignment.id, "target_employee": self.bob.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_employee_cannot_offer_someone_elses_shift(self):
+        carla_user = User.objects.create_user(username="carla2", password="pw-not-real-123!")
+        Membership.objects.create(user=carla_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        carla = Employee.objects.create(
+            tenant=self.tenant, user=carla_user, first_name="Carla", last_name="C", employment_pct=100
+        )
+
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-trade-requests/",
+            # Alice bietet Bobs Schicht an -- Ziel ist Carla, nicht Bob, damit
+            # nicht die "kein Tausch mit sich selbst"-Regel (400) statt der
+            # Berechtigungsprüfung (403) greift.
+            {"requester_assignment": self.bob_assignment.id, "target_employee": carla.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_only_target_employee_can_accept_trade_offer(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.alice_assignment, target_employee=self.bob
+        )
+        third_user = User.objects.create_user(username="carla", password="pw-not-real-123!")
+        Membership.objects.create(user=third_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        carla = Employee.objects.create(
+            tenant=self.tenant, user=third_user, first_name="Carla", last_name="C", employment_pct=100
+        )
+        # Carla ist weder Requester noch Target -- der Mitarbeiter-Sonderfall
+        # im Scoping greift für sie nicht. Damit accept() für sie überhaupt
+        # bis zur Objektberechtigung kommt (403) statt vorher am
+        # Queryset-Filter zu scheitern (404), braucht sie dieselbe Station
+        # wie die Anfrage.
+        carla.nodes.add(self.node)
+
+        self.auth_as(third_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/accept/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        self.auth_as(self.bob_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/accept/").status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_only_requester_can_cancel_own_trade_offer(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.alice_assignment, target_employee=self.bob
+        )
+        self.auth_as(self.bob_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/cancel/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.auth_as(self.alice_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/cancel/").status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_planner_can_act_on_behalf_of_any_employee(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.alice_assignment, target_employee=self.bob
+        )
+        self.auth_as(self.planner_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/accept/").status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_only_manager_can_approve_or_reject_trade(self):
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.alice_assignment, target_employee=self.bob
+        )
+        # Bob ist die Zielperson, darf aber trotzdem nicht selbst freigeben/ablehnen --
+        # das bleibt Admin/Planer vorbehalten (Block 2.3).
+        self.auth_as(self.bob_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/approve/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/reject/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        self.auth_as(self.planner_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-trade-requests/{trade.id}/approve/").status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_employee_cannot_approve_or_reject_own_absence(self):
+        absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2),
+            type=self.vacation_type,
+        )
+        self.auth_as(self.alice_user)
+        self.assertEqual(
+            self.client.post(f"/api/absences/{absence.id}/approve/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        self.assertEqual(
+            self.client.post(f"/api/absences/{absence.id}/reject/").status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_planner_can_approve_absence(self):
+        absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 9, 1), end_date=date(2026, 9, 2),
+            type=self.vacation_type,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/absences/{absence.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "approved")
+
+    def test_approve_rejects_absence_conflicting_with_existing_assignment(self):
+        # Bugfix 2026-08: alice_assignment (aus setUp) liegt am 2026-08-03 --
+        # eine Absenz über diesen Zeitraum darf nicht genehmigt werden,
+        # solange die Zuweisung nicht zuerst entfernt wurde.
+        absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 1), end_date=date(2026, 8, 5),
+            type=self.vacation_type,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/absences/{absence.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        absence.refresh_from_db()
+        self.assertEqual(absence.status, Absence.Status.PENDING)  # Status bleibt unverändert
+
+    def test_planner_created_absence_conflicting_with_existing_assignment_is_rejected(self):
+        # Bugfix 2026-08: von Admin/Planer angelegte Absenzen sind sofort
+        # APPROVED (siehe AbsenceViewSet.perform_create) -- der Konflikt-
+        # Check muss deshalb schon beim direkten Anlegen greifen, nicht erst
+        # bei approve() (AbsenceSerializer.validate() musste dafür den
+        # späteren Status vorwegnehmen, siehe Serializer-Docstring).
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            "/api/absences/",
+            {"employee": self.alice.id, "start_date": "2026-08-01", "end_date": "2026-08-05", "type": self.vacation_type.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Absence.all_objects.filter(employee=self.alice, start_date=date(2026, 8, 1)).exists())
+
+    def test_employee_created_absence_starts_pending_planner_created_is_approved(self):
+        self.auth_as(self.alice_user)
+        employee_response = self.client.post(
+            "/api/absences/",
+            {"employee": self.alice.id, "start_date": "2026-09-10", "end_date": "2026-09-11", "type": self.vacation_type.id},
+        )
+        self.assertEqual(employee_response.data["status"], "pending")
+
+        self.auth_as(self.planner_user)
+        planner_response = self.client.post(
+            "/api/absences/",
+            {"employee": self.bob.id, "start_date": "2026-09-10", "end_date": "2026-09-11", "type": self.vacation_type.id},
+        )
+        self.assertEqual(planner_response.data["status"], "approved")
+
+    def test_employee_cannot_edit_own_absence_once_decided(self):
+        absence = Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 2),
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.delete(f"/api/absences/{absence.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_can_record_own_time_record(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/time-records/",
+            {
+                "assignment": self.alice_past_assignment.id,
+                "actual_start": "08:05",
+                "actual_end": "16:00",
+                "actual_break_minutes": 30,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], "submitted")
+        self.assertEqual(response.data["deviation_minutes"], 5)
+
+    def test_time_records_can_be_filtered_by_date_range(self):
+        # Planblatt-Grid und Zeiterfassungs-Tab laden Ist-Zeiten nur für den
+        # sichtbaren Monat statt aller Einträge des Tenants (Performance).
+        in_range = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.alice_past_assignment,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+        )
+        out_of_range_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node,
+            date=timezone.localdate() - timedelta(days=60),
+            template=self.template,
+        )
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=out_of_range_assignment,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+        )
+        self.auth_as(self.planner_user)
+        date_from = self.alice_past_assignment.date - timedelta(days=1)
+        date_to = self.alice_past_assignment.date + timedelta(days=1)
+        response = self.client.get(f"/api/time-records/?date_from={date_from}&date_to={date_to}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = [r["id"] for r in response.data["results"]]
+        self.assertEqual(ids, [in_range.id])
+
+    def test_employee_cannot_record_time_for_others_shift(self):
+        # Bewusst ein fixes Datum statt "gestern" (timezone.localdate() -
+        # 1 Tag): dieselbe Kollisionsgefahr wie beim alice_past_assignment
+        # oben -- sobald "heute" (Europe/Zurich) auf das fixe bob_assignment-
+        # Datum (2026-08-04) fällt, wäre "gestern" == "heute" und würde
+        # ebenfalls gegen den UNIQUE-constraint employee+date laufen.
+        bob_past_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.bob,
+            node=self.node,
+            date=date(2026, 7, 20),
+            template=self.template,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/time-records/",
+            {
+                "assignment": bob_past_assignment.id,
+                "actual_start": "08:00",
+                "actual_end": "16:00",
+                "actual_break_minutes": 30,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_cannot_confirm_own_time_record(self):
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.alice_past_assignment,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+        )
+        # TimeRecordViewSet ist inzwischen node-gescoped wie ShiftAssignment/
+        # TimeTemplate (siehe _employee_scoped_node_ids) -- ohne eigene
+        # Stationszuordnung wäre der Datensatz für alice bereits im
+        # get_queryset() unsichtbar (404 statt 403), das ist hier nicht der
+        # Punkt des Tests.
+        self.alice.nodes.add(self.node)
+        self.auth_as(self.alice_user)
+        response = self.client.post(f"/api/time-records/{record.id}/confirm/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_planner_can_confirm_time_record(self):
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.alice_past_assignment,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/time-records/{record.id}/confirm/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "confirmed")
+
+    def test_employee_cannot_edit_time_record_once_confirmed(self):
+        record = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.alice_past_assignment,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+            status=TimeRecord.Status.CONFIRMED,
+        )
+        # Siehe Kommentar in test_employee_cannot_confirm_own_time_record.
+        self.alice.nodes.add(self.node)
+        self.auth_as(self.alice_user)
+        response = self.client.delete(f"/api/time-records/{record.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    # --- Ein Mitarbeiter darf nur seine eigene(n) Station(en) sehen ---
+
+    def test_employee_sees_only_own_station_in_node_list(self):
+        other_node = make_station(self.tenant, "Station B")
+        self.alice.nodes.add(self.node)
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/nodes/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {n["id"] for n in response.data["results"]}
+        self.assertEqual(ids, {self.node.id})
+        self.assertNotIn(other_node.id, ids)
+
+    def test_employee_without_any_station_sees_no_nodes(self):
+        # self.alice ist in dieser Testklasse standardmässig an keine
+        # Station gebunden (kein .nodes.add()) -- muss dann konsequenterweise
+        # eine leere Liste sehen statt versehentlich den ganzen Tenant.
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/nodes/")
+        self.assertEqual(response.data["results"], [])
+
+    def test_admin_planner_and_hr_still_see_all_stations(self):
+        other_node = make_station(self.tenant, "Station B")
+        for user in (self.planner_user, self.hr_user):
+            self.auth_as(user)
+            response = self.client.get("/api/nodes/")
+            ids = {n["id"] for n in response.data["results"]}
+            self.assertIn(self.node.id, ids)
+            self.assertIn(other_node.id, ids)
+
+    def test_employee_only_sees_shift_assignments_of_own_station(self):
+        other_node = make_station(self.tenant, "Station B")
+        other_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=other_node,
+            name="Nachtdienst",
+            start_time=time(20, 0),
+            end_time=time(6, 0),
+            break_minutes=30,
+        )
+        other_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.bob, node=other_node, date=date(2026, 8, 5), template=other_template
+        )
+        self.alice.nodes.add(self.node)
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/shift-assignments/")
+        ids = {a["id"] for a in response.data["results"]}
+        # Innerhalb der eigenen Station bleibt es bei voller Transparenz
+        # (auch Bobs Zuweisung auf derselben Station ist sichtbar) -- nur die
+        # fremde Station ist ausgeblendet.
+        self.assertIn(self.alice_assignment.id, ids)
+        self.assertIn(self.bob_assignment.id, ids)
+        self.assertNotIn(other_assignment.id, ids)
+
+    def test_employee_only_sees_time_templates_of_own_station(self):
+        other_node = make_station(self.tenant, "Station B")
+        other_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=other_node,
+            name="Nachtdienst",
+            start_time=time(20, 0),
+            end_time=time(6, 0),
+            break_minutes=30,
+        )
+        self.alice.nodes.add(self.node)
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/time-templates/")
+        ids = {t["id"] for t in response.data["results"]}
+        self.assertIn(self.template.id, ids)
+        self.assertNotIn(other_template.id, ids)
+
+
+class EmploymentModelTests(TestCase):
+    """README Punkt 17: Employment als additive Team-/Pensum-/Rollen-Ebene."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+
+    def test_unique_together_employee_node(self):
+        Employment.objects.create(tenant=self.tenant, employee=self.employee, node=self.node, pensum_pct=60)
+        with self.assertRaises(IntegrityError):
+            Employment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node, pensum_pct=40
+            )
+
+    def test_pensum_pct_range_rejected_below_and_above(self):
+        for invalid in (0, 101):
+            employment = Employment(
+                tenant=self.tenant, employee=self.employee, node=self.node, pensum_pct=invalid
+            )
+            with self.assertRaises(ValidationError):
+                employment.full_clean()
+
+
+class EmploymentMigrationTests(TransactionTestCase):
+    """
+    README Punkt 17: die Backfill-Datenmigration (0013_employment) muss für
+    jede bestehende Employee.nodes-Zuordnung eine gleichwertige
+    Employment-Zeile anlegen -- kritisch, weil die App bereits mit echten,
+    produktiven Praxisdaten läuft (Employee.nodes darf nicht manuell
+    nachgepflegt werden müssen). Erster Migrations-State-Test in diesem
+    Projekt: migriert die Test-DB explizit auf den Stand VOR 0013, baut dort
+    Fixture-Daten am gefrorenen (historischen) Modell auf, migriert dann auf
+    0013 und prüft das Ergebnis -- danach zurück auf den aktuellsten Stand,
+    damit nachfolgende Tests wieder auf der vollen, aktuellen DB-Struktur
+    laufen. TransactionTestCase statt TestCase, weil SQLite den
+    Schema-Editor (für die rückwärts/vorwärts laufenden Migrationen) nicht
+    innerhalb einer von TestCase automatisch offenen Transaktion erlaubt.
+    """
+
+    def test_backfills_employment_from_existing_employee_nodes(self):
+        executor = MigrationExecutor(connection)
+        # core bleibt explizit auf seinem tatsächlich angewendeten, neuesten
+        # Stand (core 0012 hängt nicht davon ab, core zurückzurollen) --
+        # sonst würde project_state() das core-Modell nur bis zu dem älteren
+        # Stand einfrieren, den scheduling 0012 selbst als Abhängigkeit
+        # deklariert (z. B. ohne Tenant.night_work_permit_confirmed/.canton),
+        # während die reale SQLite-Tabelle bereits die volle, aktuelle
+        # core-Struktur hat -- ein NOT-NULL-Mismatch beim Anlegen der
+        # Fixture.
+        before = [
+            ("scheduling", "0012_employee_employment_start_date_and_more"),
+            ("core", "0007_tenant_canton_tenantholidayoverride"),
+        ]
+        executor.migrate(before)
+        executor.loader.build_graph()
+
+        old_apps = executor.loader.project_state(before).apps
+        OldTenant = old_apps.get_model("core", "Tenant")
+        OldNode = old_apps.get_model("scheduling", "Node")
+        OldEmployee = old_apps.get_model("scheduling", "Employee")
+
+        tenant = OldTenant.objects.create(name="Migrationstest", slug="migrationstest")
+        # MP_Node.add_root() existiert am gefrorenen Modell nicht mehr --
+        # Baumfelder für einen einzelnen Root-Knoten von Hand setzen (das
+        # reicht für diesen Test, treebeard braucht dafür kein Setup).
+        node = OldNode.objects.create(tenant=tenant, name="Station A", path="0001", depth=1, numchild=0)
+        employee = OldEmployee.objects.create(
+            tenant=tenant, first_name="Peter", last_name="Meier", employment_pct=70
+        )
+        employee.nodes.add(node)
+
+        after = [("scheduling", "0013_employment")]
+        executor.migrate(after)
+        executor.loader.build_graph()
+
+        new_apps = executor.loader.project_state(after).apps
+        NewEmployment = new_apps.get_model("scheduling", "Employment")
+        employments = list(NewEmployment.objects.filter(employee_id=employee.id))
+        self.assertEqual(len(employments), 1)
+        self.assertEqual(employments[0].node_id, node.id)
+        self.assertEqual(employments[0].pensum_pct, 70)
+        self.assertEqual(employments[0].title, "")
+        self.assertFalse(employments[0].is_team_lead)
+
+        # Aufräumen: zurück auf den aktuellsten Migrationsstand, sonst bleibt
+        # die Test-DB für nachfolgende Tests auf altem Schema hängen.
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
+
+
+class TeamNestingPermissionTests(APITestCase):
+    """
+    README Punkt 17: eine Station mit Team-Kind-Knoten -- Mitarbeiter-Scoping
+    (_employee_scoped_node_ids), stationsweiter Zuweisungs-Abruf
+    (ShiftAssignmentViewSet ?node=) und das Verbot der Direktbuchung auf eine
+    Station mit Teams (ShiftAssignment._check_node_has_no_children).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik ICT", slug="klinik-ict")
+        self.station = make_station(self.tenant, "ICT")
+        self.team_a = self.station.add_child(name="Infrastruktur", tenant=self.tenant)
+        self.team_b = self.station.add_child(name="Support", tenant=self.tenant)
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.station,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+
+        self.planner_user = User.objects.create_user(username="planner-ict", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+        self.alice_user = User.objects.create_user(username="alice-ict", password="pw-not-real-123!")
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_employee_with_team_employment_sees_team_and_station_not_sibling_team(self):
+        Employment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.team_a, pensum_pct=100
+        )
+        self.alice.nodes.add(self.team_a)
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/nodes/")
+        ids = {n["id"] for n in response.data["results"]}
+        self.assertEqual(ids, {self.team_a.id, self.station.id})
+        self.assertNotIn(self.team_b.id, ids)
+
+    def test_employee_with_team_employment_still_sees_station_wide_templates(self):
+        self.alice.nodes.add(self.team_a)
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/time-templates/")
+        ids = {t["id"] for t in response.data["results"]}
+        self.assertIn(self.template.id, ids)
+
+    def test_shift_assignment_query_by_station_includes_both_teams(self):
+        assignment_a = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        bob_user = User.objects.create_user(username="bob-ict", password="pw-not-real-123!")
+        Membership.objects.create(user=bob_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        bob = Employee.objects.create(tenant=self.tenant, user=bob_user, first_name="Bob", last_name="B", employment_pct=100)
+        assignment_b = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=bob, node=self.team_b, date=date(2026, 8, 3), template=self.template
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.get(f"/api/shift-assignments/?node={self.station.id}")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {assignment_a.id, assignment_b.id})
+
+    def test_direct_booking_on_station_with_teams_is_rejected(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.alice, node=self.station, date=date(2026, 8, 3), template=self.template
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_booking_on_team_is_still_allowed(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.alice, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        assignment.clean()  # keine Exception
+
+    def test_multi_employment_does_not_relax_one_shift_per_day_rule(self):
+        # Zwei Anstellungen derselben Person in verschiedenen Teams heben die
+        # bestehende unique_together("employee", "date")-Regel nicht auf --
+        # das ist die Grundannahme, auf der die additive Employment-Ebene
+        # (statt einer ShiftAssignment->Employment-FK-Umstellung) beruht.
+        Employment.objects.create(tenant=self.tenant, employee=self.alice, node=self.team_a, pensum_pct=60)
+        Employment.objects.create(tenant=self.tenant, employee=self.alice, node=self.team_b, pensum_pct=40)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        with self.assertRaises(IntegrityError):
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.alice, node=self.team_b, date=date(2026, 8, 3), template=self.template
+            )
+
+
+class EmployeeSerializerEmploymentSyncTests(APITestCase):
+    """
+    README Punkt 17: employments ist der einzige Änderungsweg für
+    Employee.nodes (nodes selbst ist über die API nur noch lesbar) -- siehe
+    EmployeeSerializer._sync_nested.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node_a = make_station(self.tenant, "Team A")
+        self.node_b = make_station(self.tenant, "Team B")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        self.planner_user = User.objects.create_user(username="planner-sync", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=self.planner_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_nodes_in_payload_is_ignored(self):
+        response = self.client.patch(f"/api/employees/{self.employee.id}/", {"nodes": [self.node_a.id]})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.nodes.all()), [])
+
+    def test_employments_on_create_syncs_nodes(self):
+        response = self.client.post(
+            "/api/employees/",
+            {
+                "first_name": "Anna",
+                "last_name": "Berger",
+                "employment_pct": 100,
+                "employments": [{"node": self.node_a.id, "pensum_pct": 60, "title": "Arzt", "is_team_lead": True}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        employee = Employee.objects.get(id=response.data["id"])
+        self.assertEqual(list(employee.nodes.values_list("id", flat=True)), [self.node_a.id])
+        employment = employee.employments.get()
+        self.assertEqual(employment.pensum_pct, 60)
+        self.assertEqual(employment.title, "Arzt")
+        self.assertTrue(employment.is_team_lead)
+
+    def test_employments_replace_on_update(self):
+        Employment.objects.create(tenant=self.tenant, employee=self.employee, node=self.node_a, pensum_pct=100)
+        self.employee.nodes.add(self.node_a)
+
+        response = self.client.patch(
+            f"/api/employees/{self.employee.id}/",
+            {"employments": [{"node": self.node_b.id, "pensum_pct": 40, "title": "Dozent", "is_team_lead": False}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.nodes.values_list("id", flat=True)), [self.node_b.id])
+        employment = self.employee.employments.get()
+        self.assertEqual(employment.node_id, self.node_b.id)
+        self.assertEqual(employment.pensum_pct, 40)
+
+    def test_patch_without_employments_key_leaves_existing_untouched(self):
+        Employment.objects.create(tenant=self.tenant, employee=self.employee, node=self.node_a, pensum_pct=100)
+        self.employee.nodes.add(self.node_a)
+
+        response = self.client.patch(f"/api/employees/{self.employee.id}/", {"first_name": "Peter"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.employments.count(), 1)
+        self.assertEqual(list(self.employee.nodes.values_list("id", flat=True)), [self.node_a.id])
+
+    def test_employments_with_foreign_node_rejected(self):
+        other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b")
+        foreign_node = make_station(other_tenant, "Fremde Station")
+        response = self.client.patch(
+            f"/api/employees/{self.employee.id}/",
+            {"employments": [{"node": foreign_node.id, "pensum_pct": 50, "title": "", "is_team_lead": False}]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class EmployeeAccessSetupTests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "Es gibt nun Tab Mitarbeitende, Tab Mitglieder
+    und Zugriff [...] Das muss doch intuitiver gelöst werden?" -- Login-
+    Zugang wird jetzt direkt am Employee-Datensatz eingerichtet
+    (EmployeeViewSet.setup_access) statt in einem separaten Tab, siehe
+    EmployeeSerializer für die dazu neu exponierten Felder.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-access")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="Berger", employment_pct=100
+        )
+        self.admin_user = User.objects.create_user(username="admin-access", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="planner-access", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_employee_without_login_exposes_empty_access_fields(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["username"])
+        self.assertIsNone(response.data["role"])
+        self.assertIsNone(response.data["membership_id"])
+        self.assertEqual(response.data["scoped_nodes"], [])
+
+    def test_admin_can_setup_access(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "anna.berger", "role": "employee"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(response.data["temporary_password"])
+        self.assertEqual(response.data["username"], "anna.berger")
+
+        self.employee.refresh_from_db()
+        self.assertIsNotNone(self.employee.user_id)
+        self.assertTrue(self.employee.user.must_change_password)
+        self.assertTrue(self.employee.user.check_password(response.data["temporary_password"]))
+
+        membership = Membership.objects.get(user=self.employee.user)
+        self.assertEqual(membership.role, Membership.Role.EMPLOYEE)
+        self.assertEqual(response.data["membership_id"], membership.id)
+
+        # Die neuen Felder auf EmployeeSerializer zeigen den frisch
+        # verknüpften Account jetzt auch beim Lesen.
+        detail = self.client.get(f"/api/employees/{self.employee.id}/")
+        self.assertEqual(detail.data["username"], "anna.berger")
+        self.assertEqual(detail.data["role"], "employee")
+        self.assertEqual(detail.data["membership_id"], membership.id)
+
+    def test_setup_access_fills_user_name_from_employee(self):
+        self.auth_as(self.admin_user)
+        self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "anna.berger2", "role": "employee"},
+            format="json",
+        )
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.user.first_name, "Anna")
+        self.assertEqual(self.employee.user.last_name, "Berger")
+
+    def test_setup_access_rejects_duplicate_username(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "admin-access", "role": "employee"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_setup_access_rejects_when_employee_already_has_login(self):
+        self.auth_as(self.admin_user)
+        self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "anna.berger3", "role": "employee"},
+            format="json",
+        )
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "someone-else", "role": "employee"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_planner_cannot_setup_access(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "anna.berger4", "role": "employee"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_with_planner_role_exposes_scoped_nodes(self):
+        self.auth_as(self.admin_user)
+        node = make_station(self.tenant, "Station A")
+        setup = self.client.post(
+            f"/api/employees/{self.employee.id}/setup-access/",
+            {"username": "anna.berger5", "role": "planner"},
+            format="json",
+        )
+        membership_id = setup.data["membership_id"]
+        self.client.patch(f"/api/memberships/{membership_id}/", {"scoped_nodes": [node.id]}, format="json")
+        detail = self.client.get(f"/api/employees/{self.employee.id}/")
+        self.assertEqual(detail.data["scoped_nodes"], [node.id])
+
+
+class EmployeeCsvImportTests(APITestCase):
+    """
+    CSV-Mitarbeitenden-Import (README Block 3, Setup-Wizard Schritt 4), siehe
+    EmployeeViewSet.import_csv-Docstring.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-csv")
+        self.station = make_station(self.tenant, "Pflege Tag")
+        self.admin_user = User.objects.create_user(username="admin-csv", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.employee_user = User.objects.create_user(username="employee-csv", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _upload(self, content, filename="employees.csv"):
+        return SimpleUploadedFile(filename, content.encode("utf-8-sig"), content_type="text/csv")
+
+    def test_valid_rows_are_created(self):
+        self.auth_as(self.admin_user)
+        content = (
+            "first_name,last_name,employment_pct,employment_start_date,station\n"
+            "Anna,Muster,100,2026-01-01,Pflege Tag\n"
+            "Peter,Beispiel,80,,\n"
+        )
+        response = self.client.post(
+            "/api/employees/import-csv/", {"file": self._upload(content)}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["created"], 2)
+        self.assertEqual(response.data["errors"], [])
+        self.assertEqual(Employee.objects.filter(tenant=self.tenant).count(), 2)
+        anna = Employee.objects.get(tenant=self.tenant, first_name="Anna")
+        self.assertEqual(list(anna.nodes.values_list("id", flat=True)), [self.station.id])
+
+    def test_invalid_row_reported_without_aborting_others(self):
+        self.auth_as(self.admin_user)
+        content = (
+            "first_name,last_name,employment_pct,employment_start_date,station\n"
+            "Anna,Muster,100,,\n"
+            ",Fehlt,50,,\n"
+            "Peter,Beispiel,80,,\n"
+        )
+        response = self.client.post(
+            "/api/employees/import-csv/", {"file": self._upload(content)}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data["created"], 2)
+        self.assertEqual(len(response.data["errors"]), 1)
+        # Header = Zeile 1, erste Datenzeile = Zeile 2 -- die fehlerhafte Zeile ist die dritte.
+        self.assertEqual(response.data["errors"][0]["row"], 3)
+        self.assertEqual(Employee.objects.filter(tenant=self.tenant).count(), 2)
+
+    def test_station_lookup_is_tenant_scoped(self):
+        self.auth_as(self.admin_user)
+        other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-csv")
+        make_station(other_tenant, "Fremde Station")
+        content = (
+            "first_name,last_name,employment_pct,employment_start_date,station\n"
+            "Anna,Muster,100,,Fremde Station\n"
+        )
+        response = self.client.post(
+            "/api/employees/import-csv/", {"file": self._upload(content)}, format="multipart"
+        )
+        self.assertEqual(response.data["created"], 0)
+        self.assertEqual(len(response.data["errors"]), 1)
+        self.assertIn("nicht gefunden", response.data["errors"][0]["message"])
+
+    def test_missing_required_column_returns_single_400(self):
+        self.auth_as(self.admin_user)
+        content = "first_name,last_name\nAnna,Muster\n"
+        response = self.client.post(
+            "/api/employees/import-csv/", {"file": self._upload(content)}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("file", response.data)
+
+    def test_employee_role_forbidden_on_post(self):
+        self.auth_as(self.employee_user)
+        content = "first_name,last_name,employment_pct\nAnna,Muster,100\n"
+        response = self.client.post(
+            "/api/employees/import-csv/", {"file": self._upload(content)}, format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_role_can_download_template(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get("/api/employees/import-csv-template/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "text/csv")
+
+
+class EmployeeDeactivateTests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "ein Deaktivieren Button [...] deaktiviert
+    diesen inklusive seines Logins! Wenn einer Austritt aus dem Unternehmen
+    muss das Handlebar sein" -- EmployeeViewSet.deactivate.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-deactivate")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="Berger", employment_pct=100
+        )
+        self.employee_user = User.objects.create_user(username="anna-deact", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.employee.user = self.employee_user
+        self.employee.save(update_fields=["user"])
+
+        self.admin_user = User.objects.create_user(username="admin-deact", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="planner-deact", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_can_deactivate_employee_with_login(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.employee_user.refresh_from_db()
+        self.assertFalse(self.employee.is_active)
+        self.assertFalse(self.employee_user.is_active)
+
+    def test_deactivate_employee_without_login_only_touches_is_active(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Tom", last_name="Frei", employment_pct=100
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/employees/{employee.id}/deactivate/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        employee.refresh_from_db()
+        self.assertFalse(employee.is_active)
+
+    def test_planner_cannot_deactivate_employee(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.employee_user.refresh_from_db()
+        self.assertTrue(self.employee_user.is_active)
+
+    def test_deactivated_employee_login_is_blocked(self):
+        # Regressionstest für den eigentlichen Kern des Features: nicht nur
+        # der Datenbank-Flag, sondern der tatsächliche Login-Endpunkt muss
+        # den Zugang verweigern.
+        self.auth_as(self.admin_user)
+        self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        self.client.credentials()
+        response = self.client.post(
+            "/api/auth/token/", {"username": "anna-deact", "password": "pw-not-real-123!"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_admin_can_reactivate_employee_with_login(self):
+        self.auth_as(self.admin_user)
+        self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        response = self.client.post(f"/api/employees/{self.employee.id}/reactivate/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.employee_user.refresh_from_db()
+        self.assertTrue(self.employee.is_active)
+        self.assertTrue(self.employee_user.is_active)
+
+    def test_reactivate_clears_past_termination_date(self):
+        # Regressionstest für die stille Falle: ohne das Zurücksetzen würde
+        # deactivate_expired_employees die gerade reaktivierte Person beim
+        # nächsten Lauf sofort wieder deaktivieren.
+        self.employee.termination_date = date.today() - timedelta(days=1)
+        self.employee.is_active = False
+        self.employee.save(update_fields=["termination_date", "is_active"])
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/employees/{self.employee.id}/reactivate/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertIsNone(self.employee.termination_date)
+        call_command("deactivate_expired_employees")
+        self.employee.refresh_from_db()
+        self.assertTrue(self.employee.is_active)
+
+    def test_planner_cannot_reactivate_employee(self):
+        self.auth_as(self.admin_user)
+        self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/employees/{self.employee.id}/reactivate/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.employee.refresh_from_db()
+        self.assertFalse(self.employee.is_active)
+
+    def test_reactivated_employee_can_log_in_again(self):
+        self.auth_as(self.admin_user)
+        self.client.post(f"/api/employees/{self.employee.id}/deactivate/")
+        self.client.post(f"/api/employees/{self.employee.id}/reactivate/")
+        self.client.credentials()
+        response = self.client.post(
+            "/api/auth/token/", {"username": "anna-deact", "password": "pw-not-real-123!"}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+
+class DeactivateExpiredEmployeesCommandTests(TestCase):
+    """
+    Nutzer-Feedback (2026-08): "ein Mitarbeiter braucht auch ein
+    Austrittsdatum. Wird dieses Erreicht wird automatisch inaktiviert und
+    login gesperrt" -- management command deactivate_expired_employees.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-termination")
+
+    def test_deactivates_employee_with_past_termination_date(self):
+        user = User.objects.create_user(username="past-exit", password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            user=user,
+            termination_date=date.today() - timedelta(days=1),
+        )
+        call_command("deactivate_expired_employees")
+        employee.refresh_from_db()
+        user.refresh_from_db()
+        self.assertFalse(employee.is_active)
+        self.assertFalse(user.is_active)
+
+    def test_deactivates_employee_with_termination_date_today(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="Huber",
+            employment_pct=100,
+            termination_date=date.today(),
+        )
+        call_command("deactivate_expired_employees")
+        employee.refresh_from_db()
+        self.assertFalse(employee.is_active)
+
+    def test_leaves_future_termination_date_untouched(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Tom",
+            last_name="Frei",
+            employment_pct=100,
+            termination_date=date.today() + timedelta(days=1),
+        )
+        call_command("deactivate_expired_employees")
+        employee.refresh_from_db()
+        self.assertTrue(employee.is_active)
+
+    def test_leaves_employee_without_termination_date_untouched(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=100
+        )
+        call_command("deactivate_expired_employees")
+        employee.refresh_from_db()
+        self.assertTrue(employee.is_active)
+
+    def test_runs_across_multiple_tenants(self):
+        other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-termination")
+        employee_a = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=1),
+        )
+        employee_b = Employee.objects.create(
+            tenant=other_tenant,
+            first_name="Rosa",
+            last_name="Fernandez",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=1),
+        )
+        call_command("deactivate_expired_employees")
+        employee_a.refresh_from_db()
+        employee_b.refresh_from_db()
+        self.assertFalse(employee_a.is_active)
+        self.assertFalse(employee_b.is_active)
+
+    def test_idempotent_on_second_run(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=1),
+        )
+        call_command("deactivate_expired_employees")
+        call_command("deactivate_expired_employees")
+        employee.refresh_from_db()
+        self.assertFalse(employee.is_active)
+
+
+class PurgeExpiredPersonalDataCommandTests(TestCase):
+    """
+    README Block 5 (Datenschutz & Rechtliches, revDSG): management command
+    purge_expired_personal_data -- siehe dessen Docstring für die
+    gesetzliche Herleitung der Fristen (Art. 958f OR für Employee, Art. 6
+    Abs. 2 revDSG für Freitextnotizen zu besonderen Personendaten).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-purge")
+
+    def test_anonymizes_employee_past_retention_period(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            birth_date=date(1980, 1, 1),
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        call_command("purge_expired_personal_data")
+        employee.refresh_from_db()
+        self.assertEqual(employee.first_name, "Gelöscht")
+        self.assertEqual(employee.last_name, f"[{employee.pk}]")
+        self.assertIsNone(employee.birth_date)
+
+    def test_leaves_recently_terminated_employee_untouched(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="Huber",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 5),
+        )
+        call_command("purge_expired_personal_data")
+        employee.refresh_from_db()
+        self.assertEqual(employee.first_name, "Anna")
+        self.assertEqual(employee.last_name, "Huber")
+
+    def test_leaves_employee_without_termination_date_untouched(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=100
+        )
+        call_command("purge_expired_personal_data")
+        employee.refresh_from_db()
+        self.assertEqual(employee.first_name, "Nina")
+
+    def test_deletes_linked_user_account(self):
+        user = User.objects.create_user(username="past-exit-purge", password="pw-not-real-123!")
+        Membership.objects.create(user=user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            user=user,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        call_command("purge_expired_personal_data")
+        self.assertFalse(User.objects.filter(pk=user.pk).exists())
+
+    def test_anonymizes_historical_employee_records(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        # Zweiter Save vor dem Command erzeugt einen zusätzlichen History-
+        # Eintrag -- beweist, dass ALLE Historical-Zeilen bereinigt werden,
+        # nicht nur die zuletzt erstellte.
+        employee.employment_pct = 90
+        employee.save(update_fields=["employment_pct"])
+        call_command("purge_expired_personal_data")
+        history_names = set(Employee.history.filter(id=employee.pk).values_list("first_name", flat=True))
+        self.assertEqual(history_names, {"Gelöscht"})
+
+    def test_dry_run_does_not_change_employee(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        call_command("purge_expired_personal_data", "--dry-run")
+        employee.refresh_from_db()
+        self.assertEqual(employee.first_name, "Peter")
+
+    def test_idempotent_on_second_run(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        call_command("purge_expired_personal_data")
+        call_command("purge_expired_personal_data")
+        employee.refresh_from_db()
+        self.assertEqual(employee.first_name, "Gelöscht")
+
+    def test_runs_across_multiple_tenants(self):
+        other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-purge")
+        employee_a = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Peter",
+            last_name="Meier",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        employee_b = Employee.objects.create(
+            tenant=other_tenant,
+            first_name="Rosa",
+            last_name="Fernandez",
+            employment_pct=100,
+            termination_date=date.today() - timedelta(days=365 * 10 + 10),
+        )
+        call_command("purge_expired_personal_data")
+        employee_a.refresh_from_db()
+        employee_b.refresh_from_db()
+        self.assertEqual(employee_a.first_name, "Gelöscht")
+        self.assertEqual(employee_b.first_name, "Gelöscht")
+
+    def test_clears_old_sick_leave_absence_note(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        sick_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True
+        )
+        absence = Absence.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            type=sick_type,
+            start_date=date.today() - timedelta(days=365 * 2 + 10),
+            end_date=date.today() - timedelta(days=365 * 2 + 5),
+            note="vertrauliche Diagnose",
+        )
+        call_command("purge_expired_personal_data")
+        absence.refresh_from_db()
+        self.assertEqual(absence.note, "")
+
+    def test_leaves_recent_sick_leave_absence_note_untouched(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        sick_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True
+        )
+        absence = Absence.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            type=sick_type,
+            start_date=date.today() - timedelta(days=30),
+            end_date=date.today() - timedelta(days=25),
+            note="vertrauliche Diagnose",
+        )
+        call_command("purge_expired_personal_data")
+        absence.refresh_from_db()
+        self.assertEqual(absence.note, "vertrauliche Diagnose")
+
+    def test_leaves_old_non_sick_leave_absence_note_untouched(self):
+        # Nur counts_as_sick_leave-Absenzen gelten als besondere Personendaten
+        # (Art. 5 lit. c revDSG) -- eine alte Ferien-Notiz ist keine.
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        vacation_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Ferien", deducts_vacation_days=True
+        )
+        absence = Absence.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            type=vacation_type,
+            start_date=date.today() - timedelta(days=365 * 2 + 10),
+            end_date=date.today() - timedelta(days=365 * 2 + 5),
+            note="Malediven",
+        )
+        call_command("purge_expired_personal_data")
+        absence.refresh_from_db()
+        self.assertEqual(absence.note, "Malediven")
+
+    def test_clears_old_pregnancy_notes(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=100
+        )
+        pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            expected_birth_date=date.today() - timedelta(days=365 * 2 + 10),
+            actual_birth_date=date.today() - timedelta(days=365 * 2 + 5),
+            notes="Komplikationen bei der Geburt",
+        )
+        call_command("purge_expired_personal_data")
+        pregnancy.refresh_from_db()
+        self.assertEqual(pregnancy.notes, "")
+
+    def test_pregnancy_note_retention_anchors_on_actual_birth_date(self):
+        # expected_birth_date liegt lange zurück, actual_birth_date (das
+        # massgebliche Datum, siehe Pregnancy._anchor_date()) aber noch
+        # innerhalb der Frist -- die Notiz darf nicht gelöscht werden.
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=100
+        )
+        pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            expected_birth_date=date.today() - timedelta(days=365 * 3),
+            actual_birth_date=date.today() - timedelta(days=30),
+            notes="Komplikationen bei der Geburt",
+        )
+        call_command("purge_expired_personal_data")
+        pregnancy.refresh_from_db()
+        self.assertEqual(pregnancy.notes, "Komplikationen bei der Geburt")
+
+    def test_anonymizes_historical_absence_and_pregnancy_notes(self):
+        employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        sick_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True
+        )
+        absence = Absence.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            type=sick_type,
+            start_date=date.today() - timedelta(days=365 * 2 + 10),
+            end_date=date.today() - timedelta(days=365 * 2 + 5),
+            note="vertrauliche Diagnose",
+        )
+        pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant,
+            employee=employee,
+            expected_birth_date=date.today() - timedelta(days=365 * 2 + 10),
+            notes="Komplikationen",
+        )
+        call_command("purge_expired_personal_data")
+        absence_history_notes = set(Absence.history.filter(id=absence.pk).values_list("note", flat=True))
+        pregnancy_history_notes = set(Pregnancy.history.filter(id=pregnancy.pk).values_list("notes", flat=True))
+        self.assertEqual(absence_history_notes, {""})
+        self.assertEqual(pregnancy_history_notes, {""})
+
+
+class EmployeeDataExportViewTests(APITestCase):
+    """
+    README Block 5 (Datenschutz & Rechtliches, revDSG): GET /api/me/data-export/ --
+    Umsetzung des Auskunftsrechts (Art. 25 revDSG). Siehe EmployeeDataExportView-Docstring.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-export")
+        self.node = make_station(self.tenant, "Station A")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst", start_time=time(7, 0), end_time=time(15, 0)
+        )
+        self.user = User.objects.create_user(username="self-export", password="pw-not-real-123!")
+        Membership.objects.create(user=self.user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100, user=self.user
+        )
+        self.employee.nodes.add(self.node)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_requires_authentication(self):
+        response = self.client.get("/api/me/data-export/")
+        self.assertIn(response.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))
+
+    def test_returns_own_account_and_employee_data(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        TimeRecord.objects.create(
+            tenant=self.tenant, assignment=assignment, actual_start=time(7, 0), actual_end=time(15, 0)
+        )
+        absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            type=absence_type,
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 5),
+        )
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.employee, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        Pregnancy.objects.create(
+            tenant=self.tenant, employee=self.employee, expected_birth_date=date(2027, 1, 1), notes="vertraulich"
+        )
+
+        self.auth_as(self.user)
+        response = self.client.get("/api/me/data-export/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["account"]["username"], "self-export")
+        self.assertEqual(response.data["employee"]["first_name"], "Peter")
+        self.assertEqual(len(response.data["absences"]), 1)
+        self.assertEqual(len(response.data["shift_assignments"]), 1)
+        self.assertEqual(len(response.data["time_records"]), 1)
+        self.assertEqual(len(response.data["shift_preferences"]), 1)
+        self.assertEqual(len(response.data["pregnancies"]), 1)
+        self.assertEqual(response.data["pregnancies"][0]["notes"], "vertraulich")
+
+    def test_does_not_leak_other_employees_data(self):
+        other_user = User.objects.create_user(username="other-export", password="pw-not-real-123!")
+        Membership.objects.create(user=other_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        other_employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Rosa", last_name="Fernandez", employment_pct=100, user=other_user
+        )
+        absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=other_employee,
+            type=absence_type,
+            start_date=date(2026, 9, 1),
+            end_date=date(2026, 9, 5),
+        )
+
+        self.auth_as(self.user)
+        response = self.client.get("/api/me/data-export/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["absences"], [])
+        self.assertEqual(response.data["employee"]["first_name"], "Peter")
+
+    def test_works_without_employee_profile(self):
+        # Konto ohne Mitarbeiterprofil (README Punkt 22) -- employee bleibt None,
+        # kein Fehler.
+        admin_user = User.objects.create_user(username="admin-only-export", password="pw-not-real-123!")
+        Membership.objects.create(user=admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+        self.auth_as(admin_user)
+        response = self.client.get("/api/me/data-export/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["employee"])
+        self.assertEqual(response.data["absences"], [])
+
+
+class EmployeeSkillsM2MTests(APITestCase):
+    """
+    Bugfix: Employee.skills (ManyToManyField) darf nie direkt per
+    Konstruktor-Kwarg oder setattr() gesetzt werden -- EmployeeSerializer.
+    create()/update() reichten `skills` bisher ungefiltert an
+    Employee.objects.create(**validated_data) bzw. eine generische
+    setattr()-Schleife durch und liessen dabei jeden Request mit einem
+    `skills`-Feld (das Frontend schickt es immer mit, auch als leere Liste)
+    mit `TypeError: Direct assignment to the forward side of a
+    many-to-many set is prohibited` abstürzen -- siehe pop_m2m_fields()/
+    set_m2m_fields() in serializers.py für den Fix.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.skill_a = Skill.objects.create(tenant=self.tenant, name="Reanimation")
+        self.skill_b = Skill.objects.create(tenant=self.tenant, name="Wundversorgung")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Peter", last_name="Meier", employment_pct=100
+        )
+        self.planner_user = User.objects.create_user(username="planner-skills", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=self.planner_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_post_with_empty_skills_list_does_not_crash(self):
+        # Der wichtigste Regressionstest: das Frontend schickt `skills`
+        # IMMER mit (auch `[]`), das liess bislang jede Neuanlage scheitern.
+        response = self.client.post(
+            "/api/employees/",
+            {"first_name": "Anna", "last_name": "Berger", "employment_pct": 100, "skills": []},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        employee = Employee.objects.get(id=response.data["id"])
+        self.assertEqual(list(employee.skills.all()), [])
+
+    def test_post_with_initial_skills_assignment(self):
+        response = self.client.post(
+            "/api/employees/",
+            {
+                "first_name": "Anna",
+                "last_name": "Berger",
+                "employment_pct": 100,
+                "skills": [self.skill_a.id, self.skill_b.id],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        employee = Employee.objects.get(id=response.data["id"])
+        self.assertEqual(
+            set(employee.skills.values_list("id", flat=True)), {self.skill_a.id, self.skill_b.id}
+        )
+
+    def test_patch_changes_skills(self):
+        self.employee.skills.add(self.skill_a)
+        response = self.client.patch(
+            f"/api/employees/{self.employee.id}/", {"skills": [self.skill_b.id]}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.skills.values_list("id", flat=True)), [self.skill_b.id])
+
+    def test_patch_removes_all_skills(self):
+        self.employee.skills.add(self.skill_a, self.skill_b)
+        response = self.client.patch(f"/api/employees/{self.employee.id}/", {"skills": []}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.skills.all()), [])
+
+    def test_patch_combines_scalar_and_m2m_fields(self):
+        self.employee.skills.add(self.skill_a)
+        response = self.client.patch(
+            f"/api/employees/{self.employee.id}/",
+            {"first_name": "Petra", "skills": [self.skill_b.id]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(self.employee.first_name, "Petra")
+        self.assertEqual(list(self.employee.skills.values_list("id", flat=True)), [self.skill_b.id])
+
+    def test_patch_without_skills_key_leaves_existing_untouched(self):
+        self.employee.skills.add(self.skill_a)
+        response = self.client.patch(f"/api/employees/{self.employee.id}/", {"first_name": "Petra"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.skills.values_list("id", flat=True)), [self.skill_a.id])
+
+    def test_patch_combines_skills_and_employments_in_one_request(self):
+        # Zwei unterschiedliche Sonderlogiken (M2M-Sync + verschachtelte
+        # employments-Zuweisung, README Punkt 17) in einem Request dürfen
+        # sich nicht gegenseitig stören.
+        node = make_station(self.tenant, "Team A")
+        response = self.client.patch(
+            f"/api/employees/{self.employee.id}/",
+            {
+                "skills": [self.skill_a.id],
+                "employments": [{"node": node.id, "pensum_pct": 80, "title": "", "is_team_lead": False}],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.employee.refresh_from_db()
+        self.assertEqual(list(self.employee.skills.values_list("id", flat=True)), [self.skill_a.id])
+        self.assertEqual(list(self.employee.nodes.values_list("id", flat=True)), [node.id])
+
+
+class ShiftPreferenceTests(APITestCase):
+    """Wunschfrei/Wunschdienst (MVP-Fahrplan Block 2.13): höchstpersönliche Selbstauskunft."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Fruehdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            break_minutes=30,
+        )
+
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+        self.hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
+        Membership.objects.create(user=self.hr_user, tenant=self.tenant, role=Membership.Role.HR)
+
+        self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+        self.bob_user = User.objects.create_user(username="bob", password="pw-not-real-123!")
+        Membership.objects.create(user=self.bob_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.bob = Employee.objects.create(
+            tenant=self.tenant, user=self.bob_user, first_name="Bob", last_name="B", employment_pct=100
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_employee_can_create_own_wunschfrei(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/", {"date": "2026-08-10", "type": "wunschfrei"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["employee"], self.alice.id)
+        self.assertIsNone(response.data["template"])
+
+    def test_employee_can_create_own_wunschdienst(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/",
+            {"date": "2026-08-10", "type": "wunschdienst", "template": self.template.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["template"], self.template.id)
+
+    def test_wunschdienst_without_template_is_rejected(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/", {"date": "2026-08-10", "type": "wunschdienst"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_wunschfrei_with_template_is_rejected(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/",
+            {"date": "2026-08-10", "type": "wunschfrei", "template": self.template.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_duplicate_preference_same_day_returns_400_not_500(self):
+        self.auth_as(self.alice_user)
+        first = self.client.post("/api/shift-preferences/", {"date": "2026-08-10", "type": "wunschfrei"})
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        second = self.client.post("/api/shift-preferences/", {"date": "2026-08-10", "type": "wunschfrei"})
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_ignores_submitted_employee_and_forces_own(self):
+        # Höchstpersönlich (Block 2.13): selbst wenn ein fremdes employee im
+        # Payload mitgeschickt wird, entsteht der Eintrag trotzdem für die
+        # eingeloggte Person -- niemand kann für jemand anderen "wünschen".
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/", {"employee": self.bob.id, "date": "2026-08-10", "type": "wunschfrei"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["employee"], self.alice.id)
+
+    def test_planner_without_own_employee_profile_cannot_create(self):
+        # planner_user hat kein Employee-Profil (nur Membership) -- selbst
+        # Admin/Planer dürfen hier nicht für andere anlegen, und ohne eigenes
+        # Profil bleibt ihnen das Feature schlicht verwehrt.
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            "/api/shift-preferences/", {"employee": self.alice.id, "date": "2026-08-10", "type": "wunschfrei"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_can_delete_own_preference(self):
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.delete(f"/api/shift-preferences/{pref.id}/")
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+
+    def test_employee_cannot_delete_others_preference(self):
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.bob, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.delete(f"/api/shift-preferences/{pref.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_planner_cannot_delete_employees_preference(self):
+        # Kein Manager-Override wie bei Absence -- auch Admin/Planer dürfen
+        # fremde Wünsche nicht löschen.
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.delete(f"/api/shift-preferences/{pref.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_all_roles_can_read(self):
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        for user in (self.planner_user, self.hr_user, self.alice_user, self.bob_user):
+            self.auth_as(user)
+            response = self.client.get("/api/shift-preferences/")
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+            self.assertEqual(len(response.data["results"]), 1)
+
+    def test_status_defaults_to_pending_and_cannot_be_set_via_payload(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-preferences/", {"date": "2026-08-10", "type": "wunschfrei", "status": "approved"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["status"], "pending")
+
+    def test_employee_cannot_approve_or_reject_own_preference(self):
+        # Genehmigungsprozess (2026-08, Automatisierte Planung mit
+        # Auffülldienst): analog zu Absence darf niemand den eigenen Wunsch
+        # selbst freigeben, siehe ShiftPreferencePermission.
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.alice_user)
+        self.assertEqual(
+            self.client.post(f"/api/shift-preferences/{pref.id}/approve/").status_code, status.HTTP_403_FORBIDDEN
+        )
+        self.assertEqual(
+            self.client.post(f"/api/shift-preferences/{pref.id}/reject/").status_code, status.HTTP_403_FORBIDDEN
+        )
+
+    def test_planner_can_approve_and_reject_preference(self):
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/shift-preferences/{pref.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "approved")
+
+        other = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.bob, date=date(2026, 8, 11), type=ShiftPreference.Type.FREE
+        )
+        response = self.client.post(f"/api/shift-preferences/{other.id}/reject/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["status"], "rejected")
+
+    def test_hr_cannot_approve_preference(self):
+        # HR ist wie überall "nur Reporting" -- kein Manager-Recht.
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE
+        )
+        self.auth_as(self.hr_user)
+        response = self.client.post(f"/api/shift-preferences/{pref.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_approve_already_decided_preference_is_rejected(self):
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE,
+            status=ShiftPreference.Status.APPROVED,
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.post(f"/api/shift-preferences/{pref.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_employee_cannot_edit_or_delete_after_decision(self):
+        # Ein entschiedener Wunsch ist nur noch lesbar -- die Automatik
+        # behandelt eine Freigabe als harte Vorgabe (scheduling.planning),
+        # die nicht nachträglich unbemerkt verändert werden soll.
+        pref = ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.alice, date=date(2026, 8, 10), type=ShiftPreference.Type.FREE,
+            status=ShiftPreference.Status.APPROVED,
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.delete(f"/api/shift-preferences/{pref.id}/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class NotificationsAndTaskCountsTests(APITestCase):
+    """
+    E-Mail-Benachrichtigungen (MVP-Fahrplan Block 2.4, core.notifications)
+    und task_counts in GET /api/me/ (Grundlage der Header-Badges bei
+    Abwesenheiten/Diensttausch/Zeiterfassung).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+        self.admin_user = User.objects.create_user(
+            username="admin", password="pw-not-real-123!", email="admin@example.com"
+        )
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+        self.alice_user = User.objects.create_user(
+            username="alice", password="pw-not-real-123!", email="alice@example.com"
+        )
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+        self.bob_user = User.objects.create_user(
+            username="bob", password="pw-not-real-123!", email="bob@example.com"
+        )
+        Membership.objects.create(user=self.bob_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.bob = Employee.objects.create(
+            tenant=self.tenant, user=self.bob_user, first_name="Bob", last_name="B", employment_pct=100
+        )
+        self.vacation_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Ferien", deducts_vacation_days=True
+        )
+        mail.outbox.clear()
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    # -- E-Mail-Benachrichtigungen --
+
+    def test_new_absence_request_notifies_managers(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/absences/",
+            {
+                "employee": self.alice.id,
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "type": self.vacation_type.id,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.admin_user.email, mail.outbox[0].to)
+
+    def test_admin_created_absence_sends_no_mail(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/absences/",
+            {
+                "employee": self.alice.id,
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "type": self.vacation_type.id,
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_absence_approval_notifies_requester(self):
+        absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12),
+            type=self.vacation_type,
+        )
+        mail.outbox.clear()
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/absences/{absence.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.alice_user.email, mail.outbox[0].to)
+
+    def test_absence_rejection_notifies_requester(self):
+        absence = Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12),
+            type=self.vacation_type,
+        )
+        mail.outbox.clear()
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/absences/{absence.id}/reject/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.alice_user.email, mail.outbox[0].to)
+
+    def test_new_trade_request_notifies_target(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": assignment.id, "target_employee": self.bob.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.bob_user.email, mail.outbox[0].to)
+
+    def test_trade_accept_notifies_managers(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=assignment, target_employee=self.bob
+        )
+        mail.outbox.clear()
+        self.auth_as(self.bob_user)
+        response = self.client.post(f"/api/shift-trade-requests/{trade.id}/accept/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.admin_user.email, mail.outbox[0].to)
+
+    def test_trade_decline_notifies_requester(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=assignment, target_employee=self.bob
+        )
+        mail.outbox.clear()
+        self.auth_as(self.bob_user)
+        response = self.client.post(f"/api/shift-trade-requests/{trade.id}/decline/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.alice_user.email, mail.outbox[0].to)
+
+    def test_trade_approve_notifies_both_parties(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=assignment,
+            target_employee=self.bob,
+            status=ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED,
+        )
+        mail.outbox.clear()
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/shift-trade-requests/{trade.id}/approve/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.alice_user.email, mail.outbox[0].to)
+        self.assertIn(self.bob_user.email, mail.outbox[0].to)
+
+    def test_trade_reject_notifies_both_parties(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=assignment,
+            target_employee=self.bob,
+            status=ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED,
+        )
+        mail.outbox.clear()
+        self.auth_as(self.admin_user)
+        response = self.client.post(f"/api/shift-trade-requests/{trade.id}/reject/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(self.alice_user.email, mail.outbox[0].to)
+        self.assertIn(self.bob_user.email, mail.outbox[0].to)
+
+    def test_employee_without_email_is_silently_skipped(self):
+        no_email_user = User.objects.create_user(username="noemail", password="pw-not-real-123!")
+        Membership.objects.create(user=no_email_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        no_email_employee = Employee.objects.create(
+            tenant=self.tenant, user=no_email_user, first_name="Kein", last_name="Mail", employment_pct=100
+        )
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/shift-trade-requests/",
+            {"requester_assignment": assignment.id, "target_employee": no_email_employee.id},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(len(mail.outbox), 0)
+
+    # -- task_counts (Header-Badges) --
+
+    def auth_and_get_me(self, user):
+        self.auth_as(user)
+        return self.client.get("/api/me/")
+
+    def test_admin_sees_pending_absence_count(self):
+        Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12),
+            type=self.vacation_type,
+        )
+        response = self.auth_and_get_me(self.admin_user)
+        self.assertEqual(response.data["task_counts"]["absences"], 1)
+
+    def test_employee_sees_zero_absence_count(self):
+        Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12),
+            type=self.vacation_type,
+        )
+        response = self.auth_and_get_me(self.alice_user)
+        self.assertEqual(response.data["task_counts"]["absences"], 0)
+
+    def test_admin_trade_count_only_counts_employee_accepted(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=assignment, target_employee=self.bob
+        )
+        response = self.auth_and_get_me(self.admin_user)
+        self.assertEqual(response.data["task_counts"]["trades"], 0)  # noch PENDING
+
+        trade.accept()
+        response = self.auth_and_get_me(self.admin_user)
+        self.assertEqual(response.data["task_counts"]["trades"], 1)
+
+    def test_employee_trade_count_only_own_pending_as_target(self):
+        assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node, date=date(2026, 8, 3), template=self.template
+        )
+        ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=assignment, target_employee=self.bob
+        )
+        bob_response = self.auth_and_get_me(self.bob_user)
+        self.assertEqual(bob_response.data["task_counts"]["trades"], 1)
+
+        alice_response = self.auth_and_get_me(self.alice_user)
+        self.assertEqual(alice_response.data["task_counts"]["trades"], 0)
+
+    def test_admin_sees_submitted_time_record_count(self):
+        past_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node,
+            date=date(2026, 7, 27),
+            template=self.template,
+        )
+        TimeRecord.objects.create(
+            tenant=self.tenant, assignment=past_assignment, actual_start=time(8, 0), actual_end=time(16, 0)
+        )
+        response = self.auth_and_get_me(self.admin_user)
+        self.assertEqual(response.data["task_counts"]["time_records"], 1)
+
+    def test_hr_sees_zero_task_counts(self):
+        Absence.objects.create(
+            tenant=self.tenant, employee=self.alice, start_date=date(2026, 8, 10), end_date=date(2026, 8, 12),
+            type=self.vacation_type,
+        )
+        hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
+        Membership.objects.create(user=hr_user, tenant=self.tenant, role=Membership.Role.HR)
+        response = self.auth_and_get_me(hr_user)
+        self.assertEqual(response.data["task_counts"], {"absences": 0, "trades": 0, "time_records": 0})
+
+
+class ShiftAssignmentSwapTests(TestCase):
+    """README Block 2.8: echter Swap zweier Zuweisungen (ShiftAssignment.swap())."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.station = make_station(self.tenant, "Station A")
+        self.team_a = self.station.add_child(name="Team A", tenant=self.tenant)
+        self.team_b = self.station.add_child(name="Team B", tenant=self.tenant)
+        self.employee_1 = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee_2 = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.station,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+
+    def test_swap_exchanges_employee_date_node(self):
+        # Unterschiedliche Tage UND unterschiedliche Team-Knoten -- der
+        # allgemeine Fall eines Grid-Drags (nicht nur der Sonderfall
+        # "gleicher Tag", siehe Test unten).
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        a2 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_2, node=self.team_b, date=date(2026, 8, 5), template=self.template
+        )
+        first, second = ShiftAssignment.swap(a1.id, a2.id)
+        self.assertEqual(first.employee_id, self.employee_2.id)
+        self.assertEqual(first.date, date(2026, 8, 5))
+        self.assertEqual(first.node_id, self.team_b.id)
+        self.assertEqual(second.employee_id, self.employee_1.id)
+        self.assertEqual(second.date, date(2026, 8, 3))
+        self.assertEqual(second.node_id, self.team_a.id)
+        a1.refresh_from_db()
+        a2.refresh_from_db()
+        self.assertEqual(a1.employee_id, self.employee_2.id)
+        self.assertEqual(a1.date, date(2026, 8, 5))
+        self.assertEqual(a2.employee_id, self.employee_1.id)
+        self.assertEqual(a2.date, date(2026, 8, 3))
+
+    def test_swap_same_date_different_employees(self):
+        # Regressionstest für den beim Planen gefundenen Bug in
+        # ShiftTradeRequest.approve(): der eingebaute validate_unique()
+        # sieht während der Transaktion noch den unveränderten DB-Stand der
+        # jeweils anderen Zeile und meldet sonst einen falschen Konflikt --
+        # gerade der häufigste Tauschfall (zwei Personen tauschen denselben
+        # Tag) darf hier nicht scheitern.
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        a2 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_2, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        first, second = ShiftAssignment.swap(a1.id, a2.id)
+        self.assertEqual(first.employee_id, self.employee_2.id)
+        self.assertEqual(second.employee_id, self.employee_1.id)
+        self.assertEqual(first.date, date(2026, 8, 3))
+        self.assertEqual(second.date, date(2026, 8, 3))
+
+    def test_swap_with_self_is_rejected(self):
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        with self.assertRaises(ValidationError):
+            ShiftAssignment.swap(a1.id, a1.id)
+
+    def test_swap_blocked_by_rule_engine_leaves_state_unchanged(self):
+        skill = Skill.objects.create(tenant=self.tenant, name="Nachtdienst-berechtigt")
+        self.template.required_skill = skill
+        self.template.save()
+        self.employee_1.skills.add(skill)
+        # employee_2 hat den Skill NICHT -> nach dem Swap würde employee_2
+        # die qualifikationspflichtige Schicht übernehmen.
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        a2 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_2, node=self.team_a, date=date(2026, 8, 5), template=self.template
+        )
+        with self.assertRaises(ValidationError):
+            ShiftAssignment.swap(a1.id, a2.id)
+        a1.refresh_from_db()
+        a2.refresh_from_db()
+        self.assertEqual(a1.employee_id, self.employee_1.id)
+        self.assertEqual(a2.employee_id, self.employee_2.id)
+
+    def test_swap_unaffected_by_unrelated_third_party_assignment(self):
+        # employee_1 hat eine völlig unbeteiligte dritte Zuweisung an einem
+        # anderen Tag -- das Tauschen von a1/a2 tauscht employee+date+node
+        # als Einheit zwischen genau diesen beiden Zeilen, die Menge der
+        # belegten (employee, date)-Paare bleibt dabei unverändert (nur die
+        # Zeilen-Zuordnung ändert sich), ein Dritter kann also nie in
+        # Konflikt geraten -- der manuelle Check in ShiftAssignment.swap()
+        # ist hier bewusst nur Absicherung, nicht die eigentliche Prüfung.
+        a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 3), template=self.template
+        )
+        a2 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_2, node=self.team_a, date=date(2026, 8, 5), template=self.template
+        )
+        third = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.team_a, date=date(2026, 8, 10), template=self.template
+        )
+        ShiftAssignment.swap(a1.id, a2.id)
+        third.refresh_from_db()
+        self.assertEqual(third.employee_id, self.employee_1.id)
+        self.assertEqual(third.date, date(2026, 8, 10))
+
+
+class ShiftAssignmentSwapAPITests(APITestCase):
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        self.station = make_station(self.tenant, "Station A")
+        self.employee_1 = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee_2 = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.station,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+        self.a1 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_1, node=self.station, date=date(2026, 8, 3), template=self.template
+        )
+        self.a2 = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee_2, node=self.station, date=date(2026, 8, 5), template=self.template
+        )
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_swap_endpoint_exchanges_both_assignments(self):
+        response = self.client.post(
+            "/api/shift-assignments/swap/", {"first": self.a1.id, "second": self.a2.id}
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["first"]["employee"], self.employee_2.id)
+        self.assertEqual(response.data["second"]["employee"], self.employee_1.id)
+        self.a1.refresh_from_db()
+        self.a2.refresh_from_db()
+        self.assertEqual(self.a1.employee_id, self.employee_2.id)
+        self.assertEqual(self.a2.employee_id, self.employee_1.id)
+
+    def test_swap_endpoint_requires_both_ids(self):
+        response = self.client.post("/api/shift-assignments/swap/", {"first": self.a1.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_swap_endpoint_returns_400_on_rule_violation(self):
+        skill = Skill.objects.create(tenant=self.tenant, name="Nachtdienst-berechtigt")
+        self.template.required_skill = skill
+        self.template.save()
+        self.employee_1.skills.add(skill)
+        response = self.client.post(
+            "/api/shift-assignments/swap/", {"first": self.a1.id, "second": self.a2.id}
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_swap_endpoint_returns_404_for_foreign_tenant_assignment(self):
+        other_tenant, other_user = make_tenant_with_planner("klinik-b", "planner_b")
+        other_node = make_station(other_tenant, "Station B")
+        other_employee = Employee.objects.create(
+            tenant=other_tenant, first_name="Carla", last_name="C", employment_pct=100
+        )
+        other_template = TimeTemplate.objects.create(
+            tenant=other_tenant, node=other_node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+        )
+        foreign_assignment = ShiftAssignment.objects.create(
+            tenant=other_tenant, employee=other_employee, node=other_node, date=date(2026, 8, 3), template=other_template
+        )
+        response = self.client.post(
+            "/api/shift-assignments/swap/", {"first": self.a1.id, "second": foreign_assignment.id}
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_swap_endpoint_denied_for_employee_role(self):
+        employee_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        token, _ = Token.objects.get_or_create(user=employee_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        response = self.client.post(
+            "/api/shift-assignments/swap/", {"first": self.a1.id, "second": self.a2.id}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class ShiftAssignmentOtherTeamConflictsAPITests(APITestCase):
+    """
+    Regressionstest für einen Nutzer-gemeldeten "massiven Bug": eine sonst
+    leere Zelle im Planblatt liess sich trotzdem nicht beplanen ("... hat am
+    ... bereits 'Frühschicht' ... überschneidet"), obwohl weder das Grid
+    noch die Admin-Liste einen Dienst zeigten. Ursache: bei einer
+    Mehrfachanstellung (README Punkt 17) prüft
+    ShiftAssignment._check_no_overlap() tenant-weit über alle Teams/
+    Stationen, aber das Planblatt lädt nur die aktuell gewählte Station --
+    ein blockierender Dienst in einer ANDEREN Station war unsichtbar. Der
+    neue Endpoint /api/shift-assignments/other-team-conflicts/ deckt genau
+    diese Lücke: proaktive Warnung statt kryptischer Fehlermeldung erst beim
+    gescheiterten Beplanungsversuch.
+    """
+
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-conflicts", "planner_conflicts")
+        self.station_a = make_station(self.tenant, "Station A")
+        self.station_b = make_station(self.tenant, "Station B")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Nina", last_name="Kaufmann", employment_pct=40
+        )
+        self.template_a = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.station_a, name="Küchendienst", start_time=time(6, 30), end_time=time(14, 30)
+        )
+        self.template_b = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.station_b, name="Frühschicht", start_time=time(7, 0), end_time=time(17, 0)
+        )
+        # Der eigentliche "unsichtbare" Konflikt: ein Dienst in Station B,
+        # während das Planblatt Station A anzeigt.
+        self.conflict = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.station_b, date=date(2026, 8, 11), template=self.template_b
+        )
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def _get(self, **params):
+        query = "&".join(f"{k}={v}" for k, v in params.items())
+        return self.client.get(f"/api/shift-assignments/other-team-conflicts/?{query}")
+
+    def test_finds_conflict_in_a_different_station(self):
+        response = self._get(
+            employees=self.employee.id, date_from="2026-08-01", date_to="2026-08-31", exclude_node=self.station_a.id
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        entry = response.data[0]
+        self.assertEqual(entry["employee"], self.employee.id)
+        self.assertEqual(entry["date"], "2026-08-11")
+        self.assertEqual(entry["template_name"], "Frühschicht")
+        self.assertEqual(entry["start_time"], "07:00")
+        self.assertEqual(entry["end_time"], "17:00")
+        self.assertEqual(entry["node_name"], "Station B")
+
+    def test_excludes_conflicts_within_the_excluded_station_itself(self):
+        # Ein Dienst INNERHALB der ausgeschlossenen Station ist schon über
+        # den normalen Grid-Fetch sichtbar -- braucht keine Extra-Warnung.
+        response = self._get(
+            employees=self.employee.id, date_from="2026-08-01", date_to="2026-08-31", exclude_node=self.station_b.id
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_special_category_assignments_never_count_as_conflict(self):
+        # Wie bei _overlapping_conflict() im Modell: eine Spezialität
+        # (Pikett) ist additiv, kein Slot-Konkurrent, taucht daher hier nie
+        # als Konflikt auf.
+        special_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.station_b,
+            name="Pikett",
+            start_time=time(18, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.station_b,
+            date=date(2026, 8, 12),
+            template=special_template,
+        )
+        response = self._get(
+            employees=self.employee.id, date_from="2026-08-01", date_to="2026-08-31", exclude_node=self.station_a.id
+        )
+        dates = [entry["date"] for entry in response.data]
+        self.assertNotIn("2026-08-12", dates)
+
+    def test_date_range_filters_out_conflicts_outside_it(self):
+        response = self._get(
+            employees=self.employee.id, date_from="2026-09-01", date_to="2026-09-30", exclude_node=self.station_a.id
+        )
+        self.assertEqual(response.data, [])
+
+    def test_missing_params_return_empty_list_instead_of_error(self):
+        response = self.client.get("/api/shift-assignments/other-team-conflicts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_denied_for_employee_role(self):
+        employee_user = User.objects.create_user(username="nina-login", password="pw-not-real-456!")
+        Membership.objects.create(user=employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        token, _ = Token.objects.get_or_create(user=employee_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        response = self._get(
+            employees=self.employee.id, date_from="2026-08-01", date_to="2026-08-31", exclude_node=self.station_a.id
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_does_not_leak_other_tenants_data(self):
+        other_tenant, other_user = make_tenant_with_planner("klinik-conflicts-b", "planner_conflicts_b")
+        other_station = make_station(other_tenant, "Fremdstation")
+        other_employee = Employee.objects.create(
+            tenant=other_tenant, first_name="Fremd", last_name="Person", employment_pct=100
+        )
+        other_template = TimeTemplate.objects.create(
+            tenant=other_tenant, node=other_station, name="Fremddienst", start_time=time(6, 0), end_time=time(14, 0)
+        )
+        ShiftAssignment.objects.create(
+            tenant=other_tenant, employee=other_employee, node=other_station, date=date(2026, 8, 11), template=other_template
+        )
+        # Gleiche numerische Employee-Id wie self.employee wäre der
+        # gefährlichste Fall -- hier stattdessen einfach eine fremde Id, die
+        # zufällig im selben Query mitgesendet wird, um sicherzustellen,
+        # dass tenant=self.request.tenant im Endpoint tatsächlich greift.
+        response = self._get(
+            employees=f"{self.employee.id},{other_employee.id}",
+            date_from="2026-08-01",
+            date_to="2026-08-31",
+            exclude_node=self.station_a.id,
+        )
+        employee_ids_in_response = {entry["employee"] for entry in response.data}
+        self.assertNotIn(other_employee.id, employee_ids_in_response)
+
+
+class ShiftTradeRequestFullSwapSameDateTests(TestCase):
+    """
+    Regressionstest für den beim Planen von Block 2.8 gefundenen Bug: der
+    Voll-Swap-Zweig von ShiftTradeRequest.approve() scheiterte bislang an
+    einem falschen Unique-Konflikt, sobald beide getauschten Zuweisungen auf
+    demselben Datum lagen (der Normalfall "wir tauschen unsere Mittwoch-
+    Schichten"). Ergänzt test_approve_full_swap_exchanges_employees
+    (ShiftTradeRequestTests), das bislang nur unterschiedliche Daten prüft.
+    """
+
+    def test_approve_full_swap_same_date_succeeds(self):
+        tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        node = make_station(tenant, "Station A")
+        employee_1 = Employee.objects.create(tenant=tenant, first_name="Anna", last_name="A", employment_pct=100)
+        employee_2 = Employee.objects.create(tenant=tenant, first_name="Bea", last_name="B", employment_pct=100)
+        template = TimeTemplate.objects.create(
+            tenant=tenant, node=node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0), break_minutes=30
+        )
+        a1 = ShiftAssignment.objects.create(
+            tenant=tenant, employee=employee_1, node=node, date=date(2026, 8, 3), template=template
+        )
+        a2 = ShiftAssignment.objects.create(
+            tenant=tenant, employee=employee_2, node=node, date=date(2026, 8, 3), template=template
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=tenant, requester_assignment=a1, target_employee=employee_2, target_assignment=a2
+        )
+        trade.approve()
+        a1.refresh_from_db()
+        a2.refresh_from_db()
+        self.assertEqual(a1.employee_id, employee_2.id)
+        self.assertEqual(a2.employee_id, employee_1.id)
+        self.assertEqual(a1.date, date(2026, 8, 3))
+        self.assertEqual(a2.date, date(2026, 8, 3))
+
+
+class TimeTemplateMinimumStaffingTests(TestCase):
+    """README Block 2.9: Mindestbesetzung ist rein informativ, blockiert nichts."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+
+    def test_minimum_staffing_defaults_to_zero(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+        )
+        self.assertEqual(template.minimum_staffing, 0)
+
+    def test_understaffed_template_does_not_block_shift_assignment(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+            minimum_staffing=5,
+        )
+        employee = Employee.objects.create(tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100)
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=employee, node=self.node, date=date(2026, 8, 3), template=template
+        )
+        assignment.clean()  # keine Exception trotz nur einer von 5 Personen
+
+
+class TimeTemplateMinimumStaffingAPITests(APITestCase):
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        self.node = make_station(self.tenant, "Station A")
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_minimum_staffing_round_trips_through_serializer(self):
+        create_response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Nachtdienst",
+                "start_time": "22:00",
+                "end_time": "06:00",
+                "minimum_staffing": 3,
+            },
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data["minimum_staffing"], 3)
+
+        template_id = create_response.data["id"]
+        patch_response = self.client.patch(f"/api/time-templates/{template_id}/", {"minimum_staffing": 4})
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_response.data["minimum_staffing"], 4)
+
+
+class TimeTemplateCategoryTests(TestCase):
+    """
+    Nutzer-Feedback (2026-08): Stempelleisten im Planblatt/Jahresplan sollen
+    reguläre Dienste und Spezialitäten (z. B. Pikettdienst) in getrennten
+    Zeilen zeigen. category ist rein informativ (UI-Gruppierung), keine
+    Regel-Engine-Auswirkung -- analog zu minimum_staffing oben.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+
+    def test_category_defaults_to_shift(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+        )
+        self.assertEqual(template.category, TimeTemplate.Category.SHIFT)
+
+    def test_special_category_does_not_block_shift_assignment(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Pikettdienst",
+            start_time=time(20, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        employee = Employee.objects.create(tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100)
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=employee, node=self.node, date=date(2026, 8, 3), template=template
+        )
+        assignment.clean()  # keine Exception -- category ist rein informativ
+
+
+class TimeTemplateCategoryAPITests(APITestCase):
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        self.node = make_station(self.tenant, "Station A")
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_category_round_trips_through_serializer(self):
+        create_response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Pikettdienst",
+                "start_time": "20:00",
+                "end_time": "22:00",
+                "category": "special",
+            },
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data["category"], "special")
+
+        template_id = create_response.data["id"]
+        patch_response = self.client.patch(f"/api/time-templates/{template_id}/", {"category": "shift"})
+        self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_response.data["category"], "shift")
+
+    def test_omitting_category_defaults_to_shift(self):
+        create_response = self.client.post(
+            "/api/time-templates/",
+            {"node": self.node.id, "name": "Frühdienst", "start_time": "07:00", "end_time": "15:00"},
+        )
+        self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(create_response.data["category"], "shift")
+
+    def test_surcharge_pct_defaults_to_zero_and_round_trips(self):
+        create_response = self.client.post(
+            "/api/time-templates/",
+            {"node": self.node.id, "name": "Frühdienst", "start_time": "07:00", "end_time": "15:00"},
+        )
+        self.assertEqual(create_response.data["surcharge_pct"], 0)
+
+        pikett_response = self.client.post(
+            "/api/time-templates/",
+            {
+                "node": self.node.id,
+                "name": "Pikett",
+                "start_time": "20:00",
+                "end_time": "22:00",
+                "category": "special",
+                "surcharge_pct": 50,
+            },
+        )
+        self.assertEqual(pikett_response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(pikett_response.data["surcharge_pct"], 50)
+
+
+class SplitShiftTests(TestCase):
+    """
+    README Punkt 18: geteilte Dienste (Split-Shifts) -- mehrere Zuweisungen
+    derselben Person am selben Tag, seit der Lockerung von unique_together
+    auf ("employee", "date", "template") möglich. Praxisfall aus dem
+    Feedback: Frühdienst 07:00-12:00 + Spätdienst 13:00-17:30 derselben
+    Person am selben Tag (ICT).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "ICT")
+        self.early = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst",
+            start_time=time(7, 0), end_time=time(12, 0), break_minutes=0,
+        )
+        self.late = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Spätdienst",
+            start_time=time(13, 0), end_time=time(17, 30), break_minutes=0,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+
+    def _assign(self, template, day=date(2026, 8, 3)):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=day, template=template
+        )
+
+    def test_two_non_overlapping_shifts_same_day_are_valid(self):
+        first = self._assign(self.early)
+        second = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=first.date, template=self.late
+        )
+        second.full_clean()  # keine Exception
+        second.save()
+        self.assertEqual(
+            ShiftAssignment.objects.filter(employee=self.employee, date=first.date).count(), 2
+        )
+
+    def test_overlapping_shifts_same_day_are_rejected(self):
+        self._assign(self.early)  # 07:00-12:00
+        overlapping = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Vormittag-Ueberlappung",
+            start_time=time(11, 0), end_time=time(14, 0), break_minutes=0,
+        )
+        conflict = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=overlapping,
+        )
+        with self.assertRaises(ValidationError):
+            conflict.full_clean()
+
+    def test_identical_template_twice_same_day_is_rejected(self):
+        self._assign(self.early)
+        duplicate = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.early,
+        )
+        with self.assertRaises(ValidationError):
+            duplicate.full_clean()
+
+    def test_adjacent_shifts_touching_exactly_are_not_overlapping(self):
+        # Ende Frühdienst (12:00) == Beginn eines fiktiven Templates ab
+        # 12:00 -- Grenzfall, gilt nicht als Überschneidung (halboffenes
+        # Intervall).
+        self._assign(self.early)  # 07:00-12:00
+        touching = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Direkt-Anschluss",
+            start_time=time(12, 0), end_time=time(17, 0), break_minutes=0,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=touching,
+        )
+        assignment.full_clean()  # keine Exception
+
+    def test_daily_span_considers_all_shifts_of_the_day_combined(self):
+        # Tenant-Default maximum_daily_span_hours ist 14h (siehe core.models).
+        # Früh (07-12) + Spät (13-17:30) ergibt zusammen 07:00-17:30 = 10.5h
+        # Gesamtspanne -- unproblematisch.
+        self._assign(self.early)
+        second = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.late,
+        )
+        second.full_clean()  # keine Exception
+
+        # Ein dritter, sehr spaeter Dienst am selben Tag reisst die
+        # Gesamtspanne (07:00 bis weit nach Mitternacht) ueber die
+        # Tenant-Grenze.
+        very_late = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Spaetester-Dienst",
+            start_time=time(22, 0), end_time=time(23, 59), break_minutes=0,
+        )
+        third = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=very_late,
+        )
+        with self.assertRaises(ValidationError):
+            third.full_clean()
+
+    def test_rest_period_check_ignores_same_day_gap(self):
+        # Kernentscheidung: die Mittagspause zwischen zwei Split-Shift-
+        # Diensten desselben Tages ist KEINE Ruhezeit im Sinne von Art. 15a
+        # ArG (die gilt zwischen Kalendertagen) -- nur 1h Luecke zwischen
+        # Frueh-Ende (12:00) und Spaet-Beginn (13:00) darf NICHT als
+        # Ruhezeit-Verstoss (Tenant-Default 11h) geahndet werden.
+        self._assign(self.early)
+        second = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.late,
+        )
+        second.full_clean()  # keine Exception -- wäre bei 11h-Ruhezeitpruefung sonst abgelehnt
+
+    def test_rest_period_still_checked_against_previous_and_next_day(self):
+        # Split-Shifts duerfen die normale Tag-zu-Tag-Ruhezeitpruefung nicht
+        # aushebeln: ein Spaetdienst bis 17:30, gefolgt von einem
+        # Fruehdienst am naechsten Tag ab 07:00, hat nur 13.5h Ruhezeit --
+        # das ist zwar ueber dem 11h-Minimum, aber ein zu frueher naechster
+        # Dienst (z. B. 04:00) muss weiterhin blockiert werden.
+        self._assign(self.late, day=date(2026, 8, 3))  # bis 17:30
+        too_early_next_day = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Zu-frueh",
+            start_time=time(4, 0), end_time=time(8, 0), break_minutes=0,
+        )
+        assignment = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 4),
+            template=too_early_next_day,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.full_clean()
+
+    def test_weekly_and_monthly_summary_sum_both_shifts(self):
+        self._assign(self.early)  # 5h netto (07-12, keine Pause)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.late,  # 4.5h netto (13-17:30, keine Pause)
+        )
+        weekly = self.employee.weekly_hours_summary(date(2026, 8, 3))
+        self.assertEqual(weekly["ist_hours"], 9.5)
+        monthly = self.employee.monthly_summary(2026, 8)
+        self.assertEqual(monthly["ist_hours"], 9.5)
+
+    def test_swap_one_of_two_same_day_shifts(self):
+        # employee hat Frueh+Spaet am selben Tag; nur der Fruehdienst wird
+        # mit einer fremden Zuweisung (anderer Tag, anderes Template)
+        # getauscht -- der Spaetdienst bleibt als eigene Zeile unangetastet,
+        # und der Fruehdienst-Platz bekommt das eingetauschte (andere)
+        # Template.
+        early_assignment = self._assign(self.early)
+        late_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.late,
+        )
+        night = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtschicht",
+            start_time=time(20, 0), end_time=time(23, 0), break_minutes=0,
+        )
+        other_employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+        other_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=other_employee, node=self.node, date=date(2026, 8, 10),
+            template=night,
+        )
+        first, second = ShiftAssignment.swap(early_assignment.id, other_assignment.id)
+        self.assertEqual(first.employee_id, other_employee.id)
+        self.assertEqual(first.template_id, self.early.id)
+        self.assertEqual(second.employee_id, self.employee.id)
+        self.assertEqual(second.template_id, night.id)
+        # employee hat jetzt Spaet (unveraendert) + die eingetauschte Nachtschicht,
+        # nicht mehr den Fruehdienst.
+        remaining = set(
+            ShiftAssignment.objects.filter(employee=self.employee, date=date(2026, 8, 3)).values_list(
+                "id", "template_id"
+            )
+        )
+        self.assertEqual(remaining, {(late_assignment.id, self.late.id), (second.id, night.id)})
+
+    def test_swap_rejects_real_overlap_conflict(self):
+        # employee hat Frueh+Spaet am selben Tag UND eine dritte, unbeteiligte
+        # Nachtschicht an diesem Tag, die getauscht werden soll. Die
+        # eingetauschte Zuweisung (15:00-19:00) ueberschneidet sich mit dem
+        # bestehenden, NICHT am Tausch beteiligten Spaetdienst (13:00-17:30)
+        # -- muss abgelehnt werden.
+        self._assign(self.early, day=date(2026, 8, 3))
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=self.late,
+        )
+        night = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtschicht",
+            start_time=time(20, 0), end_time=time(23, 0), break_minutes=0,
+        )
+        employee_night = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 8, 3),
+            template=night,
+        )
+        overlapping = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Ueberlappt-mit-Spaet",
+            start_time=time(15, 0), end_time=time(19, 0), break_minutes=0,
+        )
+        other_employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+        other_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=other_employee, node=self.node, date=date(2026, 8, 10),
+            template=overlapping,
+        )
+        with self.assertRaises(ValidationError):
+            ShiftAssignment.swap(employee_night.id, other_assignment.id)
+
+
+class SpecialAssignmentStackingTests(TestCase):
+    """
+    Nutzer-Feedback (2026-08): eine Spezialität (TimeTemplate.category ==
+    "special", z. B. Pikettdienst) ist ein additiver Zusatz zu einem
+    regulären Dienst, kein Slot-Konkurrent -- ein Frühdienst UND ein
+    Pikettdienst gleichzeitig am selben Tag müssen möglich sein, ohne dass
+    Ruhezeit-/Überschneidungs-/Tagesspannen-/Höchstarbeitszeit-Prüfung
+    dazwischenfunkt, und ohne dass die Spezialität in Sollstunden/Ist-
+    Stunden einfliesst (geklärte Design-Entscheidung: rein informativ).
+    Qualifikation/Jugendschutz/Absenz-Konflikt gelten dagegen weiterhin.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.day_shift = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst",
+            start_time=time(7, 0), end_time=time(15, 0), break_minutes=30,
+        )
+        self.pikett = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikettdienst",
+            start_time=time(7, 0), end_time=time(15, 0), break_minutes=0,
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        self.other_pikett = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Pikett Arzt",
+            start_time=time(0, 0), end_time=time(23, 59), break_minutes=0,
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+
+    def test_special_alongside_regular_shift_same_time_is_valid(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.day_shift,
+        )
+        special = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        special.full_clean()  # keine Exception trotz identischer Zeitspanne
+        special.save()
+        self.assertEqual(
+            ShiftAssignment.objects.filter(employee=self.employee, date=date(2026, 8, 3)).count(), 2
+        )
+
+    def test_two_specials_same_day_are_valid(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        second = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.other_pikett,
+        )
+        second.full_clean()  # keine Exception
+
+    def test_special_does_not_block_next_day_rest_period(self):
+        # Nachtschicht direkt gefolgt von einem Pikettdienst am nächsten Tag
+        # wäre bei einem regulären Dienst eine Ruhezeit-Verletzung.
+        night = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtdienst",
+            start_time=time(20, 0), end_time=time(8, 0), break_minutes=60,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=night,
+        )
+        special_next_day = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 4), template=self.pikett,
+        )
+        special_next_day.full_clean()  # keine Exception
+
+    def test_special_does_not_block_weekly_hours_limit(self):
+        self.tenant.maximum_weekly_hours = 45
+        self.tenant.save()
+        long_special = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Langer Pikett",
+            start_time=time(0, 0), end_time=time(23, 59), break_minutes=0,
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        for offset in range(5):
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node,
+                date=date(2026, 8, 3) + timedelta(days=offset), template=self.day_shift,
+            )
+        special = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=long_special,
+        )
+        special.full_clean()  # keine Exception trotz fast 24h Zusatz
+
+    def test_special_only_day_still_counts_as_weekly_rest_day(self):
+        monday = date(2026, 8, 3)
+        for offset in range(6):  # Mo-Sa reguläre Dienste
+            ShiftAssignment.objects.create(
+                tenant=self.tenant, employee=self.employee, node=self.node,
+                date=monday + timedelta(days=offset), template=self.day_shift,
+            )
+        sunday_special = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=monday + timedelta(days=6), template=self.pikett,
+        )
+        sunday_special.full_clean()  # keine Exception -- Sonntag bleibt "frei" trotz Pikett
+
+    def test_special_hours_excluded_from_weekly_hours_summary(self):
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.day_shift,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        summary = self.employee.weekly_hours_summary(date(2026, 8, 3))
+        # Nur der Frühdienst (7.5h netto), nicht zusätzlich der zeitgleiche Pikett.
+        self.assertEqual(summary["ist_hours"], 7.5)
+
+    def test_special_hours_excluded_from_time_account_summary(self):
+        self.employee.employment_start_date = date(2026, 1, 1)
+        self.employee.save()
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.day_shift,
+        )
+        with_pikett = self.employee.time_account_summary(as_of_date=date(2026, 8, 3))
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        with_and_without = self.employee.time_account_summary(as_of_date=date(2026, 8, 3))
+        self.assertEqual(with_pikett["saldo_hours"], with_and_without["saldo_hours"])
+
+    def test_special_still_blocked_during_approved_absence(self):
+        vacation_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", deducts_vacation_days=True)
+        Absence.objects.create(
+            tenant=self.tenant, employee=self.employee,
+            start_date=date(2026, 8, 3), end_date=date(2026, 8, 3),
+            type=vacation_type, status=Absence.Status.APPROVED,
+        )
+        special = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        with self.assertRaises(ValidationError):
+            special.clean()
+
+    def test_special_still_requires_skill(self):
+        skill = Skill.objects.create(tenant=self.tenant, name="Pikett-berechtigt")
+        self.pikett.required_skill = skill
+        self.pikett.save()
+        special = ShiftAssignment(
+            tenant=self.tenant, employee=self.employee, node=self.node,
+            date=date(2026, 8, 3), template=self.pikett,
+        )
+        with self.assertRaises(ValidationError):
+            special.clean()
+
+    def test_special_still_blocked_for_minor_at_night(self):
+        night_special = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nacht-Pikett",
+            start_time=time(23, 0), end_time=time(6, 0), break_minutes=0,
+            category=TimeTemplate.Category.SPECIAL,
+        )
+        minor = Employee.objects.create(
+            tenant=self.tenant, first_name="Timo", last_name="T", employment_pct=100,
+            birth_date=date(2010, 1, 1),  # minderjährig am 2026-08-03
+        )
+        special = ShiftAssignment(
+            tenant=self.tenant, employee=minor, node=self.node,
+            date=date(2026, 8, 3), template=night_special,
+        )
+        with self.assertRaises(ValidationError):
+            special.clean()
+
+
+class ShiftTradeRequestSplitShiftTests(TestCase):
+    """README Punkt 18: ShiftTradeRequest.approve() mit Split-Shift-Tagen."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "ICT")
+        self.early = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Frühdienst",
+            start_time=time(7, 0), end_time=time(12, 0), break_minutes=0,
+        )
+        self.late = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Spätdienst",
+            start_time=time(13, 0), end_time=time(17, 30), break_minutes=0,
+        )
+        self.requester = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.target = Employee.objects.create(
+            tenant=self.tenant, first_name="Bea", last_name="B", employment_pct=100
+        )
+
+    def test_approve_full_swap_same_day_with_existing_second_shift(self):
+        # requester hat an diesem Tag bereits einen Spaetdienst zusaetzlich
+        # zum zu tauschenden Fruehdienst -- der Tausch des Fruehdienstes
+        # darf nicht faelschlich mit dem eigenen Spaetdienst kollidieren.
+        requester_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.requester, node=self.node, date=date(2026, 8, 3),
+            template=self.early,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.requester, node=self.node, date=date(2026, 8, 3),
+            template=self.late,
+        )
+        target_assignment = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.target, node=self.node, date=date(2026, 8, 3),
+            template=self.early,
+        )
+        trade = ShiftTradeRequest.objects.create(
+            tenant=self.tenant,
+            requester_assignment=requester_assignment,
+            target_employee=self.target,
+            target_assignment=target_assignment,
+        )
+        trade.approve()
+        requester_assignment.refresh_from_db()
+        target_assignment.refresh_from_db()
+        self.assertEqual(requester_assignment.employee_id, self.target.id)
+        self.assertEqual(target_assignment.employee_id, self.requester.id)
+        # requesters Spaetdienst bleibt unveraendert bei ihr bestehen.
+        self.assertTrue(
+            ShiftAssignment.objects.filter(
+                employee=self.requester, date=date(2026, 8, 3), template=self.late
+            ).exists()
+        )
+
+
+class UnderstaffedShiftsViewTests(APITestCase):
+    """
+    README MVP-Fahrplan Block 2, Punkt 21 (Dashboard): serverseitige,
+    stationsübergreifende Auswertung der Mindestbesetzung (Block 9/2.9) für
+    die nächsten UPCOMING_DAYS Tage -- Grundlage für die Dashboard-Karte
+    "Unterbesetzte Schichten".
+    """
+
+    def setUp(self):
+        self.tenant, self.user = make_tenant_with_planner("klinik-a", "planner_a")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        token, _ = Token.objects.get_or_create(user=self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+        self.today = timezone.localdate()
+
+    def test_requires_authentication(self):
+        # 403 statt 401: SessionAuthentication steht in
+        # DEFAULT_AUTHENTICATION_CLASSES an erster Stelle und bietet keinen
+        # WWW-Authenticate-Header an (siehe AuthenticationTests oben).
+        self.client.credentials()
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_no_templates_configured_reports_has_configured_templates_false(self):
+        # README (2026-08, UX-Bugfix): "nichts konfiguriert" muss sich vom
+        # Dashboard klar von "alles besetzt" unterscheiden lassen -- beide
+        # sahen vorher identisch aus (leere Liste).
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["has_configured_templates"])
+        self.assertEqual(response.data["shortfalls"], [])
+
+    def test_template_without_minimum_staffing_never_listed(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Tagdienst", start_time=time(8, 0), end_time=time(16, 0)
+        )
+        self.assertEqual(template.minimum_staffing, 0)
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data["has_configured_templates"])
+        self.assertEqual(response.data["shortfalls"], [])
+
+    def test_configured_templates_report_has_configured_templates_true(self):
+        # has_configured_templates ist True, sobald mindestens ein Schichttyp
+        # eine Mindestbesetzung hat -- unabhängig davon, ob es aktuell auch
+        # tatsaechlich einen Engpass gibt (siehe die anderen Tests oben/unten
+        # fuer den Engpass-Fall selbst).
+        TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=1,
+        )
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertTrue(response.data["has_configured_templates"])
+
+    def test_reports_shortfall_within_upcoming_window(self):
+        # README: die Auswertung läuft bewusst über ALLE Tage des Fensters,
+        # nicht nur die mit bestehenden Zuweisungen (identische Semantik zum
+        # bereits bestehenden PlanGrid.jsx-Badge, Block 2.9 -- "informativ,
+        # nicht blockierend", kein Sonderfall für einen noch komplett leeren
+        # Tag). Ein Tag mit einer von zwei nötigen Zuweisungen zeigt daher
+        # als EINER von mehreren Einträgen count=1 auf.
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=2,
+        )
+        target_date = self.today + timedelta(days=2)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=target_date, template=template
+        )
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data["has_configured_templates"])
+        by_date = {e["date"]: e for e in response.data["shortfalls"]}
+        entry = by_date[target_date.isoformat()]
+        self.assertEqual(entry["node_id"], self.node.id)
+        self.assertEqual(entry["node_name"], "Station A")
+        self.assertEqual(entry["template_id"], template.id)
+        self.assertEqual(entry["count"], 1)
+        self.assertEqual(entry["minimum_staffing"], 2)
+
+    def test_sufficiently_staffed_date_absent_from_results(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=1,
+        )
+        target_date = self.today + timedelta(days=1)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=target_date, template=template
+        )
+        response = self.client.get("/api/understaffed-shifts/")
+        dates = [e["date"] for e in response.data["shortfalls"]]
+        self.assertNotIn(target_date.isoformat(), dates)
+
+    def test_shortfall_outside_upcoming_window_not_listed(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=2,
+        )
+        far_future = self.today + timedelta(days=30)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=far_future, template=template
+        )
+        response = self.client.get("/api/understaffed-shifts/")
+        dates = [e["date"] for e in response.data["shortfalls"]]
+        self.assertNotIn(far_future.isoformat(), dates)
+        self.assertTrue(all(d <= (self.today + timedelta(days=6)).isoformat() for d in dates))
+
+    def test_past_dates_not_listed(self):
+        template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(7, 0),
+            end_time=time(15, 0),
+            minimum_staffing=2,
+        )
+        yesterday = self.today - timedelta(days=1)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=yesterday, template=template
+        )
+        response = self.client.get("/api/understaffed-shifts/")
+        dates = [e["date"] for e in response.data["shortfalls"]]
+        self.assertNotIn(yesterday.isoformat(), dates)
+        self.assertTrue(all(d >= self.today.isoformat() for d in dates))
+
+
+class UnderstaffedShiftsTenantIsolationTests(TwoTenantFixtureMixin, APITestCase):
+    def test_only_own_tenants_understaffed_shifts_are_returned(self):
+        self.template_a.minimum_staffing = 2
+        self.template_a.save(update_fields=["minimum_staffing"])
+        self.template_b.minimum_staffing = 2
+        self.template_b.save(update_fields=["minimum_staffing"])
+        target_date = timezone.localdate() + timedelta(days=1)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant_a, employee=self.employee_a, node=self.node_a, date=target_date, template=self.template_a
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant_b, employee=self.employee_b, node=self.node_b, date=target_date, template=self.template_b
+        )
+
+        self.auth_as(self.user_a)
+        response = self.client.get("/api/understaffed-shifts/")
+        self.assertGreater(len(response.data["shortfalls"]), 0)
+        self.assertTrue(all(e["node_name"] == "Station A" for e in response.data["shortfalls"]))
+
+
+class PregnancyModelTests(TestCase):
+    """Mutterschutz (Art. 35a ArG, Block 1.15): Pregnancy.protection_status_on()."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Petra", last_name="P", employment_pct=100
+        )
+        self.anchor = date(2026, 10, 1)  # Termin fuer die meisten Tests
+        self.pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant, employee=self.employee, expected_birth_date=self.anchor
+        )
+
+    def test_before_night_ban_window_is_unprotected(self):
+        self.assertIsNone(self.pregnancy.protection_status_on(self.anchor - timedelta(weeks=9)))
+
+    def test_night_ban_window(self):
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor - timedelta(weeks=4)), "night_ban")
+        # Randtag: exakt 8 Wochen vor dem Termin ist bereits im Fenster.
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor - timedelta(weeks=8)), "night_ban")
+
+    def test_full_ban_window(self):
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor), "full_ban")
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor + timedelta(weeks=7)), "full_ban")
+
+    def test_consent_required_window(self):
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor + timedelta(weeks=9)), "consent_required")
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor + timedelta(weeks=15)), "consent_required")
+
+    def test_after_all_windows_is_unprotected(self):
+        self.assertIsNone(self.pregnancy.protection_status_on(self.anchor + timedelta(weeks=16)))
+        self.assertIsNone(self.pregnancy.protection_status_on(self.anchor + timedelta(weeks=20)))
+
+    def test_actual_birth_date_overrides_expected_as_anchor(self):
+        # Termin war der 1.10., tatsaechliche Geburt zwei Wochen frueher --
+        # am urspruenglichen Termin (jetzt in Woche 3 nach der echten Geburt)
+        # gilt bereits das Beschaeftigungsverbot, nicht mehr das Nachtarbeitsverbot.
+        self.pregnancy.actual_birth_date = self.anchor - timedelta(weeks=2)
+        self.pregnancy.save()
+        self.assertEqual(self.pregnancy.protection_status_on(self.anchor), "full_ban")
+
+    def test_is_maternity_protected_on_finds_matching_pregnancy_among_several(self):
+        later_anchor = self.anchor + timedelta(days=700)  # zweite, unabhaengige Schwangerschaft
+        Pregnancy.objects.create(tenant=self.tenant, employee=self.employee, expected_birth_date=later_anchor)
+        self.assertEqual(self.employee.is_maternity_protected_on(self.anchor), "full_ban")
+        self.assertEqual(self.employee.is_maternity_protected_on(later_anchor), "full_ban")
+        self.assertIsNone(self.employee.is_maternity_protected_on(self.anchor + timedelta(weeks=20)))
+
+    def test_employee_without_pregnancy_is_unprotected(self):
+        other = Employee.objects.create(tenant=self.tenant, first_name="Nora", last_name="N", employment_pct=100)
+        self.assertIsNone(other.is_maternity_protected_on(self.anchor))
+
+
+class MaternityProtectionRuleEngineTests(TestCase):
+    """ShiftAssignment.clean(): Mutterschutz hart durchgesetzt (Art. 35a ArG, Block 1.15)."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Petra", last_name="P", employment_pct=100
+        )
+        self.day_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,
+        )
+        self.night_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Nachtdienst",
+            start_time=time(20, 0),
+            end_time=time(8, 0),
+            break_minutes=60,
+        )
+        self.anchor = date(2026, 10, 1)
+        self.pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant, employee=self.employee, expected_birth_date=self.anchor
+        )
+
+    def test_full_ban_blocks_any_assignment(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=self.anchor + timedelta(weeks=2),
+            template=self.day_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_consent_required_window_blocks_assignment(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=self.anchor + timedelta(weeks=10),
+            template=self.day_template,
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_night_ban_blocks_night_shift(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=self.anchor - timedelta(weeks=4),
+            template=self.night_template,  # 20:00-08:00 -- ueberlappt das Nachtfenster
+        )
+        with self.assertRaises(ValidationError):
+            assignment.clean()
+
+    def test_night_ban_does_not_block_day_shift(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=self.anchor - timedelta(weeks=4),
+            template=self.day_template,  # 08:00-16:00 -- beruehrt 20:00-06:00 nicht
+        )
+        assignment.clean()  # keine Exception
+
+    def test_outside_any_window_is_unaffected(self):
+        assignment = ShiftAssignment(
+            tenant=self.tenant,
+            employee=self.employee,
+            node=self.node,
+            date=self.anchor + timedelta(weeks=20),
+            template=self.night_template,
+        )
+        assignment.clean()  # keine Exception -- ausserhalb aller Mutterschutz-Fenster
+
+
+class PregnancyPermissionAPITests(APITestCase):
+    """
+    Mutterschutz (Block 1.15): PregnancyPermission + PregnancyViewSet.get_queryset() --
+    strenger als sonst in der App ueblich (core.permissions.PregnancyPermission-Docstring):
+    nur Admin und die betroffene Mitarbeiterin selbst duerfen lesen/schreiben, nicht Planer/HR.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+        self.hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
+        Membership.objects.create(user=self.hr_user, tenant=self.tenant, role=Membership.Role.HR)
+
+        self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, user=self.alice_user, first_name="Alice", last_name="A", employment_pct=100
+        )
+
+        self.bob_user = User.objects.create_user(username="bob", password="pw-not-real-123!")
+        Membership.objects.create(user=self.bob_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.bob = Employee.objects.create(
+            tenant=self.tenant, user=self.bob_user, first_name="Bob", last_name="B", employment_pct=100
+        )
+
+        self.alice_pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant, employee=self.alice, expected_birth_date=date(2026, 10, 1)
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_sees_all_pregnancies(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/pregnancies/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_alice_sees_only_her_own_pregnancy(self):
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/pregnancies/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["results"][0]["employee"], self.alice.id)
+
+    def test_bob_sees_no_pregnancies(self):
+        self.auth_as(self.bob_user)
+        response = self.client.get("/api/pregnancies/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["results"], [])
+
+    def test_planner_without_employee_profile_is_forbidden(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/pregnancies/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_hr_without_employee_profile_is_forbidden(self):
+        self.auth_as(self.hr_user)
+        response = self.client.get("/api/pregnancies/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_alice_can_create_her_own_pregnancy(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/pregnancies/", {"employee": self.alice.id, "expected_birth_date": "2027-01-15"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_alice_cannot_create_pregnancy_for_bob(self):
+        self.auth_as(self.alice_user)
+        response = self.client.post(
+            "/api/pregnancies/", {"employee": self.bob.id, "expected_birth_date": "2027-01-15"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_admin_can_create_pregnancy_for_bob(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/pregnancies/", {"employee": self.bob.id, "expected_birth_date": "2027-01-15"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_alice_cannot_access_bobs_pregnancy(self):
+        bob_pregnancy = Pregnancy.objects.create(
+            tenant=self.tenant, employee=self.bob, expected_birth_date=date(2027, 2, 1)
+        )
+        self.auth_as(self.alice_user)
+        response = self.client.patch(f"/api/pregnancies/{bob_pregnancy.id}/", {"notes": "x"})
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class EmployeeSearchOrderingAPITests(APITestCase):
+    """
+    Stammdatenpflege (Nutzer-Feedback 2026-08): GET /api/employees/ mit
+    ?search=/?ordering=/?node=/?is_active= für die neue Tabellen-Ansicht in
+    EmployeeSettings.jsx -- bei mehreren hundert Mitarbeitenden muss die
+    Suche/Sortierung serverseitig laufen, siehe EmployeeViewSet-Docstring.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_b = make_station(self.tenant, "Station B")
+        self.planner_user = User.objects.create_user(username="planner-search", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=self.planner_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        self.anna = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="Berger", employment_pct=100
+        )
+        self.anna.nodes.add(self.node_a)
+        self.beat = Employee.objects.create(
+            tenant=self.tenant, first_name="Beat", last_name="Meier", employment_pct=60, is_active=False
+        )
+        self.beat.nodes.add(self.node_b)
+        self.carla = Employee.objects.create(
+            tenant=self.tenant, first_name="Carla", last_name="Zumbrunn", employment_pct=80
+        )
+        self.carla.nodes.add(self.node_a)
+
+    def test_search_matches_last_name(self):
+        response = self.client.get("/api/employees/?search=meier")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Meier"])
+
+    def test_search_matches_first_name(self):
+        response = self.client.get("/api/employees/?search=carla")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Zumbrunn"])
+
+    def test_search_no_match_returns_empty(self):
+        response = self.client.get("/api/employees/?search=nonexistent")
+        self.assertEqual(response.data["results"], [])
+
+    def test_default_ordering_is_last_name(self):
+        response = self.client.get("/api/employees/")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Berger", "Meier", "Zumbrunn"])
+
+    def test_ordering_desc_by_last_name(self):
+        response = self.client.get("/api/employees/?ordering=-last_name")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Zumbrunn", "Meier", "Berger"])
+
+    def test_ordering_by_employment_pct(self):
+        response = self.client.get("/api/employees/?ordering=employment_pct")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Meier", "Zumbrunn", "Berger"])
+
+    def test_filter_by_node(self):
+        response = self.client.get(f"/api/employees/?node={self.node_b.id}")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Meier"])
+
+    def test_filter_by_is_active_false(self):
+        response = self.client.get("/api/employees/?is_active=false")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Meier"])
+
+    def test_filter_by_is_active_true(self):
+        response = self.client.get("/api/employees/?is_active=true")
+        names = sorted(e["last_name"] for e in response.data["results"])
+        self.assertEqual(names, ["Berger", "Zumbrunn"])
+
+    def test_search_and_node_filter_combined(self):
+        response = self.client.get(f"/api/employees/?search=zumbrunn&node={self.node_a.id}")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Zumbrunn"])
+
+    def test_search_is_tenant_scoped(self):
+        other_tenant, other_user = make_tenant_with_planner("klinik-x", "planner-x")
+        Employee.objects.create(
+            tenant=other_tenant, first_name="Zora", last_name="Berger", employment_pct=100
+        )
+        response = self.client.get("/api/employees/?search=berger")
+        names = [e["last_name"] for e in response.data["results"]]
+        self.assertEqual(names, ["Berger"])
+        self.assertEqual(len(response.data["results"]), 1)
+
+
+class TimeTemplateSearchOrderingAPITests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): GET /api/time-templates/ mit
+    ?search=/?ordering=/?node=/?category= für die neue Tabellen-Ansicht in
+    TimeTemplateSettings.jsx -- analog EmployeeSearchOrderingAPITests.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_b = make_station(self.tenant, "Station B")
+        self.planner_user = User.objects.create_user(username="planner-tt-search", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=self.planner_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        self.early = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_a, name="Frühdienst", start_time="07:00", end_time="15:00"
+        )
+        self.late = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_b, name="Spätdienst", start_time="14:00", end_time="22:00"
+        )
+        self.oncall = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node_a,
+            name="Pikett",
+            start_time="00:00",
+            end_time="23:59",
+            category=TimeTemplate.Category.SPECIAL,
+        )
+
+    def test_search_matches_name(self):
+        response = self.client.get("/api/time-templates/?search=spät")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Spätdienst"])
+
+    def test_search_no_match_returns_empty(self):
+        response = self.client.get("/api/time-templates/?search=nonexistent")
+        self.assertEqual(response.data["results"], [])
+
+    def test_default_ordering_is_node_then_start_time(self):
+        response = self.client.get("/api/time-templates/")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Pikett", "Frühdienst", "Spätdienst"])
+
+    def test_ordering_by_name(self):
+        response = self.client.get("/api/time-templates/?ordering=name")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Frühdienst", "Pikett", "Spätdienst"])
+
+    def test_filter_by_node(self):
+        response = self.client.get(f"/api/time-templates/?node={self.node_b.id}")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Spätdienst"])
+
+    def test_filter_by_category(self):
+        response = self.client.get("/api/time-templates/?category=special")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Pikett"])
+
+    def test_search_is_tenant_scoped(self):
+        other_tenant, other_user = make_tenant_with_planner("klinik-tt-x", "planner-tt-x")
+        other_node = make_station(other_tenant, "Station X")
+        TimeTemplate.objects.create(
+            tenant=other_tenant, node=other_node, name="Frühdienst", start_time="07:00", end_time="15:00"
+        )
+        response = self.client.get("/api/time-templates/?search=frühdienst")
+        names = [t["name"] for t in response.data["results"]]
+        self.assertEqual(names, ["Frühdienst"])
+        self.assertEqual(len(response.data["results"]), 1)
+
+
+class NodeMoveAPITests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): POST /api/nodes/{id}/move/ für Drag & Drop im
+    Stationen-Baum (NodeSettings.jsx) -- reparentet einen Knoten unter einen
+    anderen (`parent=<id>`) oder auf die oberste Ebene (`parent=null`).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a")
+        self.planner_user = User.objects.create_user(username="planner-move", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+        token, _ = Token.objects.get_or_create(user=self.planner_user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+        # Standort A
+        #   └─ Team A1
+        # Standort B
+        self.standort_a = make_station(self.tenant, "Standort A")
+        self.team_a1 = self.standort_a.add_child(name="Team A1", tenant=self.tenant)
+        self.standort_b = make_station(self.tenant, "Standort B")
+
+    def test_move_reparents_node_under_new_parent(self):
+        response = self.client.post(f"/api/nodes/{self.standort_b.id}/move/", {"parent": self.standort_a.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.standort_b.refresh_from_db()
+        self.assertEqual(self.standort_b.get_parent().pk, self.standort_a.pk)
+        # Standort A selbst ist bereits ein Kind der (unsichtbaren) Tenant-
+        # Wurzel (depth=2, siehe Node.get_or_create_forest_root) -- Standort
+        # B landet als dessen Kind deshalb auf depth=3, nicht 2.
+        self.assertEqual(self.standort_b.depth, 3)
+
+    def test_move_to_root_removes_parent(self):
+        response = self.client.post(f"/api/nodes/{self.team_a1.id}/move/", {"parent": None}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.team_a1.refresh_from_db()
+        # "Oberste Ebene" heisst seit dem Tenant-Wurzelknoten "Kind der
+        # unsichtbaren Wurzel", nicht mehr parentless (siehe NodeViewSet.move).
+        forest_root = Node.get_or_create_forest_root(self.tenant)
+        self.assertEqual(self.team_a1.get_parent().pk, forest_root.pk)
+        self.assertEqual(self.team_a1.depth, 2)
+
+    def test_move_updates_descendant_depth(self):
+        grandchild = self.team_a1.add_child(name="Schicht-Gruppe", tenant=self.tenant)
+        self.client.post(f"/api/nodes/{self.team_a1.id}/move/", {"parent": None}, format="json")
+        grandchild.refresh_from_db()
+        self.assertEqual(grandchild.depth, 3)
+        self.assertEqual(grandchild.get_parent().pk, self.team_a1.pk)
+
+    def test_move_into_own_descendant_is_rejected(self):
+        response = self.client.post(f"/api/nodes/{self.standort_a.id}/move/", {"parent": self.team_a1.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.standort_a.refresh_from_db()
+        forest_root = Node.get_or_create_forest_root(self.tenant)
+        self.assertEqual(self.standort_a.get_parent().pk, forest_root.pk)
+
+    def test_move_into_self_is_rejected(self):
+        response = self.client.post(f"/api/nodes/{self.standort_a.id}/move/", {"parent": self.standort_a.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_move_with_foreign_parent_is_rejected(self):
+        other_tenant, other_user = make_tenant_with_planner("klinik-move-x", "planner-move-x")
+        foreign_node = make_station(other_tenant, "Fremde Station")
+        response = self.client.post(f"/api/nodes/{self.standort_b.id}/move/", {"parent": foreign_node.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_move_between_two_non_root_parents_reparents_correctly(self):
+        """
+        Regressionstest für einen treebeard-Bug (Nutzer-Feedback: "ich kann
+        Küche direkt in Station A ziehen, nicht aber von Station A zurück in
+        Hauswirtschaft"): move(pos="sorted-child") bricht fälschlich früh ab
+        ("bereits an der richtigen Stelle"), wenn die Geschwister-Position des
+        gezogenen Knotens unter seinem ALTEN Elternknoten zufällig mit der
+        berechneten Position unter dem NEUEN Elternknoten übereinstimmt --
+        ohne zu prüfen, ob es überhaupt derselbe Elternknoten ist. Bei
+        kleinen Bäumen (Position 1 unter beiden Elternknoten) ist das der
+        Normalfall, nicht die Ausnahme -- "AAA Kind" ist hier bewusst
+        alphabetisch zuerst unter BEIDEN Wurzeln, um genau diese Kollision
+        zu erzwingen.
+        """
+        root_x = make_station(self.tenant, "Root X")
+        child_x = root_x.add_child(name="AAA Kind", tenant=self.tenant)
+        root_y = make_station(self.tenant, "Root Y")
+        root_y.add_child(name="ZZZ Kind", tenant=self.tenant)
+
+        response = self.client.post(f"/api/nodes/{child_x.id}/move/", {"parent": root_y.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        child_x.refresh_from_db()
+        self.assertEqual(child_x.get_parent().pk, root_y.pk)
+
+        # Und wieder zurück -- derselbe Kollisionsmechanismus in umgekehrter
+        # Richtung (Position 1 unter Root Y jetzt, Position 1 unter Root X
+        # wieder, da Root X inzwischen kinderlos ist).
+        response = self.client.post(f"/api/nodes/{child_x.id}/move/", {"parent": root_x.id})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        child_x.refresh_from_db()
+        self.assertEqual(child_x.get_parent().pk, root_x.pk)
+
+
+class NodeForestRootTests(APITestCase):
+    """
+    Mandanten-Isolation für den Node-Baum (Nutzer-Feedback: "Es muss ALLES
+    tenant unabhängig sein schon rein datenschutz technisch. Es darf nicht
+    sein das alle tenants einen baum teilen! Das ist fahrlässig") --
+    Node.get_or_create_forest_root() sorgt dafür, dass jeder Tenant einen
+    eigenen, unsichtbaren Wurzelknoten hat und Pfad-Vergabe nie mehr auf
+    einer mit anderen Tenants geteilten Ebene stattfindet.
+    """
+
+    def setUp(self):
+        self.tenant_a, self.user_a = make_tenant_with_planner("klinik-forest-a", "planner-forest-a")
+        self.tenant_b, self.user_b = make_tenant_with_planner("klinik-forest-b", "planner-forest-b")
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_alphabetically_colliding_station_names_across_tenants_do_not_collide(self):
+        """
+        Reproduziert den ursprünglichen Fund: bevor jeder Tenant seinen
+        eigenen Wurzelknoten hatte, lag jede neue Station direkt auf einer
+        global geteilten treebeard-Wurzelebene -- ein neuer Stationsname,
+        der alphabetisch zwischen zwei fremde, unbeteiligte Wurzelknoten
+        fiel, löste dort einen IntegrityError aus. "Mitte"-Stationen in
+        zwei komplett unabhängigen Tenants sind das klassische Kollisions-
+        Szenario dafür.
+        """
+        self.auth_as(self.user_a)
+        response_a = self.client.post("/api/nodes/", {"name": "Mitte"}, format="json")
+        self.assertEqual(response_a.status_code, status.HTTP_201_CREATED, response_a.data)
+
+        self.auth_as(self.user_b)
+        response_b = self.client.post("/api/nodes/", {"name": "Mitte"}, format="json")
+        self.assertEqual(response_b.status_code, status.HTTP_201_CREATED, response_b.data)
+
+    def test_get_or_create_forest_root_is_idempotent(self):
+        first = Node.get_or_create_forest_root(self.tenant_a)
+        second = Node.get_or_create_forest_root(self.tenant_a)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(Node.all_objects.filter(tenant=self.tenant_a, is_forest_root=True).count(), 1)
+
+    def test_duplicate_forest_root_violates_unique_constraint(self):
+        Node.get_or_create_forest_root(self.tenant_a)
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                Node.add_root(name="Zweite Wurzel", tenant=self.tenant_a, is_forest_root=True)
+
+    def test_forest_root_never_appears_in_node_list(self):
+        self.auth_as(self.user_a)
+        self.client.post("/api/nodes/", {"name": "Station A"}, format="json")
+        forest_root = Node.get_or_create_forest_root(self.tenant_a)
+
+        response = self.client.get("/api/nodes/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        returned_ids = {n["id"] for n in response.data["results"]}
+        self.assertNotIn(forest_root.id, returned_ids)
+
+        detail = self.client.get(f"/api/nodes/{forest_root.id}/")
+        self.assertEqual(detail.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_employee_scoped_node_ids_excludes_forest_root(self):
+        station = make_station(self.tenant_a, "Station A")
+        employee = Employee.objects.create(
+            tenant=self.tenant_a, first_name="Anna", last_name="Muster", employment_pct=100
+        )
+        employee.nodes.set([station.id])
+        employee_user = User.objects.create_user(username="employee-forest-a", password="pw-not-real-123!")
+        Membership.objects.create(user=employee_user, tenant=self.tenant_a, role=Membership.Role.EMPLOYEE)
+        employee.user = employee_user
+        employee.save(update_fields=["user"])
+
+        node_ids = _employee_scoped_node_ids(
+            Membership.objects.get(user=employee_user), employee
+        )
+        forest_root = Node.get_or_create_forest_root(self.tenant_a)
+        self.assertNotIn(forest_root.id, node_ids)
+        self.assertIn(station.id, node_ids)
+
+    def test_admin_cannot_add_node_via_django_admin(self):
+        superuser = User.objects.create_superuser(username="root-forest", password="pw-not-real-123!")
+        self.client.force_login(superuser)
+        response = self.client.get("/admin/scheduling/node/add/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
+class PlannerHRStationScopingTests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "Natürlich gibt es in einer Klinik Planer mit
+    unterschiedlichen Zuständigkeiten! Gleiches gilt auch für HR. Nur Admin
+    darf immer alles sehen." -- Membership.scoped_nodes +
+    _employee_scoped_node_ids-Erweiterung.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-scoping")
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_a_team = self.node_a.add_child(name="Team A1", tenant=self.tenant)
+        self.node_b = make_station(self.tenant, "Station B")
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        self.admin_membership = Membership.objects.create(
+            user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN
+        )
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        self.planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        self.hr_user = User.objects.create_user(username="hr", password="pw-not-real-123!")
+        self.hr_membership = Membership.objects.create(
+            user=self.hr_user, tenant=self.tenant, role=Membership.Role.HR
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_planner_without_scoped_nodes_sees_all_stations(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/nodes/")
+        ids = {n["id"] for n in response.data["results"]}
+        self.assertEqual(ids, {self.node_a.id, self.node_a_team.id, self.node_b.id})
+
+    def test_planner_with_scoped_nodes_sees_only_those_plus_descendants(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/nodes/")
+        ids = {n["id"] for n in response.data["results"]}
+        # node_a UND sein Kind (Team A1) sichtbar, node_b nicht -- anders als
+        # bei EMPLOYEE (nur eine Elternebene) reicht hier eine Ebene NICHT:
+        # ein "Bereich" soll seine komplette Unterstruktur einschliessen.
+        self.assertEqual(ids, {self.node_a.id, self.node_a_team.id})
+
+    def test_hr_with_scoped_nodes_is_limited_too(self):
+        self.hr_membership.scoped_nodes.add(self.node_b)
+        self.auth_as(self.hr_user)
+        response = self.client.get("/api/nodes/")
+        ids = {n["id"] for n in response.data["results"]}
+        self.assertEqual(ids, {self.node_b.id})
+
+    def test_admin_always_sees_all_stations_even_if_scoped_nodes_set(self):
+        # Direkt über die ORM gesetzt (nicht über den Endpoint -- der lehnt
+        # das für ADMIN-Mitgliedschaften mit einem Validierungsfehler ab,
+        # siehe MembershipViewSetTests) -- selbst dann darf es keinen Effekt
+        # haben: "Nur Admin darf immer alles sehen."
+        self.admin_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/nodes/")
+        ids = {n["id"] for n in response.data["results"]}
+        self.assertEqual(ids, {self.node_a.id, self.node_a_team.id, self.node_b.id})
+
+
+class TimeRecordOverviewAPITests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "ich muss die Stationen durchsuchen, bis ich
+    die zu bestätigende Erfassung finde" -- ?status=/?node=-Filter auf
+    TimeRecordViewSet, Stations-Scoping, sowie das neue
+    MissingTimeRecordViewSet ("Noch nicht erfasst").
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-timerecord-overview")
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_b = make_station(self.tenant, "Station B")
+        self.template_a = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_a, name="Tagdienst A",
+            start_time=time(8, 0), end_time=time(16, 0), break_minutes=30,
+        )
+        self.template_b = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_b, name="Tagdienst B",
+            start_time=time(8, 0), end_time=time(16, 0), break_minutes=30,
+        )
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        self.planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        self.employee_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, first_name="Alice", last_name="A", employment_pct=100
+        )
+        self.carla = Employee.objects.create(
+            tenant=self.tenant, first_name="Carla", last_name="C", employment_pct=100
+        )
+        past_date = date(2026, 7, 20)
+        self.assignment_a = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node_a, date=past_date, template=self.template_a
+        )
+        self.assignment_b = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.carla, node=self.node_b, date=past_date, template=self.template_b
+        )
+        # Nur Station B hat bereits eine (noch nicht bestätigte) Erfassung --
+        # Station A bleibt komplett unerfasst, für die "Noch nicht
+        # erfasst"-Tests unten.
+        self.record_b = TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.assignment_b,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_status_filter_returns_only_submitted(self):
+        TimeRecord.objects.create(
+            tenant=self.tenant,
+            assignment=self.assignment_a,
+            actual_start=time(8, 0),
+            actual_end=time(16, 0),
+            actual_break_minutes=30,
+            status=TimeRecord.Status.CONFIRMED,
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/time-records/?status=submitted")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.record_b.id})
+
+    def test_time_record_serializer_includes_station_and_employee_name(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/time-records/{self.record_b.id}/")
+        self.assertEqual(response.data["assignment_node_id"], self.node_b.id)
+        self.assertEqual(response.data["assignment_node_name"], "Station B")
+        self.assertEqual(response.data["assignment_employee_name"], "Carla C")
+        self.assertEqual(response.data["assignment_date"], "2026-07-20")
+
+    def test_planner_with_scoped_nodes_only_sees_own_station_time_records(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/time-records/")
+        ids = {r["id"] for r in response.data["results"]}
+        # record_b liegt auf Station B, ausserhalb des gescopten Bereichs.
+        self.assertEqual(ids, set())
+
+    def test_missing_time_records_lists_station_a_but_not_station_b(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/missing-time-records/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.assignment_a.id})
+
+    def test_missing_time_records_excludes_future_assignments(self):
+        future_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_a, name="Spätdienst",
+            start_time=time(14, 0), end_time=time(22, 0), break_minutes=30,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            node=self.node_a,
+            date=date(2099, 1, 1),
+            template=future_template,
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/missing-time-records/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.assignment_a.id})
+
+    def test_missing_time_records_scoped_for_planner(self):
+        self.planner_membership.scoped_nodes.add(self.node_b)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/missing-time-records/")
+        # Station A (mit der fehlenden Erfassung) liegt ausserhalb des
+        # gescopten Bereichs -- Station B hat bereits eine Erfassung, ist
+        # also ohnehin leer, aber sichtbar.
+        self.assertEqual(response.data["results"], [])
+
+    def test_missing_time_records_forbidden_for_plain_employee(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get("/api/missing-time-records/")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_missing_time_records_is_read_only(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post("/api/missing-time-records/", {})
+        self.assertEqual(response.status_code, 405)
+
+    def test_task_counts_time_records_scoped_to_planner_stations(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        # record_b (SUBMITTED) liegt auf Station B, ausserhalb des Scopes --
+        # der Badge-Zähler darf ihn nicht mehr mitzählen, sonst zeigt die
+        # Zahl wieder auf eine Erfassung, die der Planer gar nicht sieht.
+        self.assertEqual(response.data["task_counts"]["time_records"], 0)
+
+    def test_task_counts_time_records_unscoped_for_planner_without_scoped_nodes(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.data["task_counts"]["time_records"], 1)
+
+
+class PayrollCategoryMappingModelTests(TestCase):
+    """
+    MVP-Fahrplan Block 2, Punkt 30: PayrollCategoryMapping-Constraints
+    (genau eines von category/special_template, Eindeutigkeit pro Tenant).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-pcm")
+        self.node = make_station(self.tenant, "Station A")
+        self.special_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Pikett",
+            start_time=time(18, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+            surcharge_pct=20,
+        )
+        self.absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+
+    def test_clean_rejects_both_category_and_special_template_set(self):
+        mapping = PayrollCategoryMapping(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            special_template=self.special_template,
+            payroll_code="100",
+        )
+        with self.assertRaises(ValidationError):
+            mapping.full_clean()
+
+    def test_clean_rejects_category_and_absence_type_both_set(self):
+        mapping = PayrollCategoryMapping(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            absence_type=self.absence_type,
+            payroll_code="100",
+        )
+        with self.assertRaises(ValidationError):
+            mapping.full_clean()
+
+    def test_clean_rejects_neither_set(self):
+        mapping = PayrollCategoryMapping(tenant=self.tenant, payroll_code="100")
+        with self.assertRaises(ValidationError):
+            mapping.full_clean()
+
+    def test_unique_category_per_tenant(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, category=PayrollCategoryMapping.Category.REGULAR_HOURS, payroll_code="100"
+        )
+        with self.assertRaises(IntegrityError):
+            PayrollCategoryMapping.objects.create(
+                tenant=self.tenant, category=PayrollCategoryMapping.Category.REGULAR_HOURS, payroll_code="200"
+            )
+
+    def test_unique_special_template_per_tenant(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, special_template=self.special_template, payroll_code="900"
+        )
+        with self.assertRaises(IntegrityError):
+            PayrollCategoryMapping.objects.create(
+                tenant=self.tenant, special_template=self.special_template, payroll_code="901"
+            )
+
+    def test_unique_absence_type_per_tenant(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, absence_type=self.absence_type, payroll_code="700"
+        )
+        with self.assertRaises(IntegrityError):
+            PayrollCategoryMapping.objects.create(
+                tenant=self.tenant, absence_type=self.absence_type, payroll_code="701"
+            )
+
+
+class PayrollCategoryMappingAPITests(APITestCase):
+    """API-Berechtigungen für PayrollCategoryMappingViewSet: Admin-only Schreiben, alle Rollen lesen."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-pcm-api")
+        self.other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-pcm-api")
+        self.node = make_station(self.tenant, "Station A")
+        self.special_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Pikett",
+            start_time=time(18, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+            surcharge_pct=20,
+        )
+        self.other_special_template = TimeTemplate.objects.create(
+            tenant=self.other_tenant,
+            node=make_station(self.other_tenant, "Station X"),
+            name="Pikett B",
+            start_time=time(18, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+            surcharge_pct=20,
+        )
+        self.absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+        self.other_absence_type = AbsenceType.objects.create(tenant=self.other_tenant, name="Militärdienst B")
+        self.admin_user = User.objects.create_user(username="pcm-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="pcm-planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_can_create_mapping(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"category": "regular_hours", "payroll_code": "100", "payroll_label": "Normalstunden"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_planner_cannot_write(self):
+        self.auth_as(self.planner_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/", {"category": "regular_hours", "payroll_code": "100"}
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_planner_can_read(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, category=PayrollCategoryMapping.Category.REGULAR_HOURS, payroll_code="100"
+        )
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/payroll-category-mappings/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["results"]), 1)
+
+    def test_create_rejects_both_category_and_special_template(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"category": "regular_hours", "special_template": self.special_template.id, "payroll_code": "100"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_rejects_special_template_from_other_tenant(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"special_template": self.other_special_template.id, "payroll_code": "100"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_admin_can_create_absence_type_mapping(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"absence_type": self.absence_type.id, "payroll_code": "700", "payroll_label": "Militärdienst"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_create_rejects_category_and_absence_type_both_set(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"category": "regular_hours", "absence_type": self.absence_type.id, "payroll_code": "100"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_rejects_absence_type_from_other_tenant(self):
+        self.auth_as(self.admin_user)
+        response = self.client.post(
+            "/api/payroll-category-mappings/",
+            {"absence_type": self.other_absence_type.id, "payroll_code": "100"},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class PayrollRawLinesTests(TestCase):
+    """
+    MVP-Fahrplan Block 2, Punkt 30/31: Employee._monthly_absence_day_breakdown()
+    und Employee.payroll_raw_lines() -- Rohdaten für den Lohn-Export, Juni 2026
+    (22 Mo-Fr-Arbeitstage, kein Kanton -- kein Feiertagsabzug, handrechenbar).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-payroll")
+        self.node = make_station(self.tenant, "Station A")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 30),
+            break_minutes=30,  # 8h netto
+        )
+        self.special_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Pikett",
+            start_time=time(18, 0),
+            end_time=time(22, 0),
+            category=TimeTemplate.Category.SPECIAL,
+            surcharge_pct=20,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="A",
+            employment_pct=100,
+            employment_start_date=date(2026, 6, 1),
+            standard_weekly_hours=40,
+        )
+        self.vacation_type = AbsenceType.objects.create(
+            tenant=self.tenant, name="Ferien", deducts_vacation_days=True
+        )
+        self.sick_type = AbsenceType.objects.create(tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True)
+        self.other_type = AbsenceType.objects.create(tenant=self.tenant, name="Sonstiges")
+
+    def _assign(self, day, template=None):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=day, template=template or self.template
+        )
+
+    def _line(self, lines, category=None, special_template_id=None, absence_type_id=None):
+        return next(
+            l
+            for l in lines
+            if l["category"] == category
+            and l["special_template_id"] == special_template_id
+            and l["absence_type_id"] == absence_type_id
+        )
+
+    def test_zero_amount_lines_are_omitted(self):
+        self.assertEqual(self.employee.payroll_raw_lines(2026, 6), [])
+
+    def test_regular_hours_line_excludes_overtime(self):
+        for day in [date(2026, 6, d) for d in range(1, 6)]:  # Mo-Fr, Woche 1 -- 40h, kein Ueberschuss
+            self._assign(day)
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        regular = self._line(lines, category=PayrollCategoryMapping.Category.REGULAR_HOURS)
+        self.assertEqual(regular["amount"], 40.0)
+        self.assertEqual(regular["unit"], "hours")
+
+    def test_settled_overtime_produces_overtime_line(self):
+        for day in [date(2026, 6, d) for d in range(1, 31) if date(2026, 6, d).weekday() < 5]:
+            self._assign(day)
+        for d in (6, 13, 20):  # 3 zusaetzliche Samstage -> 24h Saldo, 4h ueber dem 20h-Korridor
+            self._assign(date(2026, 6, d))
+        self.employee.confirm_overtime_settlement(2026, 6)
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        overtime = self._line(lines, category=PayrollCategoryMapping.Category.OVERTIME)
+        self.assertEqual(overtime["amount"], 1.0)  # 4h * 25% Tenant-Default
+
+    def test_sunday_shift_produces_sunday_surcharge_line(self):
+        self._assign(date(2026, 6, 7))  # Sonntag
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        sunday = self._line(lines, category=PayrollCategoryMapping.Category.SUNDAY_SURCHARGE)
+        self.assertEqual(sunday["amount"], 4.0)  # 8h * 50% Tenant-Default
+
+    def test_absence_days_grouped_by_type(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 2),
+            type=self.vacation_type,
+            status=Absence.Status.APPROVED,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 3),
+            end_date=date(2026, 6, 3),
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 4),
+            end_date=date(2026, 6, 4),
+            type=self.other_type,
+            status=Absence.Status.APPROVED,
+        )
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        vacation = self._line(lines, category=PayrollCategoryMapping.Category.VACATION_DAYS)
+        sick = self._line(lines, category=PayrollCategoryMapping.Category.SICK_DAYS)
+        other = self._line(lines, category=None, absence_type_id=self.other_type.id)
+        self.assertEqual(vacation["amount"], 2)
+        self.assertEqual(sick["amount"], 1)
+        self.assertEqual(other["amount"], 1)
+        self.assertEqual(vacation["unit"], "days")
+
+    def test_other_absence_types_get_separate_lines(self):
+        # Nutzer-Feedback (2026-08): "sonstige Absenztage müssten
+        # aufgeschlüsselt werden" -- Militärdienst und unbezahlter Urlaub
+        # brauchen unterschiedliche Lohnart-Codes, dürfen also nicht in
+        # einer gemeinsamen Zeile landen.
+        military_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 4),
+            end_date=date(2026, 6, 4),
+            type=self.other_type,
+            status=Absence.Status.APPROVED,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 8),
+            end_date=date(2026, 6, 9),
+            type=military_type,
+            status=Absence.Status.APPROVED,
+        )
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        other = self._line(lines, category=None, absence_type_id=self.other_type.id)
+        military = self._line(lines, category=None, absence_type_id=military_type.id)
+        self.assertEqual(other["amount"], 1)
+        self.assertEqual(military["amount"], 2)
+        self.assertEqual(military["unit"], "days")
+
+    def test_sick_days_split_by_entitlement_under_scale_model(self):
+        # Basler Skala, 1. Dienstjahr = 21 Tage Anspruch (siehe
+        # _basel_scale_weeks). employment_start_date=2026-01-01, also deckt
+        # das Dienstjahr-Fenster den gesamten Kalenderjahr-Rest 2026 ab.
+        self.employee.employment_start_date = date(2026, 1, 1)
+        self.employee.save(update_fields=["employment_start_date"])
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 5, 1),
+            end_date=date(2026, 5, 20),  # 20 Tage, vor Juni verbraucht
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 5),  # 5 Tage im Juni, nur noch 1 Tag Anspruch übrig
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        paid = self._line(lines, category=PayrollCategoryMapping.Category.SICK_DAYS)
+        exhausted = self._line(lines, category=PayrollCategoryMapping.Category.SICK_DAYS_EXHAUSTED)
+        self.assertEqual(paid["amount"], 1)
+        self.assertEqual(exhausted["amount"], 4)
+
+    def test_sick_days_not_split_under_insurance_model(self):
+        self.tenant.sick_pay_model = Tenant.SickPayModel.DAILY_ALLOWANCE_INSURANCE
+        self.tenant.save(update_fields=["sick_pay_model"])
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 25),  # 25 Tage -- würde die Skala längst übersteigen
+            type=self.sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        sick = self._line(lines, category=PayrollCategoryMapping.Category.SICK_DAYS)
+        self.assertEqual(sick["amount"], 25)
+        self.assertFalse(
+            any(l["category"] == PayrollCategoryMapping.Category.SICK_DAYS_EXHAUSTED for l in lines)
+        )
+
+    def test_pending_absence_not_counted(self):
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 1),
+            type=self.vacation_type,
+            status=Absence.Status.PENDING,
+        )
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        self.assertFalse(any(l["category"] == PayrollCategoryMapping.Category.VACATION_DAYS for l in lines))
+
+    def test_special_surcharge_produces_line_with_special_template_id(self):
+        self._assign(date(2026, 6, 8), template=self.special_template)
+        lines = self.employee.payroll_raw_lines(2026, 6)
+        special = self._line(lines, category=None, special_template_id=self.special_template.id)
+        self.assertEqual(special["amount"], 0.8)  # 4h * 20%
+
+
+class CostCenterTests(TestCase):
+    """
+    Nutzer-Feedback (2026-08): "was wir völlig vergessen haben sind
+    Kostenstellen auf den Abteilungen" -- Node.effective_cost_center()
+    (Vererbung entlang der Stationshierarchie) und Employee.
+    effective_cost_center() (eindeutig nur, wenn alle Stationen des
+    Mitarbeitenden übereinstimmen).
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-kst")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+
+    def test_node_uses_own_cost_center(self):
+        node = make_station(self.tenant, "Station A", cost_center="KST-100")
+        self.assertEqual(node.effective_cost_center(), "KST-100")
+
+    def test_node_inherits_from_parent(self):
+        root = make_station(self.tenant, "Station A", cost_center="KST-100")
+        team = root.add_child(name="Team 1", tenant=self.tenant)
+        self.assertEqual(team.effective_cost_center(), "KST-100")
+
+    def test_node_inherits_from_nearest_ancestor(self):
+        root = make_station(self.tenant, "Standort", cost_center="KST-ROOT")
+        station = root.add_child(name="Station A", tenant=self.tenant, cost_center="KST-100")
+        team = station.add_child(name="Team 1", tenant=self.tenant)
+        self.assertEqual(team.effective_cost_center(), "KST-100")
+
+    def test_node_without_any_cost_center_returns_none(self):
+        root = make_station(self.tenant, "Station A")
+        child = root.add_child(name="Team 1", tenant=self.tenant)
+        self.assertIsNone(child.effective_cost_center())
+
+    def test_employee_cost_center_unique_across_nodes(self):
+        node_a = make_station(self.tenant, "Station A", cost_center="KST-100")
+        node_b = make_station(self.tenant, "Station B", cost_center="KST-100")
+        self.employee.nodes.add(node_a, node_b)
+        self.assertEqual(self.employee.effective_cost_center(), "KST-100")
+
+    def test_employee_cost_center_ambiguous_returns_none(self):
+        node_a = make_station(self.tenant, "Station A", cost_center="KST-100")
+        node_b = make_station(self.tenant, "Station B", cost_center="KST-200")
+        self.employee.nodes.add(node_a, node_b)
+        self.assertIsNone(self.employee.effective_cost_center())
+
+    def test_employee_without_nodes_returns_none(self):
+        self.assertIsNone(self.employee.effective_cost_center())
+
+
+class PayrollExportViewTests(APITestCase):
+    """
+    MVP-Fahrplan Block 2, Punkt 31: PayrollExportView -- JSON/CSV-Export,
+    Admin-only, Warnliste bei fehlendem Lohnart-Mapping.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-export")
+        self.node = make_station(self.tenant, "Station A")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 30),
+            break_minutes=30,
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant,
+            first_name="Anna",
+            last_name="A",
+            employment_pct=100,
+            employment_start_date=date(2026, 6, 1),
+            standard_weekly_hours=40,
+        )
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee, node=self.node, date=date(2026, 6, 1), template=self.template
+        )
+        self.admin_user = User.objects.create_user(username="export-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="export-planner", password="pw-not-real-123!")
+        Membership.objects.create(user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_forbidden_for_planner(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_missing_month_param_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_month_format_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=not-a-month")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unmapped_category_appears_as_warning_not_silently_dropped(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["employees"], [])
+        self.assertIn("Normalstunden: kein Lohnart-Code konfiguriert", response.data["warnings"])
+
+    def test_mapped_category_appears_in_employee_lines(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+            payroll_label="Normalstunden",
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data["employees"]), 1)
+        entry = response.data["employees"][0]
+        self.assertEqual(entry["employee_name"], "Anna A")
+        self.assertIsNone(entry["cost_center"])
+        self.assertEqual(entry["lines"], [{"payroll_code": "100", "payroll_label": "Normalstunden", "amount": 8.0, "unit": "hours"}])
+        self.assertEqual(response.data["warnings"], [])
+
+    def test_deactivated_mapping_is_excluded_without_warning(self):
+        # Nutzer-Feedback (2026-08): "deaktivierte Kategorien gelten als
+        # bewusst ausgeschlossen" -- anders als eine nie konfigurierte
+        # Kategorie (Warnung, siehe test_unmapped_category_appears_...) darf
+        # eine vom Admin bewusst deaktivierte Zeile KEINE Warnung auslösen.
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+            is_active=False,
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertEqual(response.data["employees"], [])
+        self.assertEqual(response.data["warnings"], [])
+
+    def test_cost_center_included_when_employee_nodes_agree(self):
+        self.node.cost_center = "KST-100"
+        self.node.save(update_fields=["cost_center"])
+        self.employee.nodes.add(self.node)
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertEqual(response.data["employees"][0]["cost_center"], "KST-100")
+
+    def test_absence_type_mapping_appears_in_employee_lines(self):
+        military_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 11),
+            type=military_type,
+            status=Absence.Status.APPROVED,
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, absence_type=military_type, payroll_code="700", payroll_label="Militärdienst"
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        lines = response.data["employees"][0]["lines"]
+        self.assertIn(
+            {"payroll_code": "700", "payroll_label": "Militärdienst", "amount": 2.0, "unit": "days"}, lines
+        )
+        self.assertEqual(response.data["warnings"], [])
+
+    def test_unmapped_absence_type_produces_warning(self):
+        military_type = AbsenceType.objects.create(tenant=self.tenant, name="Militärdienst")
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 10),
+            type=military_type,
+            status=Absence.Status.APPROVED,
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertIn("Militärdienst: kein Lohnart-Code konfiguriert", response.data["warnings"])
+
+    def test_sick_pay_context_present_when_sick_days_exist(self):
+        sick_type = AbsenceType.objects.create(tenant=self.tenant, name="Krankheit", counts_as_sick_leave=True)
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee,
+            start_date=date(2026, 6, 15),
+            end_date=date(2026, 6, 15),
+            type=sick_type,
+            status=Absence.Status.APPROVED,
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant, category=PayrollCategoryMapping.Category.SICK_DAYS, payroll_code="200"
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        context = response.data["employees"][0]["sick_pay_context"]
+        self.assertEqual(context["model"], Tenant.SickPayModel.SCALE)
+        self.assertEqual(context["scale"], Tenant.SickPayScale.BASEL)
+        self.assertEqual(context["entitlement_days"], 21)
+
+    def test_sick_pay_context_absent_without_sick_days(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06")
+        self.assertIsNone(response.data["employees"][0]["sick_pay_context"])
+
+    def test_csv_output(self):
+        PayrollCategoryMapping.objects.create(
+            tenant=self.tenant,
+            category=PayrollCategoryMapping.Category.REGULAR_HOURS,
+            payroll_code="100",
+            payroll_label="Normalstunden",
+        )
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/payroll-export/?month=2026-06&output=csv")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        self.assertIn("attachment", response["Content-Disposition"])
+        content = response.content.decode()
+        self.assertIn("Personalnummer,Name,Kostenstelle,Lohnart-Code,Bezeichnung,Menge,Einheit,Periode", content)
+        self.assertIn(f"{self.employee.id},Anna A,,100,Normalstunden,8.0,hours,2026-06", content)
+
+
+class PlanExportViewTests(APITestCase):
+    """
+    MVP-Fahrplan Block 2, Punkt 5: PlanExportView -- PDF/CSV-Export des
+    Planblatts. Sichtbarkeit identisch zum Planblatt selbst (Stations-Scope
+    über _employee_scoped_node_ids), keine Admin-Beschränkung wie beim
+    Lohn-Export.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-planexport")
+        self.node = make_station(self.tenant, "Station A")
+        self.other_node = make_station(self.tenant, "Station B")
+        self.template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Frühdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 30),
+            icon="F",
+        )
+        self.absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", icon="U")
+        self.employee1 = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee1.nodes.add(self.node)
+        self.employee2 = Employee.objects.create(
+            tenant=self.tenant, first_name="Bruno", last_name="B", employment_pct=100
+        )
+        self.employee2.nodes.add(self.node)
+        ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.employee1, node=self.node, date=date(2026, 6, 1), template=self.template
+        )
+        Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.employee2,
+            start_date=date(2026, 6, 2),
+            end_date=date(2026, 6, 2),
+            type=self.absence_type,
+            status=Absence.Status.APPROVED,
+        )
+
+        self.admin_user = User.objects.create_user(username="pe-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+
+        self.planner_user = User.objects.create_user(username="pe-planner", password="pw-not-real-123!")
+        planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        planner_membership.scoped_nodes.add(self.node)
+
+        self.own_employee_user = User.objects.create_user(username="pe-own", password="pw-not-real-123!")
+        Membership.objects.create(user=self.own_employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.employee1.user = self.own_employee_user
+        self.employee1.save(update_fields=["user"])
+
+        self.outsider_user = User.objects.create_user(username="pe-outsider", password="pw-not-real-123!")
+        Membership.objects.create(user=self.outsider_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.outsider = Employee.objects.create(
+            tenant=self.tenant, user=self.outsider_user, first_name="Carla", last_name="C", employment_pct=100
+        )
+        self.outsider.nodes.add(self.other_node)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_missing_node_param_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_missing_month_param_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_month_format_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id, "month": "not-a-month"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_unknown_node_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": 999999, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_admin_can_export_any_node(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_planner_forbidden_for_node_outside_scope(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/plan-export/", {"node": self.other_node.id, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_employee_can_export_own_station(self):
+        self.auth_as(self.own_employee_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_employee_forbidden_for_other_station(self):
+        self.auth_as(self.own_employee_user)
+        response = self.client.get("/api/plan-export/", {"node": self.other_node.id, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_pdf_output_default(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id, "month": "2026-06"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "application/pdf")
+        self.assertIn("attachment", response["Content-Disposition"])
+        self.assertTrue(response.content.startswith(b"%PDF"))
+
+    def test_csv_output_includes_shift_and_absence_rows(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/plan-export/", {"node": self.node.id, "month": "2026-06", "output": "csv"})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response["Content-Type"], "text/csv")
+        content = response.content.decode()
+        self.assertIn("Personalnummer,Name,Datum,Wochentag,Typ,Bezeichnung,Von,Bis", content)
+        self.assertIn(f"{self.employee1.id},Anna A,2026-06-01,Mo,Dienst,Frühdienst,08:00,16:30", content)
+        self.assertIn(f"{self.employee2.id},Bruno B,2026-06-02,Di,Absenz,Ferien,,", content)
+
+
+class FairnessSummaryTests(TestCase):
+    """
+    MVP-Fahrplan Block 2, Punkt 20: Employee.fairness_summary() -- Stunden-
+    basierte Fairness-Punkte für Sonntags-/Nachtzuweisungen über ein
+    gleitendes 365-Tage-Fenster, Wunschdienst-Ausnahme, Team-Durchschnitt.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-fairness")
+        self.tenant.sunday_shift_bonus_points_per_hour = 2.0
+        self.tenant.night_shift_bonus_points_per_hour = 0.5
+        self.tenant.save()
+        self.node = make_station(self.tenant, "Station A")
+        self.day_template = TimeTemplate.objects.create(
+            tenant=self.tenant,
+            node=self.node,
+            name="Tagdienst",
+            start_time=time(8, 0),
+            end_time=time(16, 0),
+            break_minutes=30,  # 7.5h netto
+        )
+        # 23:00-06:00 deckt sich exakt mit dem Nachtarbeitszeitraum (Art. 16
+        # ArG) -> 7h Nachtstunden, einfache Erwartungswerte (siehe andere
+        # Nachtarbeit-Tests in dieser Datei).
+        self.night_template = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node, name="Nachtdienst", start_time=time(23, 0), end_time=time(6, 0)
+        )
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee.nodes.add(self.node)
+        self.reference_date = date(2026, 6, 15)
+
+    def _assign(self, employee, day, template):
+        return ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=employee, node=self.node, date=day, template=template
+        )
+
+    def test_sunday_shift_produces_points(self):
+        self._assign(self.employee, date(2026, 6, 7), self.day_template)  # Sonntag
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["sunday_hours"], 7.5)
+        self.assertEqual(summary["sunday_points"], 15.0)  # 7.5h * 2.0
+
+    def test_night_shift_produces_points(self):
+        self._assign(self.employee, date(2026, 6, 8), self.night_template)  # Montag
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["night_hours"], 7.0)
+        self.assertEqual(summary["night_points"], 3.5)  # 7h * 0.5
+
+    def test_sunday_night_shift_combines_both_signals(self):
+        self._assign(self.employee, date(2026, 6, 7), self.night_template)  # Sonntagnacht
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["sunday_hours"], 7.0)
+        self.assertEqual(summary["night_hours"], 7.0)
+        self.assertEqual(summary["points"], 17.5)  # 7*2.0 + 7*0.5
+
+    def test_wunschdienst_excludes_assignment_entirely(self):
+        self._assign(self.employee, date(2026, 6, 7), self.day_template)  # Sonntag
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.employee, date=date(2026, 6, 7), type=ShiftPreference.Type.SHIFT
+        )
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["sunday_hours"], 0.0)
+        self.assertEqual(summary["points"], 0.0)
+
+    def test_wunschfrei_does_not_exclude(self):
+        self._assign(self.employee, date(2026, 6, 7), self.day_template)  # Sonntag
+        ShiftPreference.objects.create(
+            tenant=self.tenant, employee=self.employee, date=date(2026, 6, 7), type=ShiftPreference.Type.FREE
+        )
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["sunday_hours"], 7.5)
+
+    def test_assignment_outside_window_excluded(self):
+        old_day = self.reference_date - timedelta(days=400)
+        self._assign(self.employee, old_day, self.night_template)
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["night_hours"], 0.0)
+
+    def test_assignment_exactly_at_window_boundary_included(self):
+        boundary_day = self.reference_date - timedelta(days=365)
+        self._assign(self.employee, boundary_day, self.night_template)
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["night_hours"], 7.0)
+
+    def test_team_average_across_colleagues(self):
+        colleague = Employee.objects.create(
+            tenant=self.tenant, first_name="Bruno", last_name="B", employment_pct=100
+        )
+        colleague.nodes.add(self.node)
+        self._assign(self.employee, date(2026, 6, 8), self.night_template)  # 3.5 Punkte
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["points"], 3.5)
+        self.assertEqual(summary["team_average_points"], 1.75)  # (3.5 + 0) / 2
+
+    def test_employee_without_node_has_no_team_average(self):
+        lone = Employee.objects.create(tenant=self.tenant, first_name="Carla", last_name="C", employment_pct=100)
+        summary = lone.fairness_summary(self.reference_date)
+        self.assertIsNone(summary["team_average_points"])
+
+    def test_colleague_on_different_station_excluded_from_average(self):
+        other_node = make_station(self.tenant, "Station B")
+        outsider = Employee.objects.create(
+            tenant=self.tenant, first_name="Dora", last_name="D", employment_pct=100
+        )
+        outsider.nodes.add(other_node)
+        self._assign(outsider, date(2026, 6, 8), self.night_template)
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["team_average_points"], 0.0)  # nur Anna selbst zählt, 0 Punkte
+
+    def test_team_average_normalized_by_employment_pct(self):
+        """
+        Anna (100%) und Bruno (40%) haben denselben Nachtdienst uebernommen
+        (3.5 Punkte). Rein rohe Punkte wuerden Bruno als "unterdurchschnittlich
+        belastet" ausweisen, obwohl er bei seinem Pensum bereits denselben
+        Anteil traegt wie Anna -- die Vollzeit-Normalisierung muss das
+        auffangen: der Team-Durchschnitt (auf 100% normalisiert, dann auf
+        Annas Pensum zurueckgerechnet) soll ihren eigenen Punkten entsprechen.
+        """
+        colleague = Employee.objects.create(
+            tenant=self.tenant, first_name="Bruno", last_name="B", employment_pct=40
+        )
+        colleague.nodes.add(self.node)
+        self._assign(self.employee, date(2026, 6, 8), self.night_template)  # Anna: 3.5 Punkte, 100%
+        self._assign(colleague, date(2026, 6, 9), self.night_template)  # Bruno: 3.5 Punkte, 40%
+
+        anna_summary = self.employee.fairness_summary(self.reference_date)
+        # Anna: 3.5 / 1.0 = 3.5 Punkte/FTE. Bruno: 3.5 / 0.4 = 8.75 Punkte/FTE.
+        # Durchschnitt Punkte/FTE = (3.5 + 8.75) / 2 = 6.125, zurueckgerechnet
+        # auf Annas 100% Pensum: 6.125 * 1.0 = 6.125 -> 6.13 (gerundet).
+        self.assertEqual(anna_summary["points"], 3.5)
+        self.assertEqual(anna_summary["team_average_points"], 6.12)
+
+        bruno_summary = colleague.fairness_summary(self.reference_date)
+        # Gleicher Punkte/FTE-Durchschnitt (6.125), zurueckgerechnet auf
+        # Brunos 40% Pensum: 6.125 * 0.4 = 2.45.
+        self.assertEqual(bruno_summary["points"], 3.5)
+        self.assertEqual(bruno_summary["team_average_points"], 2.45)
+
+    def test_colleague_with_zero_employment_pct_excluded_from_normalization(self):
+        """
+        employment_pct=0 ist technisch erlaubt (PositiveSmallIntegerField),
+        aber fachlich eine Dateninkonsistenz (keine reale 0%-Anstellung) --
+        darf keine Division durch 0 auslösen, wird aus der Normalisierung
+        ausgeschlossen statt den Durchschnitt zu verfälschen.
+        """
+        colleague = Employee.objects.create(tenant=self.tenant, first_name="Zoe", last_name="Z", employment_pct=0)
+        colleague.nodes.add(self.node)
+        self._assign(colleague, date(2026, 6, 8), self.night_template)
+        summary = self.employee.fairness_summary(self.reference_date)
+        self.assertEqual(summary["team_average_points"], 0.0)  # nur Anna zählt (0 Punkte), Zoe ausgeschlossen
+
+
+class FairnessSummaryAPITests(APITestCase):
+    """API-Berechtigungen für EmployeeViewSet.fairness -- Lesen für alle Rollen offen."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-fairness-api")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.admin_user = User.objects.create_user(username="fair-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.employee_user = User.objects.create_user(username="fair-emp", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_can_read(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/fairness/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_employee_can_read(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/fairness/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_invalid_as_of_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/fairness/?as_of=not-a-date")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_default_as_of_is_today(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/{self.employee.id}/fairness/")
+        self.assertEqual(response.data["window_end"], str(timezone.localdate()))
+
+
+class BalanceFairnessBulkAPITests(APITestCase):
+    """
+    EmployeeViewSet.balance_fairness_bulk -- Performance-Fix (Nutzer-Feedback
+    2026-08): liefert Saldo+Fairness für mehrere Mitarbeitende in einem
+    Request statt 2xN Einzelrequests pro Mitarbeitendenliste.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-a-bulk")
+        self.node = make_station(self.tenant, "Station A")
+        self.employee1 = Employee.objects.create(
+            tenant=self.tenant, first_name="Anna", last_name="A", employment_pct=100
+        )
+        self.employee1.nodes.add(self.node)
+        self.employee2 = Employee.objects.create(
+            tenant=self.tenant, first_name="Bruno", last_name="B", employment_pct=100
+        )
+        self.employee2.nodes.add(self.node)
+
+        self.other_tenant = Tenant.objects.create(name="Klinik B", slug="klinik-b-bulk")
+        self.other_employee = Employee.objects.create(
+            tenant=self.other_tenant, first_name="Chris", last_name="C", employment_pct=100
+        )
+
+        self.admin_user = User.objects.create_user(username="bulk-admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.employee_user = User.objects.create_user(username="bulk-emp", password="pw-not-real-123!")
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_admin_can_read(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(
+            f"/api/employees/balance-fairness-bulk/?ids={self.employee1.id},{self.employee2.id}"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 2)
+
+    def test_employee_can_read(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get(f"/api/employees/balance-fairness-bulk/?ids={self.employee1.id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_returns_same_shape_as_single_endpoints(self):
+        self.auth_as(self.admin_user)
+        bulk_response = self.client.get(f"/api/employees/balance-fairness-bulk/?ids={self.employee1.id}")
+        balance_response = self.client.get(f"/api/employees/{self.employee1.id}/balance/")
+        fairness_response = self.client.get(f"/api/employees/{self.employee1.id}/fairness/")
+
+        entry = bulk_response.data[0]
+        self.assertEqual(entry["id"], self.employee1.id)
+        self.assertEqual(entry["balance"], balance_response.data)
+        self.assertEqual(entry["fairness"], fairness_response.data)
+
+    def test_missing_id_silently_skipped(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/balance-fairness-bulk/?ids={self.employee1.id},999999")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+
+    def test_id_from_other_tenant_excluded(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/employees/balance-fairness-bulk/?ids={self.other_employee.id}")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_empty_ids_returns_empty_list(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/employees/balance-fairness-bulk/?ids=")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_missing_ids_param_returns_empty_list(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/employees/balance-fairness-bulk/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
+
+    def test_invalid_ids_rejected(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/employees/balance-fairness-bulk/?ids=abc")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class AbsenceOverviewAPITests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+    aufgebaut sein wie Zeiterfassung" -- ?search=/?ordering=/?status=/?node=
+    auf AbsenceViewSet, Stations-Scoping (analog TimeRecordOverviewAPITests),
+    denormalisierte Anzeige-Felder.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-absence-overview")
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_b = make_station(self.tenant, "Station B")
+        self.absence_type = AbsenceType.objects.create(tenant=self.tenant, name="Ferien", color="#112233", icon="F")
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        self.planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        self.employee_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, first_name="Alice", last_name="A", employment_pct=100, user=self.employee_user
+        )
+        self.alice.nodes.add(self.node_a)
+        self.carla = Employee.objects.create(
+            tenant=self.tenant, first_name="Carla", last_name="C", employment_pct=100
+        )
+        self.carla.nodes.add(self.node_b)
+        Membership.objects.create(user=self.employee_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+
+        self.absence_a = Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.alice,
+            start_date=date(2026, 6, 1),
+            end_date=date(2026, 6, 2),
+            type=self.absence_type,
+            status=Absence.Status.PENDING,
+        )
+        self.absence_b = Absence.objects.create(
+            tenant=self.tenant,
+            employee=self.carla,
+            start_date=date(2026, 6, 10),
+            end_date=date(2026, 6, 11),
+            type=self.absence_type,
+            status=Absence.Status.APPROVED,
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_search_by_employee_name(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/absences/?search=Carla")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_b.id})
+
+    def test_ordering_by_start_date(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/absences/?ordering=start_date")
+        ids = [a["id"] for a in response.data["results"]]
+        self.assertEqual(ids, [self.absence_a.id, self.absence_b.id])
+
+    def test_filter_by_status(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/absences/?status=pending")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_a.id})
+
+    def test_filter_by_node(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/absences/?node={self.node_b.id}")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_b.id})
+
+    def test_serializer_includes_employee_and_type_display_fields(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/absences/{self.absence_a.id}/")
+        self.assertEqual(response.data["employee_name"], "Alice A")
+        self.assertEqual(response.data["employee_node_names"], "Station A")
+        self.assertEqual(response.data["type_name"], "Ferien")
+        self.assertEqual(response.data["type_color"], "#112233")
+        self.assertEqual(response.data["type_icon"], "F")
+
+    def test_employee_node_names_joins_multiple_stations(self):
+        self.carla.nodes.add(self.node_a)
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/absences/{self.absence_b.id}/")
+        # Reihenfolge folgt der natuerlichen MP_Node-Baumsortierung (nach
+        # path/id), nicht der Reihenfolge der .add()-Aufrufe.
+        self.assertEqual(response.data["employee_node_names"], "Station A, Station B")
+
+    def test_planner_with_scoped_nodes_only_sees_own_station_absences(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/absences/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_a.id})
+
+    def test_planner_without_scoped_nodes_sees_all_absences(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/absences/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_a.id, self.absence_b.id})
+
+    def test_admin_always_sees_all_absences(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/absences/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_a.id, self.absence_b.id})
+
+    def test_employee_scoped_to_own_station_absences(self):
+        self.auth_as(self.employee_user)
+        response = self.client.get("/api/absences/")
+        ids = {a["id"] for a in response.data["results"]}
+        self.assertEqual(ids, {self.absence_a.id})
+
+    def test_task_counts_absences_scoped_to_planner_stations(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        # absence_a (PENDING, Station A) liegt im Scope -- zaehlt.
+        # absence_b (Station B) liegt ausserhalb, unabhaengig vom Status.
+        self.assertEqual(response.data["task_counts"]["absences"], 1)
+
+    def test_task_counts_absences_unscoped_for_planner_without_scoped_nodes(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.data["task_counts"]["absences"], 1)
+
+
+class ShiftTradeRequestOverviewAPITests(APITestCase):
+    """
+    Nutzer-Feedback (2026-08): "Abwesenheiten/Diensttausch sollen gleich
+    aufgebaut sein wie Zeiterfassung" -- ?search=/?ordering=/?open=/?node=
+    auf ShiftTradeRequestViewSet, Stations-Scoping inkl. Mitarbeiter-
+    Sonderfall (eine an mich adressierte Anfrage bleibt sichtbar, auch
+    ausserhalb meines Stations-Scopes), denormalisierte Anzeige-Felder.
+    """
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(name="Klinik A", slug="klinik-trade-overview")
+        self.node_a = make_station(self.tenant, "Station A")
+        self.node_b = make_station(self.tenant, "Station B")
+        self.template_a = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_a, name="Tagdienst A",
+            start_time=time(8, 0), end_time=time(16, 0), break_minutes=30,
+        )
+        self.template_b = TimeTemplate.objects.create(
+            tenant=self.tenant, node=self.node_b, name="Tagdienst B",
+            start_time=time(8, 0), end_time=time(16, 0), break_minutes=30,
+        )
+
+        self.admin_user = User.objects.create_user(username="admin", password="pw-not-real-123!")
+        Membership.objects.create(user=self.admin_user, tenant=self.tenant, role=Membership.Role.ADMIN)
+        self.planner_user = User.objects.create_user(username="planner", password="pw-not-real-123!")
+        self.planner_membership = Membership.objects.create(
+            user=self.planner_user, tenant=self.tenant, role=Membership.Role.PLANNER
+        )
+        self.alice_user = User.objects.create_user(username="alice", password="pw-not-real-123!")
+
+        self.alice = Employee.objects.create(
+            tenant=self.tenant, first_name="Alice", last_name="A", employment_pct=100, user=self.alice_user
+        )
+        self.alice.nodes.add(self.node_a)
+        Membership.objects.create(user=self.alice_user, tenant=self.tenant, role=Membership.Role.EMPLOYEE)
+        self.carla = Employee.objects.create(
+            tenant=self.tenant, first_name="Carla", last_name="C", employment_pct=100
+        )
+        self.carla.nodes.add(self.node_b)
+
+        self.assignment_a = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.alice, node=self.node_a, date=date(2026, 6, 1), template=self.template_a
+        )
+        self.assignment_b = ShiftAssignment.objects.create(
+            tenant=self.tenant, employee=self.carla, node=self.node_b, date=date(2026, 6, 5), template=self.template_b
+        )
+        # Anfrage a: Alice (Station A) bietet ihre Schicht Carla (Station B)
+        # an -- vom Blickwinkel eines auf Station B gescopten Planers ist das
+        # trotzdem "meine Station beteiligt" ueber requester_assignment.node.
+        self.trade_a = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.assignment_a, target_employee=self.carla
+        )
+        # Anfrage b: Carla (Station B) bietet ihre Schicht Alice (Station A)
+        # an -- fuer den Mitarbeiter-Sonderfall-Test unten: Alice ist hier
+        # Zielperson, requester_assignment.node liegt aber auf Station B,
+        # ausserhalb von Alices eigenem Stations-Scope (Station A).
+        self.trade_b = ShiftTradeRequest.objects.create(
+            tenant=self.tenant, requester_assignment=self.assignment_b, target_employee=self.alice
+        )
+
+    def auth_as(self, user):
+        token, _ = Token.objects.get_or_create(user=user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def test_search_by_requester_or_target_name(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/shift-trade-requests/?search=Carla")
+        ids = {r["id"] for r in response.data["results"]}
+        # Carla ist einmal Zielperson (trade_a) und einmal anbietende Person
+        # (trade_b) -- beide Treffer.
+        self.assertEqual(ids, {self.trade_a.id, self.trade_b.id})
+
+    def test_ordering_by_requester_date(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/shift-trade-requests/?ordering=requester_assignment__date")
+        ids = [r["id"] for r in response.data["results"]]
+        self.assertEqual(ids, [self.trade_a.id, self.trade_b.id])
+
+    def test_filter_by_open(self):
+        self.trade_a.status = ShiftTradeRequest.Status.DECLINED
+        self.trade_a.save()
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/shift-trade-requests/?open=true")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.trade_b.id})
+
+    def test_filter_by_node(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/shift-trade-requests/?node={self.node_b.id}")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.trade_b.id})
+
+    def test_serializer_includes_requester_and_target_display_fields(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get(f"/api/shift-trade-requests/{self.trade_a.id}/")
+        self.assertEqual(response.data["requester_employee_name"], "Alice A")
+        self.assertEqual(response.data["requester_node_name"], "Station A")
+        self.assertEqual(response.data["requester_date"], "2026-06-01")
+        self.assertEqual(response.data["requester_template_name"], "Tagdienst A")
+        self.assertEqual(response.data["target_employee_name"], "Carla C")
+        self.assertIsNone(response.data["target_assignment_date"])
+        self.assertIsNone(response.data["target_assignment_template_id"])
+
+    def test_planner_with_scoped_nodes_only_sees_own_station_trades(self):
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/shift-trade-requests/")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.trade_a.id})
+
+    def test_planner_without_scoped_nodes_sees_all_trades(self):
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/shift-trade-requests/")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.trade_a.id, self.trade_b.id})
+
+    def test_admin_always_sees_all_trades(self):
+        self.auth_as(self.admin_user)
+        response = self.client.get("/api/shift-trade-requests/")
+        ids = {r["id"] for r in response.data["results"]}
+        self.assertEqual(ids, {self.trade_a.id, self.trade_b.id})
+
+    def test_employee_scoped_to_own_station_trades(self):
+        self.auth_as(self.alice_user)
+        response = self.client.get("/api/shift-trade-requests/")
+        ids = {r["id"] for r in response.data["results"]}
+        # trade_a: Alice ist Anbieterin (eigene Station A) -> sichtbar.
+        # trade_b: Alice ist NICHT auf der anbietenden Station (B), aber
+        # persoenlich als Zielperson adressiert -- muss trotzdem sichtbar
+        # sein (Mitarbeiter-Sonderfall), sonst koennte sie nicht darauf
+        # reagieren.
+        self.assertEqual(ids, {self.trade_a.id, self.trade_b.id})
+
+    def test_employee_still_sees_trade_addressed_to_them_outside_own_station_scope(self):
+        # Regressionstest fuer genau den Sonderfall oben: ohne die
+        # Q-OR-Erweiterung in ShiftTradeRequestViewSet.get_queryset() wuerde
+        # trade_b hier fehlen UND Alice koennte accept/decline gar nicht mehr
+        # aufrufen (get_object() liefert 404 ausserhalb der sichtbaren
+        # Queryset).
+        self.auth_as(self.alice_user)
+        response = self.client.get(f"/api/shift-trade-requests/{self.trade_b.id}/")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        accept_response = self.client.post(f"/api/shift-trade-requests/{self.trade_b.id}/accept/")
+        self.assertEqual(accept_response.status_code, status.HTTP_200_OK)
+
+    def test_task_counts_trades_scoped_to_planner_stations(self):
+        self.trade_a.status = ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
+        self.trade_a.save()
+        self.trade_b.status = ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
+        self.trade_b.save()
+        self.planner_membership.scoped_nodes.add(self.node_a)
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        # Nur trade_a (requester_assignment auf Station A) zaehlt fuer einen
+        # auf Station A gescopten Planer.
+        self.assertEqual(response.data["task_counts"]["trades"], 1)
+
+    def test_task_counts_trades_unscoped_for_planner_without_scoped_nodes(self):
+        self.trade_a.status = ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
+        self.trade_b.status = ShiftTradeRequest.Status.EMPLOYEE_ACCEPTED
+        self.trade_a.save()
+        self.trade_b.save()
+        self.auth_as(self.planner_user)
+        response = self.client.get("/api/me/")
+        self.assertEqual(response.data["task_counts"]["trades"], 2)

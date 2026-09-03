@@ -1,0 +1,25 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+<h1>Aktiven Tenant wählen</h1>
+<p>
+  Tenant-gescopte Daten (Mitarbeitende, Stationen, Schichttypen, Planblatt, Mitgliedschaften, ...)
+  werden im Admin erst sichtbar, sobald hier ein Tenant gewählt ist -- siehe README,
+  Architektur-Abschnitt "Django Admin ist bewusst kein Kundenzugriff".
+</p>
+<form method="post" style="max-width: 420px;">
+  {% csrf_token %}
+  <input type="hidden" name="next" value="{{ next }}">
+  <p>
+    <label for="id_tenant">Tenant</label><br>
+    <select name="tenant" id="id_tenant">
+      <option value="">-- kein Tenant (nichts sichtbar) --</option>
+      {% for t in tenants %}
+        <option value="{{ t.id }}" {% if t.id|stringformat:"s" == active_id %}selected{% endif %}>{{ t.name }}</option>
+      {% endfor %}
+    </select>
+  </p>
+  <input type="submit" value="Wählen" class="default">
+</form>
+{% endblock %}

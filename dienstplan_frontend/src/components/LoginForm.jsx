@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../api.js";
 
-export default function LoginForm({ onSuccess }) {
+export default function LoginForm({ onSuccess, onBack }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -27,7 +27,7 @@ export default function LoginForm({ onSuccess }) {
         <div className="brand-mark-lg" aria-hidden="true">
           ◒
         </div>
-        <h1>Dienstplan</h1>
+        <h1>neravo</h1>
         <p className="login-sub">Anmelden, um das Planblatt zu öffnen.</p>
 
         <label>
@@ -58,6 +58,14 @@ export default function LoginForm({ onSuccess }) {
         <button type="submit" disabled={busy}>
           {busy ? "Anmelden …" : "Anmelden"}
         </button>
+
+        {onBack && (
+          <p className="landing-login-link">
+            <button type="button" className="link-button" onClick={onBack}>
+              Zurück
+            </button>
+          </p>
+        )}
       </form>
     </div>
   );

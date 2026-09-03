@@ -3,8 +3,12 @@ Hält den 'aktuellen Tenant' pro Request in einer ContextVar fest, damit
 Model-Manager (siehe models.TenantScopedManager) automatisch danach filtern
 können, ohne dass jede Query explizit tenant=... mitgeben muss.
 
-Die ContextVar wird von core.middleware.TenantMiddleware gesetzt und nach
-jedem Request wieder zurückgesetzt.
+Gesetzt wird sie für ALLE API-Requests unbedingt in
+core.tenancy.apply_tenant_scoped_initial() (für core.views.TenantScopedAPIMixin,
+core.billing_views._TenantScopedNoBillingGateMixin UND
+scheduling.views.TenantScopedViewSet gleichermassen) und für Django-Admin-
+Requests in core.middleware.AdminActiveTenantMiddleware; zurückgesetzt nach
+jedem Request in core.middleware.TenantContextCleanupMiddleware.
 """
 
 from contextvars import ContextVar

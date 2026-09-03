@@ -1,3 +1,10 @@
+/* Block 9 #6 (2026-08): stylelint (color-no-hex, siehe .stylelintrc.json)
+   verbietet rohe Hex-Farbwerte ausserhalb von :root, damit Farbwerte
+   künftig als Token statt als Wiederholung eingeführt werden (Block 9 #2
+   war die konkrete Bereinigung, die diese Regel jetzt strukturell absichert).
+   Token-Definitionen selbst brauchen natürlich den echten Hex-Wert --
+   deshalb hier bewusst deaktiviert. */
+/* stylelint-disable color-no-hex */
 :root {
   --bg: #f7f8f7;
   --surface: #ffffff;
@@ -7,11 +14,35 @@
   --primary-soft: #e4efee;
   --warn: #c2542c;
   --warn-soft: #fbe9e2;
+  /* Semantische Status-Farben (README Block 9 Punkt 2, 2026-08): vorher
+     an ~10 Stellen als roher Hex-Wert einzeln wiederholt (v. a.
+     .status-badge--*-Modifier) statt über ein gemeinsames Token-Set --
+     künftige neue Status sollen diese Tokens wiederverwenden statt sich
+     eine eigene Farbe auszusuchen. --warn/--warn-soft (oben) decken den
+     "negativ/abgelehnt"-Fall bereits konsistent ab, hier nur die bisher
+     nicht tokenisierten Fälle ergänzt.
+     --status-positive: erfolgreich abgeschlossen/angenommen/aktiv (z. B.
+     Diensttausch angenommen, Abo aktiv, Wunschfrei gesetzt).
+     --status-progress: wartet auf einen weiteren Schritt, aber (noch)
+     nicht abgelehnt (z. B. von Mitarbeiter angenommen/wartet auf
+     Planer-Freigabe, Abo in der Testphase). */
+  --status-positive: #2e7d32;
+  --status-positive-soft: #e3f3e6;
+  --status-progress: #a15c00;
+  --status-progress-soft: #fff4e0;
+  --status-neutral-soft: #eee;
   --border: #dde3e0;
   --radius: 8px;
+  /* Nutzer-Feedback (2026-08): "möglichst modern, sofort ein Eye-Catcher,
+     spiel mit Transitions und Hover-Effekten" -- ein Easing-Token statt an
+     jeder Stelle "ease"/"ease-out" zu wiederholen, damit sich alle neuen
+     Hover-/Entrance-Effekte gleich "anfühlen" (Material-Design-Standard-
+     Kurve: schnell rein, sanft raus -- wirkt organischer als linear/ease). */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --font-display: "Space Grotesk", system-ui, sans-serif;
   --font-body: "Inter", system-ui, sans-serif;
 }
+/* stylelint-enable color-no-hex */
 
 * {
   box-sizing: border-box;
@@ -76,7 +107,9 @@ button {
 .topbar {
   display: flex;
   align-items: center;
-  gap: 20px;
+  flex-wrap: wrap;
+  row-gap: 8px;
+  column-gap: 20px;
   padding: 14px 24px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
@@ -96,6 +129,60 @@ button {
 .brand-mark {
   color: var(--primary);
   font-size: 20px;
+}
+
+/* Nutzer-Feedback (2026-08): "oben Links sollte auch noch der Name stehen,
+   damit man weiss wer gerade eingeloggt ist" -- bewusst dezenter als die
+   fette Marke selbst (kleinere Schrift, gedämpfte Farbe, dünner Trenner),
+   damit "Dienstplan" die visuell führende Marke bleibt. */
+.current-user-name {
+  font-family: var(--font-body, inherit);
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--ink-muted);
+  padding-left: 8px;
+  margin-left: 4px;
+  border-left: 1px solid var(--border);
+}
+
+.tab-nav {
+  display: flex;
+  gap: 4px;
+}
+
+.tab-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 7px 12px;
+  border-radius: var(--radius);
+}
+
+.tab-btn:hover {
+  color: var(--primary);
+}
+
+.tab-btn.is-active {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+/* Block 2.4: Zähler-Badge für offene Tasks (Abwesenheiten/Diensttausch/
+   Zeiterfassung), siehe App.jsx: TABS[].taskCountKey. */
+.tab-badge {
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
 }
 
 .node-selector select,
@@ -147,6 +234,205 @@ button {
   color: var(--ink-muted);
   padding: 7px 10px;
   border-radius: 6px;
+}
+
+/* Nutzer-Feedback (2026-08): "Kannst du bitte alle Buttons schön stylen auf
+   Abwesenheiten, Zeiterfassung" -- bis hierhin gab es ausser .btn-ghost keine
+   eigene Button-Klasse im ganzen Frontend, primäre Aktionen (Genehmigen,
+   Freigeben, Bestätigen, Anlegen, "+ ... erfassen") waren unstyled
+   `<button>`-Elemente mit reinem Browser-Default-Look. .btn-primary deckt
+   jetzt jede "das ist die Hauptaktion dieser Zeile/dieses Formulars"-Stelle
+   ab, .btn-ghost.btn-danger-ghost tönt destruktive Ghost-Buttons (Ablehnen/
+   Löschen) beim Hover warnfarben statt primärfarben, ohne eine zweite,
+   optisch schwerere Button-Klasse für sie einzuführen.
+
+   Block 9 #3 (2026-08): drei Button-Varianten im ganzen Frontend, jede mit
+   klarem Einsatzzweck -- .btn-primary (Hauptaktion, gefüllt), .btn-ghost
+   (unauffällige Nebenaktion, randlos) und .btn-pill (sekundäre, aber
+   sichtbare Aktion wie Export, siehe .btn-pill weiter unten). Neue Buttons
+   sollen eine dieser drei Klassen wiederverwenden statt eine vierte,
+   descendant-selector-gebundene Variante wie das frühere
+   `.plan-export-bar button` einzuführen. */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: none;
+  background: var(--primary);
+  color: var(--surface);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 7px 14px;
+  border-radius: 6px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.14);
+  transition: filter 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
+}
+
+/* Nutzer-Feedback (2026-08, Nachtrag): ein pauschales align-self: flex-start
+   direkt auf .btn-primary (erster Versuch) behob zwar das Streck-Problem in
+   .panel-form-group (flex-column, Default align-items: stretch), riss aber
+   die absichtliche Zeilen-Ausrichtung anderer Flex-Row-Container wieder ein
+   -- .panel-form-row nutzt bewusst align-items: flex-end (Button auf Höhe
+   des Eingabefelds, nicht des Labels darüber, siehe dortiger Kommentar) und
+   .panel-list-header nutzt align-items: center (Button neben dem Titel).
+   Ein globales align-self hätte beide überschrieben ("Button steht im Raum"/
+   überschneidet den Titel). Jetzt gezielt nur auf direkte Kinder von
+   .panel-form-group beschränkt -- der einzige Container, in dem das
+   Streck-Problem tatsächlich auftrat. */
+.panel-form-group > .btn-primary {
+  align-self: flex-start;
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(0.92);
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.22);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active:not(:disabled) {
+  filter: brightness(0.86);
+  box-shadow: none;
+  transform: translateY(0);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.btn-primary:disabled {
+  box-shadow: none;
+}
+
+.btn-ghost.btn-danger-ghost:hover {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.role-badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+/* Block 2.7: Saldo-Anzeige (Topbar + Mitarbeiterliste, siehe BalanceBadge.jsx).
+   Nutzer-Feedback (2026-08): "Pills sollen immer gleich breit sein, damit
+   alles in Reihe und Glied steht" -- ohne feste Breite variiert die Pille
+   je nach Ziffernanzahl des Saldos/der Ferientage, wodurch die
+   "Bearbeiten"-Buttons in der Mitarbeitendenliste zeilenweise versetzt
+   standen. min-width statt width, damit ein ungewöhnlich langer Wert (sehr
+   grosser Saldo) nicht abgeschnitten wird -- in der Praxis ist der Wert
+   immer die bindende Breite, wirkt dadurch wie eine feste Spaltenbreite. */
+.balance-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  min-width: 260px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.balance-badge-sep {
+  color: var(--border);
+}
+
+/* Nutzer-Feedback (2026-08): Ferientage rechtsbündig an den Pill-Rand --
+   seit .balance-badge ein festes min-width hat (einheitliche Pill-Breite,
+   siehe oben), lässt ein kurzer Saldo sonst sichtbaren Leerraum VOR den
+   Ferientagen statt am Ende der Pille. margin-left: auto schiebt das
+   Element im Flex-Layout an den rechten Rand, ohne den Rest der Pille zu
+   beeinflussen. */
+.balance-badge-vacation {
+  margin-left: auto;
+}
+
+/* Block 9 #4 (2026-08): --font-display für den eigentlichen Zahlenwert,
+   damit die kompakten Pills (hier + .fairness-badge-value unten) dieselbe
+   Typografie-Sprache wie die grossen .stat-tile-value-Kacheln sprechen --
+   Farbe/Fettung (positiv=--primary, negativ=--warn) bleiben unverändert,
+   das ist die bestehende, bewusste Saldo-Semantik, keine Status-Farbe. */
+.balance-badge .is-positive {
+  color: var(--primary);
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.balance-badge .is-negative {
+  color: var(--warn);
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+/* MVP-Fahrplan Block 2, Punkt 20: Fairness-Punkte -- bewusst farblich
+   neutral (keine .is-positive/.is-negative-Analogie wie beim Saldo), da
+   mehr Punkte nicht "schlecht" sind, nur ein Fakt (siehe FairnessBadge.jsx). */
+.fairness-badge {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 4px;
+  min-width: 112px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+/* Block 9 #4 (2026-08): eigener Wrapper nur um die Punktzahl (nicht "Pkt"
+   oder den Ø-Zusatz), damit auch hier --font-display wie bei
+   .balance-badge .is-positive/.is-negative und .stat-tile-value greift. */
+.fairness-badge-value {
+  font-family: var(--font-display);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.fairness-badge-avg {
+  color: var(--ink-muted);
+  opacity: 0.75;
+}
+
+/* Arbeitszeitmodell (Block 2.7 Punkt 7): schmaler Fortschrittsbalken zum
+   Jahressoll statt einer rohen Jahresrestsoll-Zahl -- siehe BalanceBadge.jsx. */
+.balance-progress {
+  display: inline-block;
+  width: 36px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  overflow: hidden;
+}
+
+.balance-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  border-radius: 999px;
+}
+
+/* UX-Nachbesserung Block 2.7: Tilde vor dem Überstunden-Wert, solange der
+   Saldo geplante/ungeprüfte Schichten enthält -- Zahl ist schon korrekt,
+   aber noch nicht auf allen Schichten durch eine geprüfte Zeiterfassung
+   bestätigt (siehe Employee.overtime_summary()["is_provisional"]). */
+.balance-provisional-marker {
+  opacity: 0.65;
+  font-weight: 400;
+  margin-right: 1px;
 }
 
 .btn-ghost:hover {
@@ -236,13 +522,15 @@ main {
   color: var(--ink-muted);
 }
 
-.login-card input {
+.login-card input,
+.login-card select {
   font-family: var(--font-body);
   font-size: 14px;
   padding: 9px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--ink);
+  background: var(--surface);
 }
 
 .login-card button[type="submit"] {
@@ -260,6 +548,81 @@ main {
   cursor: default;
 }
 
+/* README Block 5 (Datenschutz & Rechtliches, 2026-08): öffentliche Rechts-Seiten
+   (Datenschutzerklärung/AGB/Impressum), siehe LegalPage.jsx. Gleicher Bildschirm-Rahmen wie
+   .login-screen/.login-card, aber deutlich breiter (Fliesstext statt Formular) und mit
+   angenehmer Lesebreite (max-width auf .legal-content, nicht auf die Karte selbst, damit die
+   Karte auf schmalen Viewports trotzdem den vollen Rand nutzt). */
+.legal-screen {
+  min-height: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 48px 24px;
+  background: linear-gradient(180deg, var(--bg) 0%, var(--primary-soft) 100%);
+}
+
+.legal-card {
+  width: 100%;
+  max-width: 720px;
+  height: fit-content;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 40px 44px;
+  box-shadow: 0 8px 30px rgba(28, 35, 33, 0.06);
+}
+
+.legal-card h1 {
+  margin: 16px 0 4px;
+  font-size: 24px;
+}
+
+.legal-content {
+  margin-top: 24px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+
+.legal-content h2 {
+  margin: 28px 0 8px;
+  font-size: 16px;
+}
+
+.legal-content h2:first-child {
+  margin-top: 0;
+}
+
+.legal-content p,
+.legal-content ul {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: var(--ink-muted);
+}
+
+.legal-content ul {
+  padding-left: 20px;
+}
+
+.legal-content li {
+  margin-bottom: 4px;
+}
+
+.legal-content code {
+  font-family: var(--font-body);
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.legal-draft-notice {
+  padding: 10px 14px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
 .field-error {
   margin: 0;
   color: var(--warn);
@@ -268,6 +631,193 @@ main {
 
 /* ---------- Plan grid ---------- */
 
+.multi-select-hint {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+/* Icon-Toolbar (2026-08, "genau wie Polypoint"): Modus wählen (Ganz/Links/
+   Rechts/Pikett), dann ein Icon anklicken ("bewaffnen"), dann auf eine
+   Zielzelle klicken -- ersetzt das bisherige Klick-auf-Zelle-Dropdown
+   komplett (siehe PlacementToolbar.jsx, PlanGrid.jsx: handleCellClick). Eine
+   eigene, immer sichtbare Zeile oberhalb der (weiterhin unabhängigen)
+   Mehrfachauswahl-Stempelleiste. */
+.placement-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.placement-mode-group {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 7px;
+  /* stylelint-disable-next-line color-no-hex -- pre-existing (Fallback für
+     nirgends definiertes --bg-muted), nicht Teil von Block 9 #2/#6, noch
+     nicht tokenisiert */
+  background: var(--bg-muted, #f1f5f9);
+}
+
+.placement-mode-btn {
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  padding: 6px 12px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.placement-mode-btn:hover {
+  color: var(--primary);
+}
+
+.placement-mode-btn.is-active {
+  background: var(--surface);
+  color: var(--primary);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+}
+
+.placement-palette {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Nutzer-Feedback (2026-08): "Abwesenheiten klar trennen von normalen
+   Diensten -- die Stempel in der oberen Zeile". Dienst- und Absenz-Icons
+   sitzen jetzt in zwei eigenen Gruppen mit sichtbarem vertikalem Trenner
+   dazwischen, statt in einer einzigen, ununterschiedenen Reihe. */
+.placement-palette-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.placement-palette-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+  margin: 0 2px;
+}
+
+.placement-hint {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+/* Nutzer-Feedback (2026-08): die Stempelleiste war eine einzige, lange
+   umbrechende Zeile aus Dienst-, Absenz- und (Jahresplan) Wunsch-Chips
+   durcheinander -- schwer scanbar, sobald mehrere Kategorien gleichzeitig
+   sichtbar waren. Jetzt eine Spalte aus .stamp-row-Zeilen, je eine pro
+   Kategorie (Dienste/Abwesenheiten/Spezialitäten/Wünsche), mit fester
+   Beschriftung links (.stamp-row-label) -- klar zuordenbar auch bei vielen
+   Chips. */
+.stamp-palette {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.stamp-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.stamp-row-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  min-width: 88px;
+}
+
+.stamp-chip {
+  --chip-color: var(--primary);
+  border: 1px solid color-mix(in srgb, var(--chip-color) 40%, var(--border));
+  background: color-mix(in srgb, var(--chip-color) 16%, white);
+  color: color-mix(in srgb, var(--chip-color) 80%, black);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.stamp-chip:hover {
+  box-shadow: inset 0 0 0 1px var(--chip-color);
+}
+
+/* README (2026-08, Bugfix): die Stempelleiste ist jetzt schon sichtbar,
+   bevor ein Tag markiert ist (reserviert den Platz, siehe PlanGrid.jsx/
+   YearPlan.jsx) -- Chips/Buttons darin sind bis zur ersten Markierung
+   disabled, damit klar bleibt, dass sie noch nichts bewirken. */
+.stamp-chip:disabled,
+.stamp-row .btn-ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.stamp-second-slot-toggle:has(input:disabled) {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.stamp-chip--empty {
+  --chip-color: var(--ink-muted);
+  background: transparent;
+  font-weight: 400;
+  text-transform: none;
+}
+
+.stamp-second-slot-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ink-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* Jahresplan (README Block 2.12): Absenz-Chips in der kombinierten
+   Stempel-Leiste optisch von den (farbigen) Schichttyp-Chips unterscheiden,
+   analog zum grau gestreiften .shift-chip--absence im Monatsblatt. */
+.stamp-chip--absence {
+  --chip-color: var(--ink-muted);
+}
+
+/* Block 2.13: Wunschfrei/Wunschdienst-Chips -- eigener grüner Rahmen statt
+   der schichttyp-eigenen Farbe (Wunschdienst-Chips nutzen zwar --chip-color
+   des Schichttyps für den Text, aber den Rahmen-Akzent von .stamp-chip--wish
+   selbst), damit klar bleibt: das ist ein Wunsch, keine echte Zuweisung. */
+.stamp-chip--wish {
+  border-style: dashed;
+}
+
+.select-check {
+  position: absolute;
+  top: 1px;
+  right: 3px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--primary);
+  font-weight: 700;
+}
+
 .grid-scroll {
   overflow: auto;
   border: 1px solid var(--border);
@@ -275,10 +825,21 @@ main {
   background: var(--surface);
 }
 
+/* Nutzer-Feedback (2026-08, Polypoint-Vorbild): fixe Spaltenbreite statt
+   auto-wachsender Spalten -- eine Tagesspalte mit zwei Diensten (Links/
+   Rechts) bleibt exakt so breit wie eine mit nur einem, statt das ganze
+   Grid pro Split-Shift-Tag ungleichmässig zu verbreitern. table-layout:
+   fixed liest die Spaltenbreiten aus der ERSTEN Zeile (thead) -- alle
+   th/td-Breiten unten sind daher bewusst explizit gesetzt statt sich aus
+   dem Inhalt zu ergeben. */
 .plan-grid {
+  table-layout: fixed;
   border-collapse: separate;
   border-spacing: 0;
   min-width: 100%;
+  /* Verhindert Text-Selektion beim Markieren mehrerer Zellen durch Ziehen
+     mit gedrückter Maustaste (Mehrfachauswahl-Modus, siehe PlanGrid.jsx). */
+  user-select: none;
 }
 
 .plan-grid th,
@@ -299,11 +860,28 @@ main {
   color: var(--ink-muted);
   font-size: 12px;
   text-align: center;
-  min-width: 40px;
+}
+
+/* :not(.col-employee):not(.col-balance) statt eines pauschalen width: 44px
+   auf ".plan-grid thead th" -- letzteres hätte (Klasse+Typ+Typ) höhere
+   Spezifität als "th.col-employee"/"th.col-balance" (Typ+Klasse) unten und
+   deren eigene Breite überschrieben (derselbe Spezifitäts-Stolperstein, der
+   oben beim padding schon dokumentiert ist).
+   56px statt vorher 44px (Redesign 2026-08, horizontaler Split statt
+   Diagonale): zwei gestapelte Kürzel (z. B. "T1"/"T2") brauchen bequem
+   lesbaren Platz, ohne dass jedes Pixel erkämpft werden muss. */
+.plan-grid thead th:not(.col-employee):not(.col-balance) {
+  width: 56px;
 }
 
 .plan-grid thead th.is-weekend {
   background: var(--primary-soft);
+}
+
+.plan-grid thead th.is-holiday {
+  /* stylelint-disable-next-line color-no-hex -- pre-existing, nicht Teil
+     von Block 9 #2/#6, noch nicht tokenisiert */
+  background: #fde3c8;
 }
 
 .day-num {
@@ -319,17 +897,167 @@ main {
   letter-spacing: 0.04em;
 }
 
-.col-employee {
+/* Block 2.9: Mindestbesetzung-Warnung in der Tages-Kopfzelle -- th ist
+   bereits position: sticky (etabliert einen Positionierungskontext für
+   absolute Kinder wie .btn-wish/.btn-record-time). */
+.staffing-warning-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--warn);
+  font-size: 10px;
+  line-height: 1;
+  padding: 0;
+  box-shadow: 0 0 0 1px var(--warn);
+}
+
+.staffing-popover {
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: 0 6px 20px rgba(20, 30, 25, 0.16);
+  min-width: 200px;
+}
+
+.staffing-popover-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+/* th.col-employee (statt nur .col-employee): ".plan-grid th, .plan-grid td"
+   hat als Klasse+Typ-Selektor dieselbe Spezifität wie ein reiner
+   Klassen-Selektor plus schwächer -- ohne den Typ hier mit anzugeben, hätte
+   "padding: 0" aus der generischen Regel immer gewonnen und die Zeile wäre
+   dadurch nicht mehr so hoch gewesen wie die Dienst-Zellen daneben. */
+th.col-employee {
   position: sticky;
   left: 0;
   z-index: 1;
   background: var(--surface);
   text-align: left;
-  padding: 10px 14px;
+  padding: 0 14px;
   font-weight: 600;
   font-size: 13px;
   white-space: nowrap;
-  min-width: 170px;
+  width: 170px;
+  /* Exakt an die feste Höhe von .day-cell (36px, siehe unten) angeglichen,
+     statt sich allein aus dem Zelleninhalt zu ergeben -- seit dem Redesign
+     (horizontaler Split + Eck-Badge statt Spezialitäten-Zeile) ist JEDE
+     Tageszelle einer Zeile garantiert exakt gleich hoch, kein Wachsen mehr
+     nötig/möglich. */
+  height: 36px;
+  vertical-align: middle;
+}
+
+.employee-row-inner {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.employee-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Block 2.7: eigene, am rechten Rand fixierte Spalte für den Saldo (nur
+   Admin/Planer) -- spiegelbildlich zu .col-employee links, damit sie
+   unabhängig von der horizontalen Scroll-Position sichtbar bleibt statt
+   nur nach Scrollen ans Monatsende. Typ+Klasse (th.col-balance/td.col-balance)
+   aus demselben Spezifitäts-Grund wie bei th.col-employee oben. */
+th.col-balance,
+td.col-balance {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  text-align: left;
+  padding: 0 14px;
+  font-size: 12px;
+  white-space: nowrap;
+  width: 190px;
+}
+
+td.col-balance {
+  height: 31px;
+  vertical-align: middle;
+}
+
+thead .col-balance {
+  z-index: 3;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.balance-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
+
+.balance-cell-sep {
+  color: var(--border);
+}
+
+/* Block 9 #4 (2026-08): dieselbe --font-display-Angleichung wie
+   .balance-badge .is-positive/.is-negative oben (Punkt "eine
+   Kennzahl-Sprache"), hier für die kompaktere Zellen-Variante im
+   Planblatt-Grid (siehe BalanceBadge.jsx variant="cell"). */
+.balance-cell .is-positive {
+  color: var(--primary);
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.balance-cell .is-negative {
+  color: var(--warn);
+  font-family: var(--font-display);
+  font-weight: 700;
+}
+
+.btn-copy-week {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0;
+}
+
+tr:hover .btn-copy-week,
+.btn-copy-week:focus-visible {
+  opacity: 1;
+}
+
+.btn-copy-week:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
 }
 
 thead .col-employee {
@@ -343,13 +1071,61 @@ thead .col-employee {
   color: var(--ink-muted);
 }
 
+/* README Punkt 17: Teamleitung-Badge neben .employee-name -- bewusst dezent
+   (nur ein kleiner Stern in --primary), weil es nicht auf jeder Zeile
+   erscheint wie .pct, sondern nur bei der jeweiligen Team-Anstellung. */
+.lead-badge {
+  font-size: 11px;
+  color: var(--primary);
+}
+
+/* README Punkt 17: Trennzeile pro Team, wenn die gewählte Station Teams
+   (Kind-Knoten) hat -- spannt die ganze Tabellenbreite, dezenter
+   Abschnitts-Header analog zur .col-balance-Kopfzeile (uppercase,
+   --ink-muted), statt separate Tabellen pro Team zu rendern. */
+.plan-grid tr.team-divider td {
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-muted);
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+/* README Punkt 17: Personen ohne passende Team-Anstellung an einer Station
+   mit Teams -- sichtbar (kein stillschweigendes Verschwinden aus dem
+   Planblatt), aber ohne editierbare Zellen, da eine Direktbuchung auf die
+   Station bei vorhandenen Teams serverseitig abgelehnt wird. */
+.plan-grid tr.employment-unassigned-row td {
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-style: italic;
+  padding: 0 14px;
+}
+
 .plan-grid td.is-weekend {
+  /* stylelint-disable-next-line color-no-hex -- pre-existing, nicht Teil
+     von Block 9 #2/#6, noch nicht tokenisiert */
   background: #fbfcfb;
+}
+
+.plan-grid td.is-holiday {
+  /* stylelint-disable-next-line color-no-hex -- pre-existing, nicht Teil
+     von Block 9 #2/#6, noch nicht tokenisiert */
+  background: #fef1e2;
+}
+
+/* Automatisierte Planung mit Auffülldienst (2026-08): Employee.fixed_weekdays_off
+   -- rein informativ, blockiert manuelles Stempeln nicht (siehe PlanGrid.jsx). */
+.plan-grid td.is-fixed-day-off {
+  background: var(--status-neutral-soft);
 }
 
 .shift-chip-btn {
   width: 100%;
-  height: 40px;
+  height: 26px;
   border: none;
   background: transparent;
   display: flex;
@@ -359,6 +1135,15 @@ thead .col-employee {
 
 .shift-chip-btn:hover {
   background: var(--primary-soft);
+}
+
+.shift-chip-btn.is-drop-target {
+  background: var(--primary-soft);
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.shift-chip-btn.is-readonly {
+  cursor: default;
 }
 
 .shift-chip {
@@ -384,13 +1169,2861 @@ thead .col-employee {
   font-weight: 400;
 }
 
+/* Nutzer-Feedback (2026-08, "genau wie Polypoint, optisch moderner"): eine
+   feste, quadratische Glyph-Box statt der pillenförmigen Text-Abkürzung --
+   füllt (width: 100%) immer genau ihre halbe/ganze Zellhöhe (siehe
+   .day-cell-slots unten), Grösse bleibt dadurch bei einem oder zwei
+   Diensten konsistent. Nur innerhalb des Planblatt-Grids kleiner/kräftiger
+   als der globale .shift-chip-Standard (der auch ausserhalb des Grids
+   verwendet wird, z. B. Dashboard/Settings-Listen/TradeRequestPanel, dort
+   bewusst unverändert).
+   Redesign (2026-08, "hand aufs Herz"-Nachbesserung): kräftigerer
+   Farbton (30%/85%-Mix statt 16%/80%) statt einer sehr blassen Füllung --
+   ein Dienst soll auf den ersten Blick als klar erkennbare, satte Farbfläche
+   wirken (wie bei Polypoint), nicht nur als dezent eingefärbter Pill. */
+.plan-grid .shift-chip {
+  width: 100%;
+  height: 20px;
+  min-width: 0;
+  padding: 0 2px;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 800;
+  /* Bugfix (2026-08): ohne overflow:hidden liess flexbox ein zu breites
+     Kürzel (z. B. ein manuell gesetztes zweistelliges Icon) über die
+     schmale Zellhälfte hinaus sichtbar in den Nachbar-Chip hineinlaufen --
+     reine Sicherheitsnetz-Regel, der Regelfall (ein Zeichen, siehe
+     chipGlyph.js) passt ohnehin ohne zu clippen. */
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+/* :not(.shift-chip--empty) -- sonst hätte diese Regel (2 Klassen) die
+   transparente Füllung der leeren "+"-Zelle oben (1 Klasse, .shift-chip--
+   empty) per höherer Spezifität überschrieben und jede unbelegte Zelle
+   fälschlich mit --primary eingefärbt (--chip-color ist dort nicht
+   gesetzt, fällt auf den Basiswert von .shift-chip zurück). */
+.plan-grid .shift-chip:not(.shift-chip--empty) {
+  background: color-mix(in srgb, var(--chip-color) 30%, white);
+  color: color-mix(in srgb, var(--chip-color) 85%, black);
+}
+
 .cell-select {
   width: 100%;
-  height: 40px;
+  height: 26px;
   border: 2px solid var(--primary);
   border-radius: 0;
   font-size: 12px;
   padding: 0 4px;
+}
+
+.cell-wrap {
+  position: relative;
+  display: block;
+}
+
+/* Polypoint-Vorbild (2026-08): die Tageszelle ist fix und bei zwei Diensten
+   nur noch 18px pro Hälfte hoch (horizontaler Split, siehe .day-cell-slots
+   unten) -- ein 16x16px-Button in der Ecke hätte den grössten Teil des
+   winzigen Glyphen verdeckt und Klicks der Icon-Toolbar (handleCellClick)
+   abgefangen, noch bevor sie den darunterliegenden Chip erreichen. Deutlich
+   kleiner, damit die Zellmitte -- und damit ein normaler Klick zum
+   Platzieren -- frei bleibt; der Tausch-Button selbst bleibt bei Hover
+   weiterhin exakt in der Ecke klickbar. */
+.btn-offer-trade {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 10px;
+  height: 10px;
+  border: none;
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 7px;
+  line-height: 1;
+  padding: 0;
+  opacity: 0;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.cell-wrap:hover .btn-offer-trade,
+.btn-offer-trade:focus-visible {
+  opacity: 1;
+}
+
+.btn-offer-trade:hover {
+  color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.shift-chip-btn.is-absence {
+  cursor: default;
+}
+
+.shift-chip--absence {
+  --chip-color: var(--ink-muted);
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--chip-color) 12%, white),
+    color-mix(in srgb, var(--chip-color) 12%, white) 4px,
+    color-mix(in srgb, var(--chip-color) 22%, white) 4px,
+    color-mix(in srgb, var(--chip-color) 22%, white) 8px
+  );
+  color: color-mix(in srgb, var(--chip-color) 70%, black);
+}
+
+/* Nutzer-Feedback (2026-08): Halbtags-Absenzen sollen im Grid erkennbar
+   sein, nicht nur im Abwesenheiten-Tab -- kleines "½" neben dem Glyph. */
+.shift-chip-half-day {
+  font-size: 0.6em;
+  font-weight: 700;
+  margin-left: 1px;
+  vertical-align: super;
+}
+
+/* README Block 2 Punkt 19 (Automatisierte Planung): Entwurfs-Chip für
+   generate_draft_plan()-Vorschläge (DraftShiftChip.jsx) -- gestrichelter
+   Rand (Schwester zu .stamp-chip--wish oben) signalisiert "noch nicht
+   gespeichert", blassere Füllung als ein echter, bereits gespeicherter
+   Dienst. */
+.shift-chip--draft {
+  border: 1.5px dashed color-mix(in srgb, var(--chip-color) 70%, var(--border));
+  background: color-mix(in srgb, var(--chip-color) 14%, white) !important;
+}
+
+.shift-chip-btn.is-draft {
+  cursor: default;
+}
+
+/* Anders als .btn-offer-trade (hover-only) ist das Entfernen hier die
+   zentrale Interaktion der Entwurfsansicht (Nutzer-Vorgabe: "Alle
+   Vorschläge sichtbar, einzeln entfernbar") -- deshalb immer sichtbar
+   statt erst bei :hover. */
+.draft-chip-remove {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 9px;
+  line-height: 1;
+  padding: 0;
+  box-shadow: 0 0 0 1px var(--border);
+  z-index: 1;
+}
+
+.draft-chip-remove:hover {
+  color: var(--warn);
+  box-shadow: 0 0 0 1px var(--warn);
+}
+
+/* ---------- Einstellungen (Block 2.10) ---------- */
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-nav {
+  display: flex;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
+.settings-nav-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 6px 12px;
+  border-radius: 999px;
+}
+
+.settings-nav-btn:hover {
+  color: var(--primary);
+}
+
+.settings-nav-btn.is-active {
+  background: var(--primary-soft);
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.settings-nav-btn--back {
+  margin-right: 6px;
+  border-color: transparent;
+  background: transparent;
+}
+
+/* Block 2.16: Kachel-Übersicht statt sofortigem Sprung ins erste Modul. */
+.settings-module-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+/* Block 9 #3 (2026-08): technisch ein <button> (siehe SettingsPanel.jsx),
+   optisch aber eine Kachel/Karte, keine Aktions-Zeile -- deshalb bewusst
+   nicht in .btn-primary/.btn-ghost/.btn-pill (die drei Aktions-Button-
+   Varianten, siehe deren Kommentar oben) gepresst. Einziger Klick-Karten-
+   Anwendungsfall im Frontend, daher eigene, klar benannte Klasse statt
+   einer vierten Aktions-Button-Variante. */
+.settings-module-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.settings-module-card:hover {
+  border-color: var(--primary);
+}
+
+.settings-module-card strong {
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.settings-module-card span {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.checkbox-row input {
+  width: auto;
+}
+
+.panel-form select[multiple] {
+  min-height: 84px;
+}
+
+/* Block 2.14: Tenant-Konfiguration -- gruppierte Felder statt einer langen
+   flachen Liste, siehe TenantSettings.jsx. */
+.panel-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* .checkbox-row ist hier selbst ein <label>, das sonst die
+   flex-direction: column von ".panel-form label" erben würde (höhere
+   Spezifität als ".checkbox-row" allein) -- Checkbox + Text sollen aber wie
+   überall sonst in einer Zeile stehen. */
+.panel-form .checkbox-row {
+  flex-direction: row;
+  align-items: center;
+}
+
+/* Settings-Panel-Polish (2026-08): .option-card und .color-picker-trigger
+   sind (wie .checkbox-row oben) selbst <label>-Elemente -- ohne diese
+   Überschreibung gewinnt ".panel-form label { flex-direction: column }"
+   (höhere Spezifität: 1 Klasse + 1 Element schlägt 1 Klasse allein) und
+   zwingt ihre Kinder in eine Spalte statt einer Zeile. Beim Farbwähler war
+   das sofort sichtbar (Swatch/Hex/Chevron gestapelt statt nebeneinander);
+   bei den Options-Karten sah es zufällig noch passabel aus, weil Icon und
+   Textblock trotzdem block-artig nebeneinander wirkten -- computed style
+   war aber ebenso column, also derselbe Bug, nur weniger auffällig. */
+.panel-form .option-card,
+.panel-form .color-picker-trigger {
+  flex-direction: row;
+}
+
+/* README Block 5 (2026-08): dieselbe Korrektur wie .panel-form .checkbox-row oben, hier für die
+   AGB-Checkbox in SignupForm.jsx -- .login-card label erbt sonst dieselbe
+   flex-direction: column mit ebenfalls höherer Spezifität als .checkbox-row allein. */
+.login-card .checkbox-row {
+  flex-direction: row;
+  align-items: center;
+}
+
+/* Automatisierte Planung mit Auffülldienst (2026-08): Employee.fixed_weekdays_off
+   -- sieben .checkbox-row (siehe oben) nebeneinander statt untereinander. */
+.weekday-checkbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 4px;
+}
+
+.weekday-checkbox {
+  gap: 4px;
+}
+
+.panel-form h3 {
+  font-size: 13px;
+  margin: 4px 0 0;
+  color: var(--ink);
+}
+
+/* ---------- Panels (Abwesenheiten / Diensttausch) ---------- */
+
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+  max-width: 760px;
+}
+
+.panel-form,
+.panel-list {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 26px;
+  /* Nutzer-Feedback (2026-08, Nachtrag zum Settings-Panel-Polish):
+     "Schattierungen fehlen bei den Containern" -- die erste, sehr
+     dezente Fassung (0 1px 3px, Alpha 0.05) war auf --bg (leicht grau)
+     kaum wahrnehmbar. Jetzt ein zweistufiger, weicherer Schatten (enger
+     Kontaktschatten + weiter, sanfter Ambient-Schatten) -- sichtbare
+     Tiefe, ohne wie ein hartes Material-Design-Käst­chen zu wirken.
+     Betrifft ALLE Verwender dieser Basisklasse (bewusst, dezente
+     Kartentiefe passt überall im Frontend), anders als die
+     settings-form-*-Klassen unten, die gezielt nur bei Verwendung des
+     neuen Kopfzeilen-Musters greifen. */
+  box-shadow:
+    5px 5px 6px 0px rgba(15, 23, 42, 0.05),
+    0 8px 24px rgba(15, 23, 42, 0.07);
+  /* "sofort ein Eye-Catcher": beide Panels fahren beim ersten Rendern
+     (Tab-Wechsel, Reload) leicht nach oben ein statt einfach dazustehen --
+     .panel-list startet minimal später (0.08s) als .panel-form, damit der
+     Blick zuerst vom Formular zur Liste "wandert" statt beide simultan
+     aufpoppen zu lassen. `both` hält den Endzustand nach Ablauf, `paused`-
+     Risiko (Element bliebe unsichtbar ohne JS) besteht hier nicht, da die
+     Animation selbst (nicht ihr Start) das Element von opacity:0 einblendet. */
+  animation: settings-panel-in 0.45s var(--ease) both;
+}
+
+.panel-list {
+  animation-delay: 0.08s;
+}
+
+@keyframes settings-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.panel-list--full {
+  max-width: none;
+}
+
+.panel-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.panel-form h2,
+.panel-list h2 {
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+/* Nutzer-Feedback (2026-08, zweite Runde): Titel + "+ Hinzufügen"-Button
+   nebeneinander (siehe vorherige Fassung dieses Kommentars) liess den Button
+   bei mehrzeiligem Beschreibungstext darunter (MembershipAccessSettings.jsx)
+   unbalanciert wirken -- der Button klebte am Titel, während rechts neben
+   den umgebrochenen Zeilen der Beschreibung ein grosser Leerraum entstand.
+   Jetzt: Titel und Beschreibung fliessen normal untereinander, der Button
+   bekommt eine eigene, rechtsbündige Zeile danach -- liest sich als klar
+   abgesetzte Aktion statt als Kopfzeilen-Dekoration.
+   Nutzer-Feedback (2026-08, dritte Runde): ohne Abstand nach unten rückte
+   der Button direkt über die rechtsbündige Rollen-Auswahl der ersten
+   Kontenzeile darunter -- sah wie eine zusammengehörige Gruppe aus. Klarer
+   Abstand (16px, Ecke an border-top statt an nichts) trennt Aktion und
+   Liste sichtbar voneinander. */
+.panel-list-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 4px 0 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* MVP-Fahrplan Block 2, Punkt 5: Planblatt-Export -- schmale Button-Leiste
+   direkt über dem Grid, für alle Rollen sichtbar (siehe PlanGrid.jsx). */
+.plan-export-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+/* README Block 2 Punkt 19 (Automatisierte Planung): Ergebnis-Leiste von
+   PlanGenerationPanel.jsx -- teilt sich die Zeile mit .plan-export-bar
+   (beide "Aktionen auf Planblatt-Ebene", siehe PlanGrid.jsx). */
+.plan-generation-panel {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.plan-generation-summary {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.plan-generation-warnings summary {
+  font-size: 12px;
+  color: var(--warn);
+  cursor: pointer;
+}
+
+.plan-generation-warnings ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+/* Block 9 #3 (2026-08): war zuvor `.plan-export-bar button` -- an den einen
+   Container gebunden statt als eigene, überall wiederverwendbare Klasse.
+   Dritte Button-Variante neben .btn-primary (Hauptaktion) und .btn-ghost
+   (unauffällige Nebenaktion): schlanker Rand, runde Pill-Form,
+   Akzentfarbe erst bei Hover statt dauerhaftem Rahmen-Kontrast -- dieselbe
+   Sprache wie .balance-badge/.fairness-badge (Anzeige-Pills, nicht
+   klickbar). Für sekundäre, aber sichtbare Aktionen wie Export-Buttons. */
+.btn-pill {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 999px;
+}
+
+.btn-pill:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.btn-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.panel-form-row {
+  display: flex;
+  gap: 12px;
+  /* Nutzer-Feedback (2026-08): ohne align-items rutscht ein Button ohne
+     eigenes Label (z. B. "Hinzufügen" in PregnancyEditor.jsx) sichtbar nach
+     oben/unten, sobald ein Nachbar-Label mehrzeilig umbricht ("Tatsächliches
+     Geburtsdatum (sobald bekannt)") -- flex-end verankert alle Zeilen-Kinder
+     an derselben unteren Kante, unabhängig von der Label-Höhe. */
+  align-items: flex-end;
+}
+
+/* README Punkt 21 (Dashboard): mehrere Karten-Sektionen (offene Absenzen,
+   offene Tauschanfragen, heute Abwesende, unterbesetzte Schichten)
+   untereinander -- eigener Abstand + kleinere Überschrift als der
+   .panel-list-h2-Titel darüber, damit die Hierarchie Seite > Sektion > Eintrag
+   klar bleibt. */
+.dashboard-section {
+  margin-top: 20px;
+}
+
+.dashboard-section h3 {
+  font-size: 13px;
+  color: var(--ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 8px;
+}
+
+/* README (2026-08, UX-Bugfix): bewusst eigene, kompakte Klasse statt
+   .empty-state -- .empty-state ist für den Vollseiten-"Übersicht wird
+   geladen"-Fall gedacht (grosser Innenabstand, zentriert), eine leere
+   Dashboard-Sektion braucht nur eine ruhige, linksbündige Bestätigungszeile
+   zwischen den anderen Sektionen. */
+.dashboard-empty {
+  color: var(--ink-muted);
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+.panel-form-row label {
+  flex: 1;
+}
+
+.panel-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+
+.panel-form input,
+.panel-form select {
+  font-family: var(--font-body);
+  font-size: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--surface);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+
+/* "modern, Eye-Catcher": ein weicher Farbring statt des groben
+   Browser-Default-Outlines beim Fokussieren -- dieselbe Sprache wie die
+   Hover-Schatten der Buttons/Karten oben, nur als Ring statt als Lift
+   (ein Eingabefeld "hebt" sich nicht, es "leuchtet" beim Fokus). Gilt
+   auch für Checkboxen/den unsichtbaren Farbwähler-Input, damit
+   Tastatur-Navigation nirgends unsichtbar wird. */
+.panel-form input:focus-visible,
+.panel-form select:focus-visible,
+.panel-list-filter:focus-visible {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+.panel-form input:disabled {
+  color: var(--ink-muted);
+  background: var(--bg);
+}
+
+.panel-form button[type="submit"] {
+  align-self: flex-start;
+  margin-top: 4px;
+  border: none;
+  background: var(--primary);
+  color: white;
+  font-weight: 600;
+  padding: 9px 16px;
+  border-radius: var(--radius);
+}
+
+.panel-form button[type="submit"]:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.panel-hint {
+  margin: -2px 0 12px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+/* README Block 6 (Abrechnung): Nutzer-Feedback "das sieht traurig aus" --
+   Status-Kopfzeile mit Badge (wiederverwendet .status-badge, siehe unten im
+   File, statt einer weiteren Farbpalette), Stat-Kacheln fürs Wichtigste auf
+   einen Blick, und eine Detail-Liste für Zahlungsmittel/letzte Rechnung
+   statt einzelner <p>-Zeilen, siehe BillingSettings.jsx. */
+.billing-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+/* Block 9 #5 (2026-08): war style={{ margin: 0 }} in BillingSettings.jsx --
+   entfernt das Default-<h2>-margin, damit die Überschrift mit dem
+   Status-Badge daneben auf einer Zeile bündig sitzt (align-items: center
+   oben). Statischer Wert, keine Laufzeit-Abhängigkeit -- gehört in die
+   CSS-Klasse statt als Inline-Style. */
+.billing-header h2 {
+  margin: 0;
+}
+
+/* Block 9 #4 (2026-08): war zuvor `.billing-stats`/`.billing-stat*`, nur in
+   BillingSettings.jsx genutzt. Generische "Kennzahl-Kachel" -- dieselbe
+   Karte deckt jetzt auch die Monatsauswertung (MonthlySummaryPanel.jsx, war
+   zuvor eine <table> für reine Label/Wert-Paare ohne echte Tabellen-
+   Semantik) ab und ist für künftige Übersichten (z. B. Dashboard) gedacht,
+   statt dass jedes Modul seine eigene Stat-Kachel erfindet. Echte
+   mehrspaltige Tabellen (z. B. die Spezialitäten-Aufschlüsselung weiter
+   unten in MonthlySummaryPanel.jsx) bleiben bewusst .monthly-summary-table
+   -- eine Kachel pro Zeile würde bei mehreren Spalten pro Datensatz
+   schlechter lesbar als eine Tabelle. */
+.stat-tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.stat-tile {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.stat-tile-label {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--ink-muted);
+}
+
+.stat-tile-value {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 19px;
+  color: var(--ink);
+  line-height: 1.3;
+}
+
+.stat-tile-value small {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+
+.billing-details {
+  display: flex;
+  flex-direction: column;
+}
+
+.billing-detail-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.billing-detail-row:first-child {
+  border-top: none;
+}
+
+.billing-detail-label {
+  color: var(--ink-muted);
+}
+
+.billing-detail-value {
+  font-weight: 600;
+  color: var(--ink);
+  text-align: right;
+}
+
+.billing-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.billing-warning {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--warn-soft);
+  color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+/* Block 2.6: Monatsauswertung (Lohnlauf-Basis) -- schlichte Kennzahlen-Tabelle. */
+.monthly-summary-table {
+  border-collapse: collapse;
+  margin: 4px 0 12px;
+}
+
+.monthly-summary-table th,
+.monthly-summary-table td {
+  padding: 6px 16px 6px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+.monthly-summary-table th {
+  font-weight: 500;
+  color: var(--ink-muted);
+}
+
+.monthly-summary-table td {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* MVP-Fahrplan Block 2, Punkt 30: Lohnart-Zuordnung (PayrollSettings.jsx) --
+   feste linke Spalte (Kategorie/Spezialität) + Eingabefelder rechts, eine
+   Zeile pro Kategorie bzw. zuschlagspflichtiger Spezialität. */
+.payroll-mapping-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 16px;
+}
+
+.payroll-mapping-table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 520px;
+}
+
+.payroll-mapping-table th,
+.payroll-mapping-table td {
+  padding: 6px 12px 6px 0;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.payroll-mapping-table th {
+  font-weight: 500;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+.payroll-mapping-table td:first-child {
+  font-weight: 500;
+  white-space: normal;
+}
+
+.payroll-mapping-table input {
+  width: 100%;
+  min-width: 100px;
+}
+
+/* Nutzer-Feedback (2026-08): "bei uns gilt Gleitzeit, nur angeordnete
+   Überstunden werden effektiv abgerechnet" -- Hinweisbox in der
+   Monatsauswertung (MonthlySummaryPanel.jsx), sobald der Jahressaldo die
+   Gleitzeit-Bandbreite überschreitet und eine Bestätigung fürs Bestätigen
+   des Überschusses aussteht. */
+.corridor-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 4px 0 16px;
+  padding: 10px 14px;
+  background: var(--warn-soft);
+  border-radius: 8px;
+}
+
+.corridor-callout p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+/* Block 2.16: Fehler direkt am Feld statt nur im globalen Banner. */
+.field-error {
+  margin-top: -8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--warn);
+}
+
+/* Block 2.16: Textfilter über langen Listen (Mitarbeitende, Skills). */
+.panel-list-filter {
+  width: 100%;
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 7px 10px;
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* Settings-Panel-Polish (2026-08, Nutzer-Feedback: "Einstellungs-Tabs
+   wirken amateurhaft, nicht wie Business-Software", mit Vorbild-Screenshot)
+   -- Kopfzeile mit Icon+Titel+Untertitel, Options-Karten statt nackter
+   Checkbox+Text-Zeilen, ein gestylter Farbwähler-Trigger statt des rohen
+   <input type="color">, umrandete Icon-Buttons statt reiner Textlinks.
+   Erste Umsetzung in AbsenceTypeSettings.jsx, als Vorlage für die übrigen
+   Einstellungs-Tabs gedacht -- deshalb eigene, generische Klassen statt
+   .panel-form/.entry-list selbst zu verändern: die vielen ANDEREN
+   Verwender dieser Basisklassen (Dashboard, TimeRecordPanel,
+   TradeRequestPanel, MembershipAccessSettings, ...) bleiben dadurch
+   unverändert. */
+/* Nutzer-Feedback (2026-08, Vergleich mit Vorbild-Screenshot): dezenter
+   Punkteraster + zwei verwaschene Kreise oben rechts, nur bei Formularen
+   mit dem neuen Kopfzeilen-Muster (:has() statt einer eigenen Modifier-
+   Klasse an jedem Verwender) -- rein dekorativ, deshalb pointer-events:
+   none und per z-index hinter den eigentlichen Formularinhalt gelegt
+   (sonst läge die absolut positionierte Dekoration über allem, auch ohne
+   z-index -- positionierte Elemente stapeln sich unabhängig von der
+   DOM-Reihenfolge immer über unpositionierten). */
+.panel-form:has(.settings-form-header) {
+  position: relative;
+  overflow: hidden;
+}
+
+.panel-form:has(.settings-form-header) > * {
+  position: relative;
+  z-index: 1;
+}
+
+.panel-form:has(.settings-form-header)::before,
+.panel-form:has(.settings-form-header)::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+
+.panel-form:has(.settings-form-header)::before {
+  top: -70px;
+  right: -60px;
+  width: 220px;
+  height: 220px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 35% 35%, var(--primary-soft), transparent 72%);
+  /* Nutzer-Feedback (2026-08): "sofort ein Eye-Catcher" -- ein sehr
+     langsames, sanftes Pulsieren macht die sonst rein statische
+     Dekoration "lebendig", ohne (bei 7s Zyklus, kaum merklicher
+     Grössenänderung) abzulenken. */
+  animation: settings-blob-breathe 7s var(--ease) infinite;
+}
+
+@keyframes settings-blob-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.85;
+  }
+}
+
+.panel-form:has(.settings-form-header)::after {
+  top: 14px;
+  right: 70px;
+  width: 84px;
+  height: 84px;
+  background-image: radial-gradient(var(--border) 1.5px, transparent 1.5px);
+  background-size: 13px 13px;
+  opacity: 0.7;
+}
+
+.settings-form-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 8px;
+}
+
+.settings-form-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background: var(--primary);
+  color: var(--surface);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.16);
+}
+
+.settings-form-header h2 {
+  margin-bottom: 0;
+}
+
+/* Tooltip-"?" neben einem Feld-Label (Vorbild-Screenshot) -- bewusst nur
+   das native title-Attribut statt eines eigenen Popover-Widgets: die
+   Erklärung steht ohnehin schon als .panel-hint sichtbar unter dem Feld,
+   das "?" ist hier reine visuelle Anlehnung ans Vorbild, kein zweiter,
+   redundanter Erklärmechanismus. */
+.field-tooltip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--ink-muted);
+  color: var(--ink-muted);
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+  cursor: help;
+}
+
+.settings-form-subtitle {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+/* Nutzer-Feedback: "Hairlines fehlen" -- eine dünne Trennlinie vor den
+   Options-Karten markiert den Übergang von den Eingabefeldern zu den
+   Ja/Nein-Optionen als eigenen Formular-Abschnitt (analog zum
+   Vorbild-Screenshot), statt dass beide Bereiche nur durch Abstand
+   getrennt ineinander laufen. */
+.option-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+/* :has() ist reine Verfeinerung (markiert die Karte bei angehaktem
+   Zustand) -- ohne Unterstützung bleibt die Karte schlicht unmarkiert,
+   Checkbox/Funktion sind davon unabhängig.
+   "spiel mit Hover-Effekten": Karte hebt sich beim Hover leicht ab (Rand
+   Richtung --primary, minimaler Lift + wachsender Schatten) -- dieselbe
+   Sprache wie der :checked-Zustand darunter, nur dezenter, damit "diese
+   Karte reagiert" schon VOR dem Klick spürbar ist. animation-fill-mode
+   backwards + gestaffelte Verzögerung (siehe :nth-child) lässt beide
+   Karten kurz nacheinander von unten einfahren, statt gleichzeitig
+   aufzupoppen -- fällt bei nur 2 Karten sofort als bewusste Geste auf,
+   ohne bei einer längeren Liste (siehe .entry-list-item, keine Staffelung)
+   unangenehm lang zu wirken. */
+.option-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease), background-color 0.2s var(--ease),
+    box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  animation: settings-panel-in 0.4s var(--ease) backwards;
+}
+
+.option-card:nth-child(1) {
+  animation-delay: 0.16s;
+}
+
+.option-card:nth-child(2) {
+  animation-delay: 0.24s;
+}
+
+.option-card:hover {
+  border-color: var(--primary);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.1);
+  transform: translateY(-2px);
+}
+
+.option-card:has(input:checked) {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.option-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.option-card-icon--warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.option-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.option-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+/* Animierte Checkbox (2026-08, "spiel mit Transitions/Hover-Effekten")
+   statt der nackten Browser-Checkbox: das echte <input> bleibt für
+   Semantik/Tastatur/Screenreader vollständig funktional, liegt aber
+   unsichtbar (opacity 0) über der optischen Box daneben (Standard-Technik
+   -- funktioniert unabhängig von Browser-spezifischem ::-webkit-Styling
+   nativer Checkboxen). Das Häkchen ist eine gedrehte Rand-"L"-Form
+   (::after), die per scale von 0 auf 1 "reinwächst" statt nur zu
+   erscheinen. */
+.pretty-checkbox {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.pretty-checkbox input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.pretty-checkbox-box {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  transition: background-color 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+
+.pretty-checkbox-box::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 1px;
+  width: 5px;
+  height: 9px;
+  border: solid var(--surface);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) scale(0);
+  transition: transform 0.2s var(--ease);
+}
+
+.pretty-checkbox:hover .pretty-checkbox-box {
+  border-color: var(--primary);
+}
+
+.pretty-checkbox input:checked ~ .pretty-checkbox-box {
+  background: var(--primary);
+  border-color: var(--primary);
+}
+
+.pretty-checkbox input:checked ~ .pretty-checkbox-box::after {
+  transform: rotate(45deg) scale(1);
+}
+
+.pretty-checkbox input:focus-visible ~ .pretty-checkbox-box {
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+.option-card-desc {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+/* Farbwähler-Trigger: sieht aus wie ein eigenständiges Steuerelement
+   (Swatch + Hex-Code + Chevron), ist funktional aber weiterhin der native
+   <input type="color"> -- der liegt unsichtbar (opacity 0) über der
+   gesamten Trigger-Fläche, ein Klick irgendwo darauf öffnet also den
+   normalen Browser-Farbwähler. Kein eigenes Popup/Palette-UI nötig, damit
+   kein Fokus-/Tastatur-Verhalten neu nachgebaut werden muss. */
+.color-picker-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
+}
+
+.color-picker-trigger:hover {
+  border-color: var(--primary);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.1);
+  transform: translateY(-1px);
+}
+
+/* Der Chevron dreht sich beim Hover -- ein winziges, aber sofort
+   erkennbares "hier lässt sich etwas öffnen"-Signal, wie man es von
+   modernen Dropdown-Triggern kennt. */
+.color-picker-trigger svg {
+  color: var(--ink-muted);
+  transition: transform 0.2s var(--ease), color 0.2s var(--ease);
+}
+
+.color-picker-trigger:hover svg {
+  transform: rotate(180deg);
+  color: var(--primary);
+}
+
+.color-picker-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.color-picker-swatch {
+  width: 30px;
+  height: 20px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+}
+
+.color-picker-hex {
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+
+.panel-list-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.panel-list-header-row .panel-list-filter {
+  width: 220px;
+  margin-bottom: 0;
+}
+
+.panel-list-search {
+  position: relative;
+  flex: none;
+}
+
+.panel-list-search svg {
+  position: absolute;
+  top: 50%;
+  left: 9px;
+  transform: translateY(-50%);
+  color: var(--ink-muted);
+  pointer-events: none;
+}
+
+.panel-list-search input {
+  padding-left: 30px;
+}
+
+.panel-list-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+/* Umrandete Icon-Buttons für Zeilenaktionen (Bearbeiten/Löschen) -- anders
+   als .btn-ghost (randlos, für unauffällige Nebenaktionen) bewusst mit
+   sichtbarem Rahmen, damit eine Listenzeile wie in Business-Software auf
+   den ersten Blick als "hier gibt es Aktionen" erkennbar ist, nicht erst
+   beim Hover. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.2s var(--ease), color 0.2s var(--ease), box-shadow 0.2s var(--ease),
+    transform 0.2s var(--ease);
+}
+
+.icon-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.1);
+  transform: translateY(-1px);
+}
+
+.icon-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+/* Kleine Detail-Note: das Icon wächst minimal mit statt nur die Farbe zu
+   wechseln -- bewusst ein neutrales "scale" statt einer Geste, die nur zum
+   Stift (Bearbeiten), nicht aber zum Papierkorb (Löschen) passen würde.
+   transition auf dem Grundzustand (nicht nur :hover), damit das Icon beim
+   Verlassen genauso weich zurückschrumpft wie es gewachsen ist. */
+.icon-btn svg:first-child {
+  transition: transform 0.2s var(--ease);
+}
+
+.icon-btn:hover svg:first-child {
+  transform: scale(1.12);
+}
+
+.icon-btn.icon-btn-danger {
+  color: var(--warn);
+  border-color: var(--warn-soft);
+}
+
+.icon-btn.icon-btn-danger:hover {
+  background: var(--warn-soft);
+  border-color: var(--warn);
+}
+
+/* Nutzer-Feedback (2026-08): Stammdatenpflege bei vielen Mitarbeitenden --
+   Tabelle (Suche/Sortierung/Filter serverseitig, siehe EmployeeSettings.jsx)
+   nimmt die volle Breite ein, das Bearbeiten-Formular öffnet als Modal
+   ("Rechts ist Mist, ich würde ein sauberes Popup erwarten" -- eine
+   Dauer-Sidebar daneben wurde als unruhig empfunden). Generische Klassen
+   (settings-table-*, geteilt mit TimeTemplateSettings.jsx) statt .side-panel
+   zu ändern, damit die übrigen, unveränderten Einstellungen-Module (Skills,
+   Stationen, Absenzarten, Tenant) ihr bisheriges, einspaltiges Layout
+   behalten. */
+.settings-table-layout {
+  display: block;
+}
+
+.settings-table-panel {
+  max-width: none;
+}
+
+.settings-table-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+/* Nutzer-Feedback (2026-08): "braucht es eine Funktion um alle zu
+   bestätigen auf einmal?" -- Mehrfachauswahl in der "Zu bestätigen"-Tabelle
+   (TimeRecordOverview.jsx), Leiste erscheint nur, sobald etwas ausgewählt
+   ist, damit sie im Normalfall (nichts markiert) nicht stört. */
+.settings-table-checkbox-col {
+  width: 32px;
+  text-align: center;
+}
+
+.settings-table-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  padding: 4px 10px;
+  background: var(--primary-soft);
+  border-radius: 999px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+/* Nutzer-Feedback (2026-08): "Splitten: alle offenen Bewilligungen neben
+   den noch nicht erfassten" -- TimeRecordOverview.jsx zeigt beides als zwei
+   umschaltbare Tabellen statt einer gemischten Liste. */
+.segmented-control {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px;
+  margin-bottom: 16px;
+}
+
+.segmented-control-btn {
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 6px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.segmented-control-btn.is-active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.settings-table-toolbar .panel-list-filter {
+  flex: 1;
+  min-width: 160px;
+  width: auto;
+  margin-bottom: 0;
+}
+
+/* .panel-list-search ist standardmässig flex: none (passend für die kompakte
+   Suche neben "Absenzarten"/"Skills") -- in der Tabellen-Toolbar soll das
+   Suchfeld dagegen den verfügbaren Platz neben den Filtern/dem
+   "+ Neu"-Button ausfüllen, genau wie das nackte .panel-list-filter das
+   bisher direkt tat. */
+.settings-table-toolbar .panel-list-search {
+  flex: 1;
+  min-width: 160px;
+}
+
+.settings-table-toolbar .panel-list-search input {
+  width: 100%;
+}
+
+.settings-table-toolbar select {
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.settings-table-scroll {
+  overflow-x: auto;
+}
+
+.settings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.settings-table th {
+  text-align: left;
+  /* Nutzer-Feedback (2026-08): "Stationsnamen/Zugang sind nicht sauber unter
+     dem Header" -- Ursache war, dass NUR sortierbare Spalten (via
+     .settings-table-sort-Button) ein Padding hatten, th selbst aber 0. Für
+     die beiden nicht sortierbaren Spalten (Station(en)/Zugang, reine <th>
+     ohne Button) fehlte dadurch das Padding komplett -- Header-Text klebte
+     links am Zellenrand, während die Werte darunter (td) das normale
+     Padding hatten. Jetzt trägt th selbst das Padding (identisch zu td),
+     der Sort-Button bekommt kein eigenes mehr, damit es nicht doppelt wird. */
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-table-sort {
+  width: 100%;
+  text-align: left;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ink-muted);
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.settings-table-sort:hover {
+  color: var(--primary);
+}
+
+.settings-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  /* Nutzer-Feedback (2026-08, zweite Runde): "kannst du nicht einfach alles
+     vertikal zentrieren in der Zeile? Es soll perfekt aussehen ohne
+     Abstufungen" -- seit die Ist-Zeit-Spalte einzeilig ist (Uhrzeiten +
+     Abweichung nebeneinander statt gestapelt), gibt es keinen Grund mehr für
+     eine Sonderausrichtung: alle Zellen zentriert, unabhängig davon, ob eine
+     Zelle (z.B. die Aktionsspalte mit Button) etwas höher ist als reiner Text. */
+  vertical-align: middle;
+}
+
+.settings-table-row {
+  cursor: pointer;
+}
+
+.settings-table-row:hover {
+  background: var(--primary-soft);
+}
+
+.settings-table-row.is-editing {
+  background: var(--primary-soft);
+  font-weight: 600;
+}
+
+/* Nutzer-Feedback (2026-08): "warum hat der bottom border immer noch eine
+   Abstufung unter 'Korrigieren'?" -- Ursache war `display: flex` direkt auf
+   dem <td>: das bricht dessen normales table-cell-Boxmodell, wodurch der
+   Browser die Zeilenhöhe für diese eine Zelle 0.5px abweichend berechnete
+   (per getBoundingClientRect gemessen) und die Zeilenborder dadurch minimal
+   versetzt wirkte. Jetzt liegt die Flex-Klasse auf einem <span> innerhalb
+   eines normalen <td>, das Boxmodell der Zeile bleibt für alle Zellen
+   identisch. */
+.settings-table-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.settings-table-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+/* Nutzer-Feedback (2026-08): Bearbeiten-Formular als Modal statt
+   Dauer-Sidebar -- Overlay abgedunkelt, Dialog mit fixem Header/Footer und
+   scrollendem Inhalt dazwischen, damit auch das lange Stammdaten-Formular
+   (5+ Abschnitte inkl. Mutterschutz) nicht die ganze Seite sprengt. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 20px;
+  overflow-y: auto;
+  z-index: 1000;
+}
+
+.modal-dialog {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.3);
+  width: 100%;
+  max-width: min(1080px, 94vw);
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+/* Settings-Panel-Muster (2026-08, Rollout auf Tabellen-/Modal-Tabs wie
+   Schichttypen/Mitarbeitende): dieselbe Kopfzeile (Icon + Titel +
+   Untertitel) wie .settings-form-header, hier aber als Kind von
+   .modal-header statt eines .panel-form -- daher ohne eigenen
+   margin-bottom (würde die vertikale Zentrierung neben dem Schliessen-
+   Button stören) und mit etwas kleinerem Icon (Modal-Header ist knapper
+   bemessen als ein volles Formular-Panel). */
+.modal-header .settings-form-header,
+.billing-header .settings-form-header {
+  margin-bottom: 0;
+}
+
+.modal-header .settings-form-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+}
+
+.modal-close {
+  border: none;
+  background: none;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.modal-close:hover {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+
+.entry-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Nutzer-Feedback (2026-08, Settings-Panel-Polish-Nachtrag): "Schattierungen
+   fehlen, mehr Luft" -- betrifft bewusst .entry-list-item als Basisklasse
+   direkt (nicht nur die Absenzarten-Liste), weil dieselbe Zeilenoptik
+   überall dort wiederverwendet wird (Dashboard, TimeRecordPanel,
+   TradeRequestPanel, NodeSettings, SkillSettings, ...) -- mehr Weissraum
+   und eine dezente Kontaktschattierung passen dort genauso. */
+.entry-list-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  flex-wrap: wrap;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), transform 0.2s var(--ease);
+}
+
+/* Nur ein Hover-Lift, kein Farbwechsel wie bei .option-card: eine
+   Listenzeile ist nicht als Ganzes klickbar (nur ihre Buttons), ein
+   Primärfarben-Rahmen würde hier "klickbar" suggerieren, wo nur einzelne
+   Aktionen innerhalb es tatsächlich sind. */
+.entry-list-item:hover {
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.09);
+  transform: translateY(-1px);
+}
+
+.entry-list-item--trade {
+  align-items: flex-start;
+}
+
+/* Nutzer-Feedback (2026-08): Stationen per Drag & Drop verschieben
+   (NodeSettings.jsx) -- Griff-Icon signalisiert Ziehbarkeit, die gezogene
+   Zeile wird abgeblendet, ein gültiges Drop-Ziel bekommt einen farbigen
+   Rahmen zur Bestätigung, bevor losgelassen wird.
+   Bugfix (2026-08): "Verschieben funktioniert nicht richtig" -- die erste
+   Version nutzte natives HTML5 draggable/dragstart/dragover/drop, das sich
+   in der Praxis nicht zuverlässig auslösen liess (u. a. weil ein Mousedown
+   auf dem Stationsnamen-Text die native Textauswahl-Geste statt der
+   Element-Drag-Geste startete). Jetzt Mousedown/Mouseenter/Mouseup
+   (identisches Muster wie PlanGrid.jsx/YearPlan.jsx) -- user-select: none
+   bleibt trotzdem nötig, sonst würde ein Ziehen weiterhin als Textauswahl
+   markieren statt die Zeile zu "greifen". */
+.node-tree-row {
+  cursor: grab;
+  user-select: none;
+  transition: background-color 0.1s ease, border-color 0.1s ease;
+}
+
+.node-tree-row.is-dragging {
+  opacity: 0.4;
+  cursor: grabbing;
+}
+
+.node-tree-row.is-drop-target {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.drag-handle {
+  margin-right: 6px;
+  color: var(--ink-muted);
+  cursor: grab;
+  user-select: none;
+}
+
+/* MVP-Fahrplan Block 2, Punkt 30/31: Name + Kostenstelle nebeneinander im
+   Edit-Modus einer Station (NodeSettings.jsx). */
+.node-tree-edit-group {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.node-tree-edit-group input {
+  width: 140px;
+}
+
+.node-tree-root-drop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+.node-tree-root-drop.is-drop-target {
+  border-color: var(--primary);
+  border-style: solid;
+  background: var(--primary-soft);
+  color: var(--ink);
+}
+
+.entry-main {
+  flex: 1;
+  min-width: 200px;
+}
+
+.entry-note {
+  color: var(--ink-muted);
+}
+
+.entry-day-portion {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.entry-note--warn {
+  color: var(--warn);
+}
+
+/* Nutzer-Feedback (2026-08): "kann man [Planer] Stationen zuweisen?" --
+   MembershipAccessSettings.jsx zeigt gescopte Stationen als kleine Pills
+   statt als reinen Fliesstext, damit mehrere Stationen auf einen Blick
+   zählbar bleiben. */
+.entry-note--chip {
+  display: inline-block;
+  background: var(--primary-soft);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 9px;
+  margin: 2px 6px 0 0;
+  font-size: 12.5px;
+}
+
+/* Nutzer-Feedback (2026-08): "das Bearbeiten-Modal sieht beschissen aus,
+   muss viel intuitiver laufen" -- MembershipAccessSettings.jsx zeigt die
+   Stationsauswahl jetzt als schmaleres, eigenständig gestaltetes Modal
+   (statt das breite 1080px-Tabellen-Modal für eine reine Checkbox-Liste zu
+   verwenden) mit klarer visueller Eltern/Kind-Beziehung: eine markierte
+   Hauptstation checkt ihre Unterstationen sichtbar (ausgegraut, mit
+   Begründung) automatisch mit an, statt dass beide unabhängig wirken. */
+.node-scope-modal {
+  max-width: min(560px, 92vw);
+}
+
+.node-tree-select {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.node-tree-select li {
+  border-bottom: 1px solid var(--border);
+}
+
+.node-tree-select li:last-child {
+  border-bottom: none;
+}
+
+.node-tree-select label {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  font-weight: 400;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+}
+
+.node-tree-select label:hover {
+  background: var(--bg);
+}
+
+.node-tree-select input[type="checkbox"] {
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+  flex: 0 0 auto;
+}
+
+.node-tree-select-name {
+  color: var(--ink);
+}
+
+.node-tree-select label.is-implied {
+  cursor: default;
+}
+
+.node-tree-select label.is-implied:hover {
+  background: transparent;
+}
+
+.node-tree-select label.is-implied .node-tree-select-name {
+  color: var(--ink-muted);
+}
+
+.node-tree-select-hint {
+  color: var(--ink-muted);
+  font-size: 11.5px;
+  font-style: italic;
+}
+
+/* README (2026-08, UX-Bugfix): der Zeiterfassung-Tab (TimeRecordPanel.jsx)
+   presste bisher alles -- Schichttyp (fehlte sogar ganz), Name, Datum,
+   Geplant-/Ist-Zeiten, Abweichung, Hinweise -- in eine einzige, per " · "
+   getrennte Fliesstext-Zeile. Klare Kopfzeile (Schichttyp-Chip + Name +
+   Datum + Status) getrennt von den Zeiten (je eine beschriftete Zeile für
+   Geplant/Ist statt Fliesstext), analog zur Spalten-Optik im Planblatt. */
+.time-record-entry .entry-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.time-record-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.entry-date {
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.time-record-times {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.time-record-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.time-record-row-label {
+  flex-shrink: 0;
+  min-width: 50px;
+  color: var(--ink-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.time-record-row--missing {
+  color: var(--ink-muted);
+  font-style: italic;
+}
+
+.time-record-deviation {
+  color: var(--ink-muted);
+}
+
+/* Nutzer-Feedback (2026-08): "Sichtbarkeit der IST-Zeit... grün für +, rot
+   für -" -- TimeRecordOverview.jsx zeigt in der "Zu bestätigen"-Tabelle
+   die erfassten Zeiten plus eine farbige Stunden-Abweichung (Ist ./. Soll),
+   damit ein Planer nicht erst das Korrigieren-Modal öffnen muss, um zu
+   sehen, ob mehr oder weniger als geplant gearbeitet wurde. Nutzer-Feedback
+   (2026-08, zweite Runde): "07:00-12:00, 13:00-16:24 (±0 h) nebeneinander"
+   -- Zeiten und Abweichung standen zuvor auf zwei Zeilen untereinander,
+   was in der Tabelle unruhig wirkte; jetzt eine Zeile, Abweichung in
+   Klammern direkt dahinter. */
+.time-record-ist-cell {
+  white-space: nowrap;
+}
+
+.time-record-ist {
+  font-variant-numeric: tabular-nums;
+}
+
+.time-deviation-badge {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+
+.time-deviation-badge.is-positive {
+  color: var(--status-positive);
+}
+
+.time-deviation-badge.is-negative {
+  color: var(--warn);
+}
+
+.time-record-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+
+/* README (2026-08, UX-Bugfix): derselbe Fliesstext-in-einer-Zeile-Effekt
+   wie im Zeiterfassung-Tab, hier im Diensttausch-Tab (TradeRequestPanel.jsx)
+   -- "X bietet Schicht ... an Y im Tausch gegen deren Schicht ..." mit
+   Status-Badge davor war als ein Satz schwer scannbar. Gleiches Muster:
+   Kopfzeile (beide Personen + Status) getrennt von den beiden Schichten
+   als eigene, beschriftete Zeilen mit Schichttyp-Chip. */
+.trade-entry .entry-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trade-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trade-arrow {
+  color: var(--ink-muted);
+}
+
+.trade-shifts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trade-shift-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.trade-shift-label {
+  flex-shrink: 0;
+  min-width: 50px;
+  color: var(--ink-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.entry-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Settings-Panel-Polish (2026-08): .icon-btn (umrandete Zeilenaktionen,
+   siehe dort) ist eine bewusst andere, hellere Variante als dieser gefüllte
+   Default -- ausgenommen wie schon .btn-ghost, sonst würde diese höher
+   spezifische Regel (Attribut- + :not-Selektor) .icon-btn immer
+   überschreiben, unabhängig von der Reihenfolge im Stylesheet. */
+.entry-actions button[type="button"]:not(.btn-ghost):not(.icon-btn) {
+  border: none;
+  background: var(--primary);
+  color: white;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+.entry-actions button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* UX-Nachbesserung Block 2.7: direktes Feedback im Zeiterfassung-Tab, wie
+   sich die gerade gespeicherte Erfassung auf den Wochensaldo auswirkt
+   (siehe TimeRecordPanel.jsx) -- eigene Zeile unterhalb von Text/Aktionen,
+   neutral gehalten (nicht per se "gut"/"schlecht"), nur der Saldowert
+   selbst ist wie überall sonst eingefärbt. */
+.entry-feedback {
+  flex-basis: 100%;
+  font-size: 12px;
+  color: var(--ink-muted);
+  background: var(--primary-soft);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.entry-feedback .is-positive {
+  color: var(--status-positive);
+  font-weight: 700;
+}
+
+.entry-feedback .is-negative {
+  color: var(--warn);
+  font-weight: 700;
+}
+
+.type-badge,
+.status-badge {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.type-badge {
+  --chip-color: var(--ink-muted);
+  background: color-mix(in srgb, var(--chip-color) 16%, white);
+  color: color-mix(in srgb, var(--chip-color) 80%, black);
+}
+
+.status-badge--pending {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.status-badge--employee_accepted {
+  background: var(--status-progress-soft);
+  color: var(--status-progress);
+}
+
+.status-badge--accepted,
+.status-badge--approved {
+  background: var(--status-positive-soft);
+  color: var(--status-positive);
+}
+
+.status-badge--declined,
+.status-badge--cancelled {
+  background: var(--status-neutral-soft);
+  color: var(--ink-muted);
+}
+
+.status-badge--rejected {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.status-badge--submitted {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.status-badge--confirmed {
+  background: var(--status-positive-soft);
+  color: var(--status-positive);
+}
+
+/* README Block 6: Abrechnungsstatus -- dieselbe Farbsprache wie die
+   Absenz-/Diensttausch-Status oben, eigene Modifier-Namen statt die
+   bestehenden zweckzuentfremden. */
+.status-badge--active {
+  background: var(--status-positive-soft);
+  color: var(--status-positive);
+}
+
+.status-badge--trialing {
+  background: var(--status-progress-soft);
+  color: var(--status-progress);
+}
+
+.status-badge--past_due,
+.status-badge--incomplete {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.status-badge--canceled {
+  background: var(--status-neutral-soft);
+  color: var(--ink-muted);
+}
+
+/* Block 1.12: Segment-Editor (Zeiterfassungs-Tab und Inline-Popover im Grid,
+   siehe ShiftCell.jsx). Die Blockanzahl ist durch das TimeTemplate fix
+   vorgegeben -- hier werden nur Uhrzeiten je Block angepasst. */
+.segment-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 230px;
+}
+
+.segment-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.segment-editor-index {
+  font-size: 10.5px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  width: 12px;
+}
+
+.segment-editor-row input[type="time"] {
+  width: 88px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.segment-editor-sep {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.segment-editor-gap {
+  padding: 2px 0 2px 18px;
+}
+
+.segment-editor-gap-chip {
+  display: inline-flex;
+  font-size: 11px;
+  color: var(--ink-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.segment-editor-gap-warn {
+  font-size: 11px;
+  color: var(--warn);
+  font-weight: 600;
+}
+
+/* Nur im TimeTemplateSegmentEditor (Block 2.10) verwendet -- der Planer darf
+   dort Segmente hinzufügen/entfernen, im TimeRecordSegmentEditor (Ist-Zeit)
+   ist die Blockanzahl fix. */
+.add-segment {
+  align-self: flex-start;
+  margin-top: 4px;
+  border: 1px dashed var(--border-strong, var(--border));
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+.add-segment:hover {
+  background: var(--primary-soft);
+}
+
+.remove-segment {
+  border: none;
+  background: none;
+  color: var(--ink-muted);
+  font-size: 11.5px;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+
+.remove-segment:hover {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.segment-editor-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+  margin: 2px 0;
+}
+
+.segment-editor-summary strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.segment-editor-note {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+/* README Punkt 17: EmploymentEditor.jsx -- ein Add/Remove-Zeilen-Editor wie
+   .segment-editor oben, hier für Team + Pensum + Rolle + Teamleitung pro
+   Anstellung statt Uhrzeiten-Segmenten. */
+.employment-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.employment-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.employment-editor-row select,
+.employment-editor-row input[type="text"] {
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+/* Nutzer-Feedback (2026-08): Team-Auswahl und Rollentitel wirkten winzig
+   und beliebig platziert, obwohl im breiteren Modal genug Raum frei war --
+   beide wachsen jetzt mit statt auf ihrer schmalen Browser-Default-Breite
+   zu verharren. */
+.employment-editor-row select {
+  min-width: 160px;
+}
+
+.employment-editor-row input[type="text"] {
+  flex: 1;
+  min-width: 180px;
+}
+
+.employment-editor-pensum {
+  width: 68px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.employment-editor-lead {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+/* Block 1.13: Badge auf der eigenen vergangenen Schicht-Zelle im Planblatt
+   (statt nur separatem Tab) + Popover mit demselben Segment-Editor. */
+.btn-record-time {
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 9px;
+  line-height: 1;
+  padding: 0;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.btn-record-time.is-missing {
+  color: var(--warn);
+  box-shadow: 0 0 0 1px var(--warn);
+}
+
+.btn-record-time.is-submitted {
+  color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.btn-record-time.is-confirmed {
+  color: var(--status-positive);
+  box-shadow: 0 0 0 1px var(--status-positive);
+}
+
+.time-record-popover {
+  /* position/top/left kommen inline von FloatingPopover.jsx (Portal auf
+     document.body, an den Viewport geklemmt statt vom Grid-Scroll
+     abgeschnitten, siehe Block 1.13). */
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: 0 6px 20px rgba(20, 30, 25, 0.16);
+}
+
+.time-record-popover .entry-actions {
+  margin-top: 8px;
+}
+
+/* Block 2.13: Wunschfrei/Wunschdienst -- Badge oben links (spiegelbildlich
+   zu .btn-record-time unten rechts), damit sich beide Selbstauskünfte in
+   derselben Zelle nicht überlappen. */
+.btn-wish {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.btn-wish.is-set.is-wunschfrei {
+  color: var(--status-positive);
+  box-shadow: 0 0 0 1px var(--status-positive);
+}
+
+.btn-wish.is-set.is-wunschdienst {
+  color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.btn-wish.is-readonly {
+  cursor: default;
+}
+
+/* Genehmigungsprozess (2026-08, Automatisierte Planung mit Auffülldienst):
+   .is-pending/.is-approved/.is-rejected überlagern die Typ-Farbe
+   (is-wunschfrei/is-wunschdienst) oben mit dem Entscheidungsstatus. */
+.btn-wish.is-pending {
+  box-shadow: 0 0 0 1px var(--status-progress);
+}
+
+.btn-wish.is-rejected {
+  color: var(--ink-muted);
+  box-shadow: 0 0 0 1px var(--border);
+  opacity: 0.6;
+}
+
+.wish-decision-popover p {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+
+.wish-popover {
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: 0 6px 20px rgba(20, 30, 25, 0.16);
+  min-width: 220px;
+}
+
+.wish-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wish-editor-hint {
+  margin: 0;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+
+.wish-editor-type {
+  display: flex;
+  gap: 6px;
+}
+
+.wish-type-option {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.wish-type-option.is-active {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.wish-editor select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+.wish-editor .entry-actions {
+  margin-top: 2px;
+}
+
+/* Redesign (2026-08, "hand aufs Herz"-Nachbesserung): das bisherige
+   Diagonal-Dreieck (clip-path) für zwei Dienste an einem Tag sah zwar
+   "clever" aus, war aber nicht intuitiv -- oben-links/unten-rechts hat
+   keinen Bezug zur Tageszeit, jeder Klick musste in eine Dreiecksecke
+   treffen, und allein das Randlos-Füllen einer Farbe hat mehrere Runden
+   Flex-Basis-/Containing-Block-Hacks gebraucht. Jetzt stattdessen ein
+   simpler horizontaler Stapel: oberer Dienst = zeitlich früher, unterer =
+   später -- das mappt auf eine echte, sofort verständliche Achse statt
+   auf eine willkürliche Geometrie. Genauso wird die separate
+   Spezialitäten-Zeile UNTER den Slots (frühere .special-strip) durch einen
+   kleinen Eck-Punkt ersetzt (siehe .special-day-badge unten) -- dadurch
+   bleibt jede Tageszelle IMMER gleich hoch, unabhängig davon, ob an einem
+   Nachbartag eine Spezialität hängt. Kein Höhen-Wettrüsten zwischen
+   Zellen mehr, keine table-row-Stretch-Tricks nötig. */
+.day-cell {
+  position: relative;
+  height: 36px;
+}
+
+/* Nutzer-Feedback (2026-08, Nachbesserung): der Abstand rundherum sollte
+   NICHT auf der innersten Farbfläche (.shift-chip) sitzen, während
+   .shift-chip-btn (Klickfläche) weiterhin die volle Zelle beansprucht --
+   das ergab zwei sichtbar verschieden grosse, verschachtelte Boxen (unschön,
+   v. a. beim Hover). Stattdessen rückt der GESAMTE Container
+   (.day-cell-slots, enthält Klick- UND Farbfläche als eine Einheit) selbst
+   von der Zellkante ab -- position:absolute + inset:1px, analog zum
+   bereits bewährten Muster bei .cell-wrap--span/--top/--bottom weiter
+   unten. .day-cell IST die gesamte Zelle (position:relative, height:36px,
+   also eine garantiert definierte Grösse -- kein Prozent-Auflösungsproblem
+   wie bei einer <td> ohne explizites height) -- .day-cell-slots füllt sie
+   mit exakt 1px Rand auf allen vier Seiten, zentriert, EINHEITLICH für
+   Einzeldienst UND Split (dieselbe Basisregel, kein Sonderfall für
+   .day-cell-slots--split mehr nötig). */
+.day-cell-slots {
+  position: absolute;
+  inset: 1px;
+  border-radius: 5px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Workflow-Redesign (2026-08, Nachbesserung): Nutzer-Feedback -- bei einem
+   gesetzten Dienst war der Markierungs-Ring unsichtbar. Ursache: er sass auf
+   .day-cell-slots, aber das füllt die Zelle bei belegtem Tag randlos mit der
+   opaken .shift-chip-Farbfläche aus -- der Ring lag darunter/dahinter. Jetzt
+   auf .day-cell selbst (der äusserste Container, 1px GRÖSSER als
+   .day-cell-slots dank dessen inset) -- genau in diesem 1px-Rand ringsum ist
+   seit dem Redesign Platz, den kein Kind-Element beansprucht, der Ring bleibt
+   daher immer sichtbar, ob leer oder belegt. */
+.day-cell.is-marked {
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.day-cell-slots .cell-wrap--span {
+  position: absolute;
+  inset: 0;
+}
+
+/* Bugfix (wie bei --top/--bottom unten): die Basisregel ".cell-wrap" setzt
+   position:relative auf JEDES cell-wrap -- auch auf ShiftCell.jsx's
+   inneres <span>, direktes Kind von .cell-wrap--span. Ohne diese
+   Override-Regel würde DIESES innere <span> zum Containing Block für den
+   position:absolute-Button weiter unten, statt des äusseren, tatsächlich
+   randfüllenden Wrappers. */
+.day-cell-slots .cell-wrap--span > .cell-wrap {
+  position: static;
+}
+
+.day-cell-slots .cell-wrap--span .shift-chip-btn {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+}
+
+/* Bugfix (Playwright-Verifikation, per Nutzer-Screenshot belegt): width:100%/
+   height:100% liessen sichtbare Ränder links/rechts/oben/unten -- .shift-chip
+   ist hier ein Flex-Item in .shift-chip-btn (display:flex), und dessen
+   Flex-Basis (aus 'width' via 'auto' abgeleitet) löst eine Prozent-Breite
+   NICHT zuverlässig auf, wenn der Flex-Container selbst kein LITERAL
+   gesetztes width hat, sondern nur über position:absolute;inset:0 (s. o.)
+   auf seine Grösse "gestreckt" wird -- Chromium behandelt das für die
+   Flex-Basis-Auflösung anders als für gewöhnliche (Block-)Prozent-Breiten,
+   der Chip fiel dadurch auf seine Inhaltsgrösse zurück. position:absolute;
+   inset:0 (statt Prozent-Grössen) umgeht die Flex-Basis-Auflösung komplett
+   -- .shift-chip-btn ist bereits selbst position:absolute und damit ein
+   gültiger Containing Block. display:inline-flex (Basisregel) bleibt
+   erhalten und zentriert den Glyph-Text weiterhin innerhalb der jetzt
+   randlos gefüllten Box. Der 0.5px-Abstand zur Zellkante (Nutzer-Feedback)
+   sitzt NICHT hier, sondern eine Ebene höher an .day-cell-slots selbst
+   (s. o.) -- Klickfläche (.shift-chip-btn) und Farbfläche (.shift-chip)
+   bleiben dadurch exakt deckungsgleich, statt zwei sichtbar verschieden
+   grosse, verschachtelte Boxen zu ergeben. */
+.day-cell-slots .cell-wrap--span .shift-chip {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  border-radius: 0;
+}
+
+/* Horizontaler Split (zwei Dienste an einem Tag): .cell-wrap--top/--bottom
+   sind normale Flex-Kinder von .day-cell-slots (flex-direction: column) --
+   flex: 1 1 0 teilt die Höhe automatisch exakt zur Hälfte, ganz ohne
+   clip-path oder manuelles inset:0 auf DIESER Ebene (anders als beim
+   Diagonal-Vorgänger). Ein Flex-Item hat nach dem Layout eine definierte
+   Grösse, an der sich Kinder (s. u.) problemlos per position:absolute
+   orientieren können -- kein Flex-Basis-Auflösungsproblem wie beim
+   .shift-chip innerhalb von .shift-chip-btn, weil .cell-wrap--top/--bottom
+   selbst kein Flex-Item eines ANDEREN Flex-Elements mehr ist. */
+.day-cell-slots--split .cell-wrap--top,
+.day-cell-slots--split .cell-wrap--bottom {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* Dünne Trennlinie zwischen den beiden Hälften -- border-box (global,
+   siehe "* { box-sizing: border-box }") sorgt dafür, dass der 1px-Rand von
+   der Höhe ABGEZOGEN wird, statt die Zelle zu vergrössern, und dass das
+   inset:0 des Kind-Chips (s. u.) sich an der PADDING-Kante orientiert --
+   die Linie bleibt dadurch sichtbar, auch wenn der Chip seine Hälfte
+   randlos ausfüllt. */
+.day-cell-slots--split .cell-wrap--top {
+  border-bottom: 1px solid var(--surface);
+}
+
+.day-cell-slots--split .cell-wrap--top > .cell-wrap,
+.day-cell-slots--split .cell-wrap--bottom > .cell-wrap {
+  position: static;
+}
+
+.day-cell-slots--split .shift-chip-btn {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+}
+
+.day-cell-slots--split .shift-chip {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  font-size: 11px;
+}
+
+/* Eck-Badge für Spezialitäten (z. B. Pikettdienst) statt einer eigenen
+   Zeile unter den Dienst-Slots (siehe Kommentar bei .day-cell oben) --
+   .day-cell ist position:relative, der Badge sitzt absolut in der Ecke
+   und nimmt keinen Platz im Layout ein, damit alle Tageszellen einer
+   Zeile immer exakt gleich hoch bleiben. Vorbild: das bestehende
+   .staffing-warning-badge-Muster (PlanGrid.jsx, DayStaffingBadge).
+   Unten-rechts statt oben-rechts: .btn-offer-trade (Diensttausch anbieten)
+   sitzt bereits oben-rechts in der Zelle -- unten-rechts vermeidet, dass
+   sich beide Badges bei einem Tag mit Dienst UND Spezialität überlappen. */
+/* Nutzer-Feedback (2026-08): ein Punkt PRO Spezialität statt eines
+   einzelnen Punkts mit Zähler -- auf einen Blick sichtbar, wie viele UND
+   welche (Farbe) Spezialitäten an diesem Tag liegen, ohne das Popover zu
+   öffnen. flex-wrap, falls mal mehr als drei/vier gleichzeitig vorkommen
+   (Randfall, wächst dann in die Zelle hinein statt zu überlaufen). */
+.special-day-badges {
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap-reverse;
+  justify-content: flex-end;
+  gap: 1.5px;
+  max-width: 20px;
+}
+
+.special-day-dot {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--surface);
+  border-radius: 50%;
+  padding: 0;
+  background: var(--chip-color, var(--primary));
+  cursor: pointer;
+}
+
+.special-day-dot:hover {
+  transform: scale(1.2);
+}
+
+/* README Block 2 Punkt 19 (Automatisierte Planung): Pikett-Vorschläge
+   (DraftShiftChip.jsx: DraftSpecialDot) -- gestrichelter Ring statt
+   gefülltem Punkt, analog zur Unterscheidung .shift-chip/.shift-chip--draft
+   oben. Muss NACH .special-day-dot stehen, da beide Klassen gemeinsam auf
+   demselben Element sitzen und bei gleicher Spezifität die Quellreihenfolge
+   entscheidet. */
+.special-day-dot--draft {
+  background: transparent;
+  border: 1.5px dashed var(--chip-color);
+}
+
+/* Eigene Ecke (oben links) -- .special-day-badges (echte Spezialitäten)
+   sitzt unten rechts, .btn-offer-trade oben rechts, .cross-team-conflict-
+   badge unten links (siehe jeweilige Kommentare) -- oben links ist die
+   einzige noch freie Ecke für die Pikett-Vorschläge. */
+.special-day-badges--draft {
+  bottom: auto;
+  left: -3px;
+  right: auto;
+  top: -3px;
+  justify-content: flex-start;
+}
+
+.special-day-popover {
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px;
+  box-shadow: 0 6px 20px rgba(20, 30, 25, 0.16);
+  min-width: 170px;
+}
+
+.special-day-popover-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.special-day-popover-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+/* Bugfix ("massiver Bug", 2026-08): eine sonst leere Zelle liess sich nicht
+   beplanen, weil die Person in einem ANDEREN, hier nicht geladenen Team/
+   einer anderen Station bereits verplant ist (Mehrfachanstellung) -- ohne
+   diese Warnung war der Grund unauffindbar. Eigene Ecke (unten links),
+   damit sie nicht mit dem Spezialitäten-Badge (unten rechts) oder dem
+   Tauschangebot-Button (oben rechts) kollidiert. */
+.cross-team-conflict-badge {
+  position: absolute;
+  bottom: 1px;
+  left: 1px;
+  z-index: 1;
+  width: 13px;
+  height: 13px;
+  border: none;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--warn);
+  font-size: 9px;
+  line-height: 1;
+  padding: 0;
+  box-shadow: 0 0 0 1px var(--warn);
+  cursor: pointer;
+}
+
+.cross-team-conflict-popover {
+  z-index: 30;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  box-shadow: 0 6px 20px rgba(20, 30, 25, 0.16);
+  max-width: 220px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.cross-team-conflict-popover p {
+  margin: 0;
+}
+
+.special-day-popover-remove {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.special-day-popover-remove:hover {
+  color: var(--warn);
+}
+
+/* ---------- Jahresplan (README Block 2.12) ---------- */
+
+.year-plan-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+/* README (2026-08, UX-Feedback): die Stempel-Badges sollen immer eine eigene
+   Zeile unterhalb von Mitarbeiter-Auswahl + Jahr-Navigation bekommen, statt
+   nur bei Platzmangel irgendwo mitten in der Zeile umzubrechen --
+   flex-basis: 100% erzwingt den Umbruch unabhängig von der verfügbaren
+   Breite. Bewusst auf .year-plan-toolbar gescoped (nicht global auf
+   .stamp-palette/.multi-select-hint), damit PlanGrid.jsx's eigene, separate
+   .multi-select-toolbar davon unberührt bleibt. */
+.year-plan-toolbar > .stamp-palette,
+.year-plan-toolbar > .multi-select-hint {
+  flex-basis: 100%;
+}
+
+.year-plan-employee-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+
+.year-plan-employee-select select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.year-plan-employee-fixed {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.year-nav {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.year-nav button {
+  padding: 4px 9px;
+}
+
+.year-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+  /* Verhindert Text-Selektion beim Markieren mehrerer Tage durch Ziehen mit
+     gedrückter Maustaste. */
+  user-select: none;
+}
+
+.year-month-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 10px;
+}
+
+.year-month-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 13px;
+  text-align: center;
+  margin-bottom: 6px;
+}
+
+.year-month-weekdays,
+.year-month-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+}
+
+.year-month-weekdays {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  text-align: center;
+  margin-bottom: 3px;
+}
+
+.year-month-days {
+  gap: 2px;
+}
+
+.year-day-cell {
+  position: relative;
+  aspect-ratio: 1;
+  border: none;
+  background: transparent;
+  padding: 1px;
+  cursor: pointer;
+}
+
+.year-day-cell.is-empty {
+  visibility: hidden;
+  cursor: default;
+}
+
+.year-day-fill {
+  --chip-color: var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  font-size: 9.5px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.year-day-fill--shift {
+  background: color-mix(in srgb, var(--chip-color) 24%, white);
+  color: color-mix(in srgb, var(--chip-color) 85%, black);
+  font-weight: 700;
+}
+
+/* README (2026-08, Bugfix): zweiter (Split-Shift-)Dienst am selben Tag --
+   diagonal geteilte Füllung aus beiden Schichtfarben statt nur der ersten,
+   damit ein Split-Shift auch in der kompakten Jahresansicht erkennbar ist. */
+.year-day-fill--shift.is-split {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--chip-color) 24%, white) 50%,
+    color-mix(in srgb, var(--chip-color-2) 24%, white) 50%
+  );
+}
+
+.year-day-fill--absence {
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--chip-color) 14%, white),
+    color-mix(in srgb, var(--chip-color) 14%, white) 3px,
+    color-mix(in srgb, var(--chip-color) 26%, white) 3px,
+    color-mix(in srgb, var(--chip-color) 26%, white) 6px
+  );
+  color: color-mix(in srgb, var(--chip-color) 75%, black);
+  font-weight: 700;
+}
+
+/* Nutzer-Feedback (2026-08): Halbtags-Absenzen sollen auch im Jahresplan als
+   solche erkennbar sein -- eine Hälfte der Zelle bleibt ungefärbt, damit ein
+   halber Tag optisch von einem ganzen Abwesenheitstag unterscheidbar ist.
+   Nachbesserung (Port PlanGrid-Logik, 2026-08): welche Hälfte gefärbt ist,
+   richtet sich jetzt nach der tatsächlichen Absence.day_portion (vorher
+   immer die rechte Hälfte, unabhängig von vormittags/nachmittags). */
+.year-day-fill--absence.is-half-day--afternoon {
+  background: linear-gradient(
+    90deg,
+    transparent 50%,
+    color-mix(in srgb, var(--chip-color) 26%, white) 50%
+  );
+}
+
+.year-day-fill--absence.is-half-day--morning {
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--chip-color) 26%, white) 50%,
+    transparent 50%
+  );
+}
+
+.year-day-cell.is-marked .year-day-fill {
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.year-day-cell.is-holiday .year-day-fill {
+  /* stylelint-disable-next-line color-no-hex -- pre-existing, nicht Teil
+     von Block 9 #2/#6, noch nicht tokenisiert */
+  outline: 2px solid #e8963c;
+  outline-offset: -2px;
+}
+
+.year-day-cell.is-marked .select-check {
+  top: -3px;
+  right: -2px;
+}
+
+/* Block 2.13: kleiner Punkt unten rechts an der Tages-Zelle, sobald ein
+   Wunsch besteht -- unabhängig von Schicht-/Absenz-Farbe der Zelle selbst,
+   damit ein Wunsch auch auf einer bereits zugewiesenen Schicht sichtbar
+   bleibt (z. B. "hat FRU, wünscht sich aber SPL"). */
+.year-day-wish-dot {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--surface);
+}
+
+.year-day-wish-dot.is-wunschfrei {
+  background: var(--status-positive);
+}
+
+.year-day-wish-dot.is-wunschdienst {
+  background: var(--primary);
+}
+
+/* Nutzer-Feedback (2026-08, Punkt 4): analoger Punkt unten LINKS für
+   Spezialitäten (z. B. Pikettdienst) -- rein informativ, der Jahresplan hat
+   ausserhalb der Mehrfachauswahl kein Einzeltag-Bearbeitungs-UI. */
+.year-day-special-dot {
+  position: absolute;
+  bottom: -1px;
+  left: -1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--surface);
+  background: var(--primary);
 }
 
 @media (max-width: 640px) {
@@ -402,4 +4035,916 @@ thead .col-employee {
   main {
     padding: 12px;
   }
+}
+
+/* ---------- Landing / Signup / Onboarding (README Block 3) ---------- */
+
+.link-button {
+  border: none;
+  background: transparent;
+  color: var(--primary);
+  font-weight: 600;
+  padding: 0;
+}
+
+.link-button:hover {
+  text-decoration: underline;
+}
+
+/* Nutzer-Feedback (2026-08): "Die Landingpage ist ultra altbacken! Mach die
+   TOP modern! Richtiger Gallery Print!" -- kompletter visueller Neuaufbau.
+   Bleibt an die bestehende Marke gebunden (--primary/--font-display,
+   dasselbe Teal wie überall sonst in der App), nur die Anwendung ist jetzt
+   zeitgemäss: grosse Editorial-Typografie, Aurora-Hintergrund, Glass-Nav,
+   Bento-Feature-Grid, Hero-Mockup mit floatenden Badges, Stat-Leiste mit
+   ECHTEN Tenant-Default-Werten (core.models.Tenant) statt erfundener
+   Marketing-Zahlen, Closing-CTA-Band. color-mix() für abgeleitete
+   Farbtöne aus --primary statt zusätzlicher, fest verdrahteter Hex-Werte. */
+
+.landing-screen {
+  position: relative;
+  min-height: 100%;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.landing-grid-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--border) 18%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--border) 18%, transparent) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: linear-gradient(to bottom, black, black 35%, transparent 75%);
+  -webkit-mask-image: linear-gradient(to bottom, black, black 35%, transparent 75%);
+}
+
+.landing-nav {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 32px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.landing-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+}
+
+.landing-nav-mark {
+  font-size: 20px;
+}
+
+.landing-nav-login {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 13px;
+  padding: 9px 18px;
+  border-radius: 8px;
+  transition: border-color 0.15s ease;
+}
+
+.landing-nav-login:hover {
+  border-color: var(--primary);
+}
+
+.landing-hero {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 96px 32px 72px;
+  animation: landing-rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.landing-hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 380px);
+  align-items: center;
+  gap: 56px;
+}
+
+.landing-hero-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.landing-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 7px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.landing-kicker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  flex-shrink: 0;
+}
+
+.landing-hero h1 {
+  font-family: var(--font-display);
+  font-size: clamp(32px, 4.2vw, 50px);
+  line-height: 1.16;
+  letter-spacing: -0.01em;
+  font-weight: 500;
+  color: var(--ink);
+  text-align: left;
+}
+
+.landing-headline-accent {
+  color: var(--primary);
+}
+
+.landing-sub {
+  max-width: 480px;
+  color: var(--ink-muted);
+  font-size: 15.5px;
+  line-height: 1.65;
+  text-align: left;
+}
+
+.landing-cta-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 6px;
+}
+
+.landing-btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: var(--primary);
+  color: var(--surface);
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 14.5px;
+  padding: 13px 22px;
+  border-radius: 10px;
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+
+.landing-btn-primary span {
+  transition: transform 0.15s ease;
+}
+
+.landing-btn-primary:hover {
+  filter: brightness(0.93);
+}
+
+.landing-btn-primary:hover span {
+  transform: translateX(3px);
+}
+
+.landing-btn-primary--inverse {
+  background: var(--surface);
+  color: var(--primary);
+}
+
+.landing-btn-primary--inverse:hover {
+  filter: none;
+  background: color-mix(in srgb, var(--surface) 90%, var(--primary));
+}
+
+.landing-btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 14.5px;
+  padding: 12px 21px;
+  border-radius: 10px;
+  text-decoration: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.landing-btn-ghost:hover {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.landing-login-link {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.landing-hero-graphic {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: landing-rise 0.6s cubic-bezier(0.16, 1, 0.3, 1) 0.1s both;
+}
+
+.landing-pulse-svg {
+  width: 100%;
+  height: auto;
+}
+
+.landing-pulse-line {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.landing-pulse-line--muted {
+  stroke: var(--border);
+}
+
+.landing-pulse-line--primary {
+  stroke: var(--primary);
+  stroke-width: 2;
+}
+
+.landing-pulse-dot {
+  fill: var(--primary);
+}
+
+.landing-divider {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 0 auto;
+  height: 1px;
+  background: var(--border);
+}
+
+.landing-stats {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 56px 32px;
+}
+
+.landing-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 32px;
+  text-align: left;
+  border-left: 1px solid var(--border);
+}
+
+.landing-stat:first-child {
+  padding-left: 0;
+  border-left: none;
+}
+
+.landing-stat-value {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 500;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.landing-stat-label {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  line-height: 1.4;
+}
+
+.landing-feature-grid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+  max-width: 1180px;
+  width: 100%;
+  margin: 120px auto 0;
+}
+
+.landing-feature-tile {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  padding: 40px 32px;
+  transition: background 0.15s ease;
+}
+
+.landing-feature-tile:hover {
+  background: var(--bg);
+}
+
+.landing-feature-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  margin-bottom: 18px;
+  border: 1px solid var(--border);
+  color: var(--primary);
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.landing-feature-tile:hover .landing-feature-icon {
+  border-color: var(--primary);
+  transform: translateY(-2px);
+}
+
+.landing-feature-tile h3 {
+  font-size: 15px;
+  margin-bottom: 8px;
+}
+
+.landing-feature-tile p {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--ink-muted);
+  line-height: 1.55;
+}
+
+.landing-showcase {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 120px auto 0;
+  padding: 0 32px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 64px;
+}
+
+.landing-showcase--reverse .landing-showcase-copy {
+  order: 2;
+}
+
+.landing-showcase--reverse .landing-showcase-frame {
+  order: 1;
+}
+
+.landing-showcase-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.landing-showcase-eyebrow {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--primary);
+}
+
+.landing-showcase-copy h2 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(22px, 2.6vw, 28px);
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.landing-showcase-copy p {
+  margin: 0;
+  max-width: 460px;
+  color: var(--ink-muted);
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+.landing-showcase-points {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.landing-showcase-points li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+.landing-showcase-points li::before {
+  content: "";
+  flex-shrink: 0;
+  width: 5px;
+  height: 5px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--primary);
+}
+
+.landing-showcase-frame {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+  transition: border-color 0.25s ease, transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.landing-showcase-frame:hover {
+  border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+  transform: translateY(-3px);
+  box-shadow: 0 16px 40px rgba(28, 35, 33, 0.08);
+}
+
+.landing-showcase-frame-bar {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.landing-showcase-frame-bar span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+}
+
+.landing-showcase-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.landing-showcase-frame:hover img {
+  transform: scale(1.015);
+}
+
+.landing-checklist {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 120px auto 0;
+  padding: 56px 32px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.landing-checklist h2 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(20px, 2.4vw, 24px);
+  letter-spacing: -0.01em;
+  margin-bottom: 24px;
+}
+
+.landing-checklist-grid {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px 32px;
+}
+
+.landing-checklist-grid li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13.5px;
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.landing-checklist-check {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 5px;
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.landing-cta-band {
+  position: relative;
+  z-index: 1;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 112px 32px 0;
+}
+
+.landing-cta-band-inner {
+  background: var(--primary);
+  border-radius: 16px;
+  padding: 52px 40px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  color: var(--surface);
+}
+
+.landing-cta-band-inner h2 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(22px, 3vw, 30px);
+  letter-spacing: -0.01em;
+}
+
+.landing-cta-band-inner p {
+  margin: 0 0 8px;
+  color: color-mix(in srgb, var(--surface) 82%, transparent);
+  font-size: 14.5px;
+}
+
+.landing-footer {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 72px;
+  padding: 32px 24px 48px;
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+
+.landing-footer-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* README Block 5 (2026-08): Rechts-Links unter der Marke, statt fett wie
+   Primärnavigation -- .link-button ist bereits die passende, unauffällige
+   Text-Button-Klasse (siehe .link-button-Definition weiter oben). */
+.landing-footer-links {
+  display: flex;
+  gap: 16px;
+  font-size: 12.5px;
+}
+
+.landing-footer .landing-nav-mark {
+  font-size: 16px;
+  color: var(--primary);
+}
+
+@keyframes landing-rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes landing-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes landing-pulse-draw {
+  from {
+    stroke-dashoffset: 1400;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes landing-pulse-dot-in {
+  from {
+    opacity: 0;
+    transform: scale(0);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Scroll-Reveal + Puls-Zeichnen nur bei erlaubter Bewegung -- Basiswerte
+   oben (z. B. .landing-pulse-dot { fill: ... }) zeigen bei reduzierter
+   Bewegung immer sofort den fertigen Endzustand, hier wird nur der
+   "unsichtbare Start" + die Animation selbst ergänzt. */
+@media (prefers-reduced-motion: no-preference) {
+  .landing-pulse-line--primary {
+    stroke-dasharray: 1400;
+    stroke-dashoffset: 1400;
+    animation: landing-pulse-draw 1.6s cubic-bezier(0.16, 1, 0.3, 1) 0.3s forwards;
+  }
+
+  .landing-pulse-dot {
+    transform-box: fill-box;
+    transform-origin: center;
+    opacity: 0;
+    transform: scale(0);
+    animation: landing-pulse-dot-in 0.3s ease-out 1.75s forwards;
+  }
+
+  .landing-reveal {
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .landing-reveal--visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  /* Feature-Grid/Checkliste: der Rahmen selbst bleibt stehen, nur die
+     Kacheln/Zeilen kaskadieren -- sonst würde die Border mitverschwinden. */
+  .landing-feature-grid.landing-reveal,
+  .landing-checklist.landing-reveal {
+    opacity: 1;
+    transform: none;
+  }
+
+  .landing-feature-grid .landing-feature-tile,
+  .landing-checklist-grid li {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .landing-feature-grid.landing-reveal--visible .landing-feature-tile,
+  .landing-checklist.landing-reveal--visible .landing-checklist-grid li {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 900px) {
+  .landing-hero-grid {
+    grid-template-columns: 1fr;
+    gap: 40px;
+  }
+
+  .landing-hero-graphic {
+    order: -1;
+    max-width: 320px;
+    margin: 0 auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .landing-feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .landing-stats {
+    grid-template-columns: 1fr;
+    gap: 20px;
+    padding: 32px 24px;
+  }
+
+  .landing-stat {
+    border-left: none;
+    border-top: 1px solid var(--border);
+    padding: 16px 0 0;
+  }
+
+  .landing-stat:first-child {
+    border-top: none;
+    padding-top: 0;
+  }
+
+  .landing-showcase,
+  .landing-showcase--reverse {
+    grid-template-columns: 1fr;
+    gap: 28px;
+    margin-top: 72px;
+  }
+
+  .landing-showcase--reverse .landing-showcase-copy,
+  .landing-showcase--reverse .landing-showcase-frame {
+    order: initial;
+  }
+
+  .landing-feature-grid {
+    margin-top: 72px;
+  }
+
+  .landing-checklist {
+    margin-top: 72px;
+    padding: 40px 24px;
+  }
+
+  .landing-checklist-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .landing-cta-band {
+    padding-top: 72px;
+  }
+
+  .landing-footer {
+    margin-top: 56px;
+  }
+}
+
+.signup-card {
+  width: 380px;
+}
+
+.signup-name-row {
+  display: flex;
+  gap: 12px;
+}
+
+.signup-name-row label {
+  flex: 1;
+  /* Ohne min-width:0 verweigert der Flex-Item die Schrumpfung unter die
+     Content-Breite des <input> (Browser-Default ~190px) -- bei schmalen
+     Viewports läuft "Nachname" dann rechts aus der Card heraus. */
+  min-width: 0;
+}
+
+.signup-field-hint {
+  margin: -8px 0 0;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.onboarding-screen {
+  min-height: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 48px 24px;
+  background: linear-gradient(180deg, var(--bg) 0%, var(--primary-soft) 100%);
+}
+
+.onboarding-card {
+  width: 480px;
+  max-width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  box-shadow: 0 8px 30px rgba(28, 35, 33, 0.06);
+}
+
+.onboarding-card h1 {
+  font-size: 20px;
+  text-align: center;
+}
+
+.onboarding-steps {
+  display: flex;
+  width: 100%;
+  gap: 6px;
+  margin: 4px 0;
+}
+
+.onboarding-step {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-muted);
+  padding: 6px 4px;
+  border-bottom: 2px solid var(--border);
+}
+
+.onboarding-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  font-size: 10px;
+}
+
+.onboarding-step.is-current {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.onboarding-step.is-current .onboarding-step-index {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: var(--surface);
+}
+
+.onboarding-step.is-done {
+  color: var(--ink);
+}
+
+.onboarding-step.is-done .onboarding-step-index {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.onboarding-step-body {
+  width: 100%;
+}
+
+.onboarding-step-body h2 {
+  font-size: 16px;
+}
+
+.onboarding-node-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.onboarding-node-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.onboarding-node-row input {
+  flex: 1;
+  font-family: var(--font-body);
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.onboarding-preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.onboarding-import-result {
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+
+.onboarding-import-errors {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--warn);
+  font-size: 12.5px;
+}
+
+.onboarding-footer {
+  margin-top: 4px;
 }

@@ -1,0 +1,29 @@
+{% extends "admin/base.html" %}
+{% load i18n %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block branding %}
+<div id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></div>
+{% endblock %}
+
+{% block nav-global %}{% endblock %}
+
+{% block usertools %}
+{% if has_permission %}
+<div id="user-tools">
+  {% if active_tenant_name %}
+    <span class="admin-active-tenant">Aktiver Tenant: <strong>{{ active_tenant_name }}</strong></span>
+  {% else %}
+    <span class="admin-active-tenant admin-active-tenant--none">Kein Tenant gewählt -- tenant-gescopte Daten sind ausgeblendet</span>
+  {% endif %}
+  <a href="{% url 'admin-tenant-switch' %}?next={{ request.path|urlencode }}">Tenant wechseln</a>
+  {% translate 'Welcome,' %}
+  <strong>{% firstof user.get_short_name user.get_username %}</strong>.
+  {% if user.has_usable_password %}
+    <a href="{% url 'admin:password_change' %}">{% translate 'Change password' %}</a> /
+  {% endif %}
+  <a href="{% url 'admin:logout' %}">{% translate 'Log out' %}</a>
+</div>
+{% endif %}
+{% endblock %}
